@@ -977,6 +977,20 @@ export async function injectMemoryPalace(
  * @param lightLLMConfig 记忆宫殿副 API
  * @param userName 用户昵称
  */
+/** 一次日记归档对宫殿的具体影响, 用 status 区分各种"为什么没入宫"的情况, 供 UI 弹窗直接展示 */
+export type DiaryIngestResult =
+    | { status: 'palace_disabled' }
+    | { status: 'lightllm_missing' }
+    | { status: 'embedding_missing' }
+    | { status: 'empty_input' }
+    | { status: 'extracted_none'; stored: 0; skipped: 0 }
+    | {
+        status: 'done';
+        stored: number;
+        skipped: number;
+        nodes: { content: string; room: import('./types').MemoryRoom; importance: number; mood: string; tags: string[] }[];
+    };
+
 export async function ingestDiaryToPalace(
     char: { id: string; name: string; memoryPalaceEnabled?: boolean; embeddingConfig?: any; systemPrompt?: string; worldview?: string },
     dateStr: string,
@@ -984,16 +998,16 @@ export async function ingestDiaryToPalace(
     charDiaryText: string,
     lightLLMConfig: LightLLMConfig | null | undefined,
     userName: string,
-): Promise<{ stored: number; skipped: number; nodesExtracted: number } | null> {
-    if (!char.memoryPalaceEnabled) return null;
+): Promise<DiaryIngestResult> {
+    if (!char.memoryPalaceEnabled) return { status: 'palace_disabled' };
     if (!lightLLMConfig?.baseUrl || !lightLLMConfig?.apiKey) {
         console.warn(`🏰 [DiaryIngest] 跳过：lightLLM 未配置`);
-        return null;
+        return { status: 'lightllm_missing' };
     }
     const embeddingConfig = getEmbeddingConfig(char.embeddingConfig);
     if (!embeddingConfig) {
         console.warn(`🏰 [DiaryIngest] 跳过：embedding 配置未就绪`);
-        return null;
+        return { status: 'embedding_missing' };
     }
 
     // 构造时间戳：YYYY-MM-DD → 当地中午 12:00（避免时区把日期撇到前一天）
@@ -1026,7 +1040,7 @@ export async function ingestDiaryToPalace(
             timestamp: createdAt + 1000,
         } as Message);
     }
-    if (fakeMessages.length === 0) return null;
+    if (fakeMessages.length === 0) return { status: 'empty_input' };
 
     // 角色 / 用户档案给 LLM 当上下文
     let charContext = `[角色档案]\n名字: ${char.name}\n核心设定:\n${char.systemPrompt || '无'}\n`;
@@ -1046,7 +1060,7 @@ export async function ingestDiaryToPalace(
 
     if (extracted.memories.length === 0) {
         console.log(`🏰 [DiaryIngest] LLM 未提取出记忆节点`);
-        return { stored: 0, skipped: 0, nodesExtracted: 0 };
+        return { status: 'extracted_none', stored: 0, skipped: 0 };
     }
 
     // 把 createdAt 改成日记日期，origin 标 system（用户主动触发的归档）
@@ -1059,7 +1073,18 @@ export async function ingestDiaryToPalace(
     const remoteConfig = getRemoteVectorConfig();
     const result = await vectorizeAndStore(extracted.memories, embeddingConfig, remoteConfig);
     console.log(`🏰 [DiaryIngest] 日记 ${dateStr} 入宫：提取 ${extracted.memories.length} 条，存储 ${result.stored}，去重跳过 ${result.skipped}`);
-    return { ...result, nodesExtracted: extracted.memories.length };
+    return {
+        status: 'done',
+        stored: result.stored,
+        skipped: result.skipped,
+        nodes: extracted.memories.map(n => ({
+            content: n.content,
+            room: n.room,
+            importance: n.importance,
+            mood: n.mood,
+            tags: n.tags,
+        })),
+    };
 }
 
 // ─── 输入管线（AI 回复后，后台） ──────────────────────

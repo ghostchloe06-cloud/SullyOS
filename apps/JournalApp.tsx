@@ -7,7 +7,8 @@ import { ContextBuilder } from '../utils/context';
 import { processImage } from '../utils/file';
 import Modal from '../components/os/Modal';
 import { safeResponseJson } from '../utils/safeApi';
-import { injectMemoryPalace, ingestDiaryToPalace } from '../utils/memoryPalace/pipeline';
+import { injectMemoryPalace, ingestDiaryToPalace, type DiaryIngestResult } from '../utils/memoryPalace/pipeline';
+import { getRoomLabel } from '../utils/memoryPalace/types';
 import { Sparkle, Archive } from '@phosphor-icons/react';
 
 const INTRO_SEEN_KEY = 'journal_app_intro_seen_v2';
@@ -63,6 +64,12 @@ const JournalApp: React.FC = () => {
     // Editor State
     const [isThinking, setIsThinking] = useState(false);
     const [archivingId, setArchivingId] = useState<string | null>(null);
+    const [archiveResult, setArchiveResult] = useState<{
+        date: string;
+        charName: string;
+        summary: string;
+        palace: DiaryIngestResult | null;
+    } | null>(null);
     const [showStickerPanel, setShowStickerPanel] = useState(false);
     const [activeTab, setActiveTab] = useState<'user' | 'char'>('user'); // View Tab
     const [hideCharStickers, setHideCharStickers] = useState(false); // Toggle to hide char stickers
@@ -566,28 +573,21 @@ ${charPart}
             });
 
             // 3. 记忆宫殿 (开了才走): 用副 API 抽结构化节点 + 向量化,createdAt = 日记当天
-            let palaceMsg = '';
-            if (selectedChar.memoryPalaceEnabled) {
-                try {
-                    const result = await ingestDiaryToPalace(
-                        selectedChar,
-                        diary.date,
-                        diary.userPage.text,
-                        diary.charPage?.text || '',
-                        memoryPalaceConfig?.lightLLM as any,
-                        userProfile.name,
-                    );
-                    if (result && result.stored > 0) {
-                        palaceMsg = ` · 宫殿入${result.stored}条`;
-                    } else if (result && result.nodesExtracted > 0) {
-                        palaceMsg = ` · 宫殿命中去重`;
-                    } else if (result == null) {
-                        palaceMsg = ` · 宫殿副API未配置`;
-                    }
-                } catch (e: any) {
-                    console.warn('🏰 [Journal] 入宫失败:', e);
-                    palaceMsg = ` · 宫殿写入失败`;
-                }
+            //    无论开没开,都把 result 攒下来塞进弹窗;关了的话 result.status='palace_disabled'
+            //    用户也能看到"为什么没进宫殿"。
+            let palaceResult: DiaryIngestResult | null = null;
+            try {
+                palaceResult = await ingestDiaryToPalace(
+                    selectedChar,
+                    diary.date,
+                    diary.userPage.text,
+                    diary.charPage?.text || '',
+                    memoryPalaceConfig?.lightLLM as any,
+                    userProfile.name,
+                );
+            } catch (e: any) {
+                console.warn('🏰 [Journal] 入宫失败:', e);
+                palaceResult = null; // null 表示抛异常了, 弹窗里单独标"写入失败"
             }
 
             // 4. 标记 isArchived 防止重复
@@ -596,7 +596,13 @@ ${charPart}
             if (currentEntry?.id === diary.id) setCurrentEntry(updatedDiary);
             await loadDiaries(selectedChar.id);
 
-            addToast(`已归档至神经链接${palaceMsg}`, 'success');
+            // 5. 弹窗展示归档全貌: 总结 + 神经链接 + 宫殿状态/节点
+            setArchiveResult({
+                date: diary.date,
+                charName: selectedChar.name,
+                summary,
+                palace: palaceResult,
+            });
         } catch (e: any) {
             console.error(e);
             addToast(`归档失败: ${e.message}`, 'error');
@@ -716,10 +722,106 @@ ${charPart}
         </Modal>
     ) : null;
 
+    // 归档结果弹窗: 让用户清楚知道生成了哪些内容、被送去了哪里
+    const archiveResultModal = archiveResult ? (() => {
+        const p = archiveResult.palace;
+        const userName = userProfile.name || '我';
+        // 宫殿状态文案
+        let palaceStatus: { tone: 'on' | 'off' | 'warn' | 'fail'; title: string; detail: string } = { tone: 'off', title: '', detail: '' };
+        if (!p) {
+            palaceStatus = { tone: 'fail', title: '记忆宫殿 · 写入失败', detail: '入宫过程抛出异常, 详情看控制台。神经链接那条总结仍然写入成功。' };
+        } else if (p.status === 'palace_disabled') {
+            palaceStatus = { tone: 'off', title: '记忆宫殿 · 未开启', detail: `${archiveResult.charName} 没开启记忆宫殿, 本次只进了神经链接。要让日记进向量记忆, 去角色设置打开"记忆宫殿"开关。` };
+        } else if (p.status === 'lightllm_missing') {
+            palaceStatus = { tone: 'warn', title: '记忆宫殿 · 副 API 未配置', detail: '记忆宫殿已开, 但宫殿副 API (memoryPalaceConfig.lightLLM) 没填; 没法做结构化抽取, 本次只进了神经链接。' };
+        } else if (p.status === 'embedding_missing') {
+            palaceStatus = { tone: 'warn', title: '记忆宫殿 · 嵌入模型未配置', detail: '记忆宫殿已开, 但 embedding 配置缺失; 没法向量化, 本次只进了神经链接。' };
+        } else if (p.status === 'empty_input') {
+            palaceStatus = { tone: 'warn', title: '记忆宫殿 · 内容为空', detail: '日记两页都没有正文, 没东西可入宫。' };
+        } else if (p.status === 'extracted_none') {
+            palaceStatus = { tone: 'warn', title: '记忆宫殿 · 副 API 没提取出内容', detail: '副 API 读完日记但没认为有值得记的东西。神经链接的总结仍然写入成功。' };
+        } else {
+            palaceStatus = {
+                tone: 'on',
+                title: `记忆宫殿 · 入了 ${p.stored} 条${p.skipped > 0 ? ` (另有 ${p.skipped} 条命中已有记忆去重)` : ''}`,
+                detail: '副 API 把日记拆成多条结构化记忆并向量化, 后续聊天召回时按语义命中。createdAt 已对齐到日记当天。',
+            };
+        }
+
+        const palaceNodes = (p && p.status === 'done') ? p.nodes : [];
+
+        return (
+            <Modal
+                isOpen={true}
+                title={`已归档 · ${archiveResult.date}`}
+                onClose={() => setArchiveResult(null)}
+                footer={
+                    <button onClick={() => setArchiveResult(null)} className="w-full py-3 bg-amber-500 text-white font-bold rounded-2xl active:scale-95 transition-transform">
+                        知道了
+                    </button>
+                }
+            >
+                <div className="space-y-3 text-sm text-slate-700 leading-relaxed max-h-[60vh] overflow-y-auto no-scrollbar pr-1">
+                    {/* 神经链接 */}
+                    <div className="rounded-2xl border border-emerald-100 bg-emerald-50/70 px-4 py-3 space-y-2">
+                        <div className="flex items-center gap-2">
+                            <span className="text-[10px] font-bold tracking-widest uppercase text-emerald-700">● 神经链接 · char.memories</span>
+                            <span className="text-[10px] text-emerald-600/70">写入 1 条 · 日期 {archiveResult.date}</span>
+                        </div>
+                        <p className="text-[13px] text-slate-700 leading-relaxed whitespace-pre-wrap" style={{ fontFamily: 'ui-serif, Georgia, serif' }}>
+                            {archiveResult.summary}
+                        </p>
+                        <p className="text-[10px] text-emerald-700/70">↑ 这段总结会出现在「{archiveResult.charName}」的本月详细记录里, 自动跟聊天上下文一起送进 LLM。</p>
+                    </div>
+
+                    {/* 记忆宫殿 */}
+                    <div className={`rounded-2xl border px-4 py-3 space-y-2 ${
+                        palaceStatus.tone === 'on' ? 'border-purple-100 bg-purple-50/70'
+                        : palaceStatus.tone === 'off' ? 'border-slate-100 bg-slate-50'
+                        : palaceStatus.tone === 'warn' ? 'border-amber-100 bg-amber-50/70'
+                        : 'border-red-100 bg-red-50/70'
+                    }`}>
+                        <div className={`text-[10px] font-bold tracking-widest uppercase ${
+                            palaceStatus.tone === 'on' ? 'text-purple-700'
+                            : palaceStatus.tone === 'off' ? 'text-slate-500'
+                            : palaceStatus.tone === 'warn' ? 'text-amber-700'
+                            : 'text-red-600'
+                        }`}>
+                            ◆ {palaceStatus.title}
+                        </div>
+                        <p className="text-[12px] text-slate-600">{palaceStatus.detail}</p>
+                        {palaceNodes.length > 0 && (
+                            <div className="space-y-1.5 pt-1">
+                                {palaceNodes.map((n, i) => (
+                                    <div key={i} className="rounded-xl bg-white/80 border border-purple-100 px-3 py-2">
+                                        <div className="flex items-center gap-2 mb-1">
+                                            <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-purple-100 text-purple-700">{getRoomLabel(n.room, userName)}</span>
+                                            <span className="text-[9px] font-mono text-purple-500/70">重要度 {n.importance}/10</span>
+                                            {n.mood && <span className="text-[9px] text-slate-400">· {n.mood}</span>}
+                                        </div>
+                                        <p className="text-[12px] text-slate-700 leading-snug">{n.content}</p>
+                                        {n.tags?.length > 0 && (
+                                            <div className="flex flex-wrap gap-1 mt-1.5">
+                                                {n.tags.slice(0, 6).map((t, ti) => (
+                                                    <span key={ti} className="text-[9px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">#{t}</span>
+                                                ))}
+                                            </div>
+                                        )}
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                </div>
+            </Modal>
+        );
+    })() : null;
+
     if (mode === 'select') {
         return (
             <div className="h-full w-full bg-amber-50 flex flex-col font-light">
                 {introModal}
+                {archiveResultModal}
                 <div className="pt-12 pb-4 px-6 border-b border-amber-100 bg-amber-50/80 backdrop-blur-sm sticky top-0 z-20 flex items-center justify-between shrink-0 h-24 box-border">
                     <button onClick={closeApp} className="p-2 -ml-2 rounded-full hover:bg-amber-100/50 active:scale-90 transition-transform">
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6 text-amber-900"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
@@ -748,6 +850,7 @@ ${charPart}
         return (
             <div className="h-full w-full bg-white flex flex-col font-light relative">
                 {introModal}
+                {archiveResultModal}
                 <div className="pt-12 pb-6 px-6 bg-amber-500 shadow-lg shrink-0 rounded-b-[2rem] z-20">
                     <div className="flex justify-between items-start mb-4">
                          <button onClick={() => setMode('select')} className="text-white/80 hover:text-white transition-colors">
@@ -850,6 +953,7 @@ ${charPart}
     return (
         <div className="h-full w-full bg-[#1a1a1a] flex flex-col relative overflow-hidden">
             {introModal}
+            {archiveResultModal}
 
             {/* Editor Header */}
             <div className="pt-12 pb-3 px-4 bg-[#1a1a1a]/90 backdrop-blur-md flex items-center justify-between text-white shrink-0 z-30 h-24 box-border">

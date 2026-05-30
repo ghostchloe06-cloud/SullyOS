@@ -40,7 +40,7 @@ export { applyPriming, checkRumination } from './priming';
 export { expandAndFormat } from './formatter';
 
 // 集成
-export type { LightLLMConfig, PipelineResult } from './pipeline';
+export type { LightLLMConfig, PipelineResult, DiaryIngestResult } from './pipeline';
 export { retrieveMemories, injectMemoryPalace, processNewMessages, getMemoryPalaceHighWaterMark, ingestDiaryToPalace } from './pipeline';
 
 // 期盼
