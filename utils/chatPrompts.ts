@@ -866,6 +866,13 @@ ${xhsEnabled ? `${[notionEnabled, feishuEnabled, notionNotesEnabled].filter(Bool
                         const card = m.metadata?.scoreCard || JSON.parse(m.content);
                         if (card?.type === 'lifesim_reset_card') {
                             content = `${timeStr} ${formatLifeSimResetCardForContext(card, char?.name)}`;
+                        } else if (card?.type === 'diary_card') {
+                            const uName = card.userName || userProfile?.name || '用户';
+                            const userText = (card.userText || '').trim();
+                            const charText = (card.charText || '').trim();
+                            const userBlock = userText ? `${uName}的那页写道：\n「${userText}」` : `${uName}那页是空的`;
+                            const charBlock = charText ? `你的那页回道：\n「${charText}」` : `你那页是空的`;
+                            content = `${timeStr} [交换日记 ${card.date || ''}] ${uName}和你通过【交换日记】app 交换了一篇日记，这是一次正式的、留下记录的互动。\n${userBlock}\n${charBlock}\n（这是你们之间真实发生过的事，可以在后续聊天中自然提及。）`;
                         } else if (card?.type === 'guidebook_card') {
                             const diff = (card.finalAffinity ?? 0) - (card.initialAffinity ?? 0);
                             const uName = userProfile?.name || '用户';

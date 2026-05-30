@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useOS } from '../context/OSContext';
 import { DB } from '../utils/db';
-import { CharacterProfile, DiaryEntry, StickerData, MemoryFragment, DiaryPage } from '../types';
+import { CharacterProfile, DiaryEntry, StickerData, DiaryPage } from '../types';
 import { ContextBuilder } from '../utils/context';
 import { processImage } from '../utils/file';
 import Modal from '../components/os/Modal';
@@ -41,7 +41,7 @@ const getLocalDateStr = () => {
 };
 
 const JournalApp: React.FC = () => {
-    const { closeApp, characters, activeCharacterId, apiConfig, addToast, userProfile, updateCharacter } = useOS();
+    const { closeApp, characters, activeCharacterId, apiConfig, addToast, userProfile } = useOS();
     
     const [mode, setMode] = useState<'select' | 'calendar' | 'write'>('select');
     const [selectedChar, setSelectedChar] = useState<CharacterProfile | null>(null);
@@ -51,7 +51,7 @@ const JournalApp: React.FC = () => {
     
     // Editor State
     const [isThinking, setIsThinking] = useState(false);
-    const [isArchiving, setIsArchiving] = useState(false); // New: Archiving state
+    const [isSending, setIsSending] = useState(false);
     const [showStickerPanel, setShowStickerPanel] = useState(false);
     const [activeTab, setActiveTab] = useState<'user' | 'char'>('user'); // View Tab
     const [hideCharStickers, setHideCharStickers] = useState(false); // Toggle to hide char stickers
@@ -415,73 +415,50 @@ Structure:
         }
     };
 
-    const handleArchive = async () => {
-        if (!currentEntry || !selectedChar || currentEntry.isArchived) return;
-        
-        setIsArchiving(true); // START LOADING
-        
+    const handleSendToChat = async () => {
+        if (!currentEntry || !selectedChar || !currentEntry.charPage || currentEntry.isArchived) return;
+
+        setIsSending(true);
+
         try {
-            // 1. Build Context using ContextBuilder to ensure AI knows WHO it is
-            await injectMemoryPalace(selectedChar, undefined, currentEntry.userPage.text);
-            const baseContext = ContextBuilder.buildCoreContext(selectedChar, userProfile);
+            const userPaperName = PAPER_STYLES.find(p => p.id === currentEntry.userPage.paperStyle)?.name || '白纸';
+            const charPaperName = PAPER_STYLES.find(p => p.id === currentEntry.charPage.paperStyle)?.name || '白纸';
 
-            const prompt = `${baseContext}
+            const cardData = {
+                type: 'diary_card',
+                date: currentEntry.date,
+                charName: selectedChar.name,
+                charAvatar: selectedChar.avatar || '',
+                userName: userProfile.name,
+                userText: currentEntry.userPage.text,
+                charText: currentEntry.charPage.text,
+                userPaperStyle: currentEntry.userPage.paperStyle,
+                userPaperName,
+                charPaperStyle: currentEntry.charPage.paperStyle,
+                charPaperName,
+                userStickerCount: currentEntry.userPage.stickers?.length || 0,
+                charStickerCount: currentEntry.charPage.stickers?.length || 0,
+            };
 
-### [System Instruction: Diary Archival]
-当前任务: 将这篇【交换日记】(${currentEntry.date}) 总结为一条属于你的“核心记忆”。
-
-### 输入内容 (Input)
-用户 (${userProfile.name}) 的日记:
-"${currentEntry.userPage.text}"
-
-你 (${selectedChar.name}) 的回复:
-"${currentEntry.charPage?.text || '(无)'}"
-
-### 输出要求 (Output Requirements)
-1. **绝对第一人称**: 必须用“我”来称呼自己，用“${userProfile.name}”称呼用户。
-2. **内容聚焦**: 总结日记中提到的关键事件、你的感受以及你们之间的互动。
-3. **格式**: 输出一句简练的中文总结 (50字以内)。不要包含任何前缀。
-`;
-            
-            const response = await fetch(`${apiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiConfig.apiKey}` },
-                body: JSON.stringify({
-                    model: apiConfig.model,
-                    messages: [{ role: "user", content: prompt }],
-                    temperature: 0.3
-                })
+            await DB.saveMessage({
+                charId: selectedChar.id,
+                role: 'system',
+                type: 'score_card',
+                content: JSON.stringify(cardData),
+                metadata: { scoreCard: cardData, source: 'journal-exchange' },
             });
-            
-            if (response.ok) {
-                const data = await safeResponseJson(response);
-                let summary = data.choices[0].message.content;
-                summary = summary.replace(/^["']|["']$/g, '').trim();
-                
-                const newMem: MemoryFragment = {
-                    id: `mem-${Date.now()}`,
-                    date: currentEntry.date,
-                    summary,
-                    mood: 'diary'
-                };
-                
-                const updatedMems = [...(selectedChar.memories || []), newMem];
-                updateCharacter(selectedChar.id, { memories: updatedMems });
-                
-                const updatedDiary = { ...currentEntry, isArchived: true };
-                setCurrentEntry(updatedDiary);
-                await DB.saveDiary(updatedDiary);
-                await loadDiaries(selectedChar.id);
-                
-                addToast('已归档至记忆库', 'success');
-            } else {
-                throw new Error(`API Error ${response.status}`);
-            }
+
+            const updatedDiary = { ...currentEntry, isArchived: true };
+            setCurrentEntry(updatedDiary);
+            await DB.saveDiary(updatedDiary);
+            await loadDiaries(selectedChar.id);
+
+            addToast('已发送到聊天', 'success');
         } catch (e: any) {
             console.error(e);
-            addToast(`归档失败: ${e.message}`, 'error');
+            addToast(`发送失败: ${e.message}`, 'error');
         } finally {
-            setIsArchiving(false); // END LOADING
+            setIsSending(false);
         }
     };
 
@@ -634,7 +611,7 @@ Structure:
                                         <p className="text-xs text-slate-400 font-mono">{d.date.split('-')[0]}</p>
                                         <div className="flex gap-2">
                                             {d.charPage && <span className="px-2 py-0.5 bg-green-100 text-green-600 rounded-full text-[9px] font-bold">已回复</span>}
-                                            {d.isArchived && <span className="px-2 py-0.5 bg-slate-100 text-slate-500 rounded-full text-[9px] font-bold">已归档</span>}
+                                            {d.isArchived && <span className="px-2 py-0.5 bg-amber-100 text-amber-600 rounded-full text-[9px] font-bold">已发送</span>}
                                         </div>
                                     </div>
                                 </div>
@@ -701,14 +678,20 @@ Structure:
                     )}
 
                     {currentEntry?.charPage && !currentEntry.isArchived && (
-                        <button 
-                            onClick={handleArchive} 
-                            disabled={isArchiving}
-                            className={`px-4 py-1.5 rounded-full text-xs font-bold shadow-lg transition-all flex items-center gap-2 ${isArchiving ? 'bg-emerald-800 text-emerald-200 cursor-not-allowed' : 'bg-emerald-600/90 text-white shadow-emerald-900/50 active:scale-95'}`}
+                        <button
+                            onClick={handleSendToChat}
+                            disabled={isSending}
+                            className={`px-4 py-1.5 rounded-full text-xs font-bold shadow-lg transition-all flex items-center gap-2 ${isSending ? 'bg-amber-800 text-amber-200 cursor-not-allowed' : 'bg-amber-500/90 text-white shadow-amber-900/50 active:scale-95'}`}
                         >
-                            {isArchiving && <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>}
-                            {isArchiving ? '归档中...' : '归档记忆'}
+                            {isSending && <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>}
+                            {isSending ? '发送中...' : '发送到聊天'}
                         </button>
+                    )}
+                    {currentEntry?.isArchived && (
+                        <div className="px-4 py-1.5 rounded-full text-xs font-bold bg-white/5 text-white/40 flex items-center gap-1.5">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-3 h-3"><path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" /></svg>
+                            已发送
+                        </div>
                     )}
                     <button onClick={saveEntry} className="px-4 py-1.5 bg-white/10 rounded-full text-xs font-bold hover:bg-white/20 active:scale-95 transition-transform">
                         保存

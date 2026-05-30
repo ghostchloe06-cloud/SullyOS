@@ -859,6 +859,77 @@ const MessageItem = React.memo(({
                     </div>
                 );
             }
+            if (scoreData?.type === 'diary_card') {
+                const dateParts = (scoreData.date || '').split('-');
+                const monthDay = dateParts.length === 3 ? `${dateParts[1]}/${dateParts[2]}` : (scoreData.date || '');
+                const year = dateParts[0] || '';
+                const userText = (scoreData.userText || '').trim();
+                const charText = (scoreData.charText || '').trim();
+                const truncate = (s: string, n: number) => (s.length > n ? s.slice(0, n) + '…' : s);
+                return (
+                    <div className={`flex items-center w-full ${selectionMode ? 'pl-8' : ''} animate-fade-in relative transition-[padding] duration-300`}>
+                        {selectionMode && (
+                            <div className="absolute left-2 top-1/2 -translate-y-1/2 cursor-pointer z-20" onClick={() => onToggleSelect(m.id)}>
+                                <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-colors ${isSelected ? 'bg-primary border-primary' : 'border-slate-300 bg-white/80'}`}>
+                                    {isSelected && <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" strokeWidth={3} stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" /></svg>}
+                                </div>
+                            </div>
+                        )}
+                        <div className="w-full px-4 my-3" {...interactionProps}>
+                            <div className="w-72 mx-auto rounded-2xl overflow-hidden shadow-md" style={{ border: '1.5px solid rgba(217,180,120,0.35)', background: 'linear-gradient(180deg, #fff9ec 0%, #fffdf6 35%, #fdf2dc 100%)' }}>
+                                {/* Header — date stamp + char avatar */}
+                                <div className="px-4 pt-3 pb-2.5 flex items-center gap-2.5" style={{ borderBottom: '1px dashed rgba(200,160,100,0.3)', background: 'linear-gradient(135deg, rgba(245,210,150,0.25), rgba(240,195,130,0.15))' }}>
+                                    {scoreData.charAvatar ? (
+                                        <img src={scoreData.charAvatar} className="w-9 h-9 rounded-xl object-cover shadow-sm shrink-0" style={{ boxShadow: '0 0 0 2px rgba(220,180,110,0.5)' }} />
+                                    ) : (
+                                        <div className="w-9 h-9 rounded-xl flex items-center justify-center text-white text-sm font-bold shrink-0" style={{ background: 'linear-gradient(135deg, #d4a55a, #b8843a)' }}>{scoreData.charName?.[0] || '?'}</div>
+                                    )}
+                                    <div className="flex-1 min-w-0">
+                                        <div className="text-[9px] font-bold tracking-widest uppercase" style={{ color: '#a07840' }}>Exchange Diary · 交换日记</div>
+                                        <div className="text-xs font-bold truncate" style={{ color: '#5c3e1a' }}>与 {scoreData.charName} · {scoreData.date}</div>
+                                    </div>
+                                    <div className="shrink-0 text-right leading-none">
+                                        <div className="text-[8px] font-mono opacity-60" style={{ color: '#8a6230' }}>{year}</div>
+                                        <div className="text-base font-black font-mono" style={{ color: '#7a4e1a' }}>{monthDay}</div>
+                                    </div>
+                                </div>
+
+                                {/* User page */}
+                                <div className="px-4 pt-3 pb-2">
+                                    <div className="flex items-center justify-between mb-1.5">
+                                        <span className="text-[9px] font-bold tracking-widest uppercase" style={{ color: '#a07840' }}>● {scoreData.userName || '我'} 写道</span>
+                                        {scoreData.userPaperName && <span className="text-[8px] font-mono opacity-50" style={{ color: '#a07840' }}>{scoreData.userPaperName}</span>}
+                                    </div>
+                                    <div className="rounded-xl px-3 py-2.5 text-[11px] leading-relaxed whitespace-pre-wrap" style={{ background: 'rgba(255,253,245,0.85)', border: '1px solid rgba(217,180,120,0.25)', color: '#4a3520', fontFamily: 'ui-serif, Georgia, serif' }}>
+                                        {userText ? truncate(userText, 160) : <span className="opacity-40 italic">(空白页)</span>}
+                                    </div>
+                                </div>
+
+                                {/* Char page */}
+                                <div className="px-4 pb-3 pt-1.5">
+                                    <div className="flex items-center justify-between mb-1.5">
+                                        <span className="text-[9px] font-bold tracking-widest uppercase" style={{ color: '#a07840' }}>● {scoreData.charName} 回道</span>
+                                        {scoreData.charPaperName && <span className="text-[8px] font-mono opacity-50" style={{ color: '#a07840' }}>{scoreData.charPaperName}</span>}
+                                    </div>
+                                    <div className="rounded-xl px-3 py-2.5 text-[11px] leading-relaxed whitespace-pre-wrap" style={{ background: 'linear-gradient(135deg, rgba(255,245,220,0.85), rgba(255,238,200,0.7))', border: '1px solid rgba(217,180,120,0.3)', color: '#4a3520', fontFamily: 'ui-serif, Georgia, serif' }}>
+                                        {charText ? truncate(charText, 200) : <span className="opacity-40 italic">(空白页)</span>}
+                                    </div>
+                                </div>
+
+                                {/* Footer */}
+                                <div className="px-4 py-2 flex items-center justify-between" style={{ borderTop: '1px dashed rgba(200,160,100,0.25)', background: 'linear-gradient(135deg, rgba(245,210,150,0.12), rgba(240,195,130,0.06))' }}>
+                                    <span className="text-[9px]" style={{ color: '#b89060' }}>
+                                        {(scoreData.userStickerCount || 0) + (scoreData.charStickerCount || 0) > 0
+                                            ? `贴了 ${(scoreData.userStickerCount || 0) + (scoreData.charStickerCount || 0)} 张贴纸`
+                                            : '今天的纸面很干净'}
+                                    </span>
+                                    <span className="text-[9px] font-bold" style={{ color: '#a07840' }}>交换日记 ✿</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                );
+            }
             if (scoreData?.type === 'guidebook_card') {
                 const diff = (scoreData.finalAffinity ?? 0) - (scoreData.initialAffinity ?? 0);
                 const isPositive = diff > 0;
