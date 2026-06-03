@@ -162,6 +162,24 @@
         -ms-overflow-style: none;
         scrollbar-width: none;
       }
+      /* 阅读器细滚动条（明暗主题通用，半透明） */
+      .vr-reader-scroll {
+        scrollbar-width: thin;
+        scrollbar-color: rgba(140,140,140,0.35) transparent;
+      }
+      .vr-reader-scroll::-webkit-scrollbar {
+        width: 5px;
+      }
+      .vr-reader-scroll::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      .vr-reader-scroll::-webkit-scrollbar-thumb {
+        background: rgba(140,140,140,0.35);
+        border-radius: 999px;
+      }
+      .vr-reader-scroll::-webkit-scrollbar-thumb:hover {
+        background: rgba(140,140,140,0.55);
+      }
       input:focus, textarea:focus, select:focus {
         outline: none;
       }
