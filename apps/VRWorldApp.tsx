@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef, useLayoutEffect } from 'react';
 import { useOS } from '../context/OSContext';
 import {
     ArrowLeft, Plus, Trash, BookOpen, Planet, Clock, Play, CaretRight, X,
@@ -495,26 +495,125 @@ const READER_THEMES: ReaderTheme[] = [
 const FONT_SIZES = [13, 15, 17, 20];
 const READER_THEME_KEY = 'vr_reader_theme';
 const READER_FONT_KEY = 'vr_reader_font';
+const READER_MODE_KEY = 'vr_reader_mode'; // 'page' | 'scroll'
+// 用户书签（段索引，per-novel，独立于角色书签）
+const userBmKey = (id: string) => `vr_user_bm_${id}`;
+const readUserBm = (id: string): number => {
+    const v = Number(localStorage.getItem(userBmKey(id)));
+    return Number.isFinite(v) && v > 0 ? Math.floor(v) : 0;
+};
+const writeUserBm = (id: string, idx: number) => {
+    try { localStorage.setItem(userBmKey(id), String(Math.max(0, idx))); } catch { /* ignore */ }
+};
+
+// 单段渲染（翻页/滚动共用）
+const SegBlock: React.FC<{
+    seg: { idx: number; text: string }; anns: VRNovelAnnotation[];
+    theme: ReaderTheme; fontSize: number; nameOf: (id: string) => string | undefined;
+}> = ({ seg, anns, theme, fontSize, nameOf }) => (
+    <div data-seg={seg.idx} className="mb-5">
+        <p className="whitespace-pre-wrap" style={{ color: theme.text, fontSize, lineHeight: 1.9, textIndent: '2em' }}>{seg.text}</p>
+        {anns.map(a => (
+            <div key={a.id} className="mt-2 ml-2 rounded-lg px-3 py-2" style={{ background: theme.annBg, borderLeft: `3px solid ${theme.accent}` }}>
+                <span className="font-bold" style={{ color: theme.accent, fontSize: fontSize - 3 }}>{nameOf(a.authorId) || a.authorName}</span>
+                {a.targetAnnotationId && <span style={{ color: theme.sub, fontSize: fontSize - 3 }}> 回应</span>}
+                <span style={{ color: theme.text, fontSize: fontSize - 3 }}>：{a.content}</span>
+            </div>
+        ))}
+    </div>
+);
 
 const ReaderModal: React.FC<{ novel: VRWorldNovel; characters: CharacterProfile[]; onClose: () => void; }> = ({ novel, characters, onClose }) => {
+    const PAGE_SIZE = 8;
+    const total = novel.segments.length;
+    const initialBm = useMemo(() => Math.min(readUserBm(novel.id), Math.max(0, total - 1)), [novel.id, total]);
+
     const [annotations, setAnnotations] = useState<VRNovelAnnotation[]>([]);
-    const [page, setPage] = useState(0);
     const [themeId, setThemeId] = useState<string>(() => localStorage.getItem(READER_THEME_KEY) || 'paper');
     const [fontSize, setFontSize] = useState<number>(() => Number(localStorage.getItem(READER_FONT_KEY)) || 15);
+    const [mode, setMode] = useState<'page' | 'scroll'>(() => (localStorage.getItem(READER_MODE_KEY) === 'scroll' ? 'scroll' : 'page'));
     const [showCtl, setShowCtl] = useState(false);
+
+    // 翻页态
+    const [page, setPage] = useState(() => Math.floor(initialBm / PAGE_SIZE));
+    // 滚动态：窗口 [winStart, winEnd)，初始落在书签处
+    const [winStart, setWinStart] = useState(() => initialBm);
+    const [winEnd, setWinEnd] = useState(() => Math.min(total, initialBm + 30));
+    const [topSeg, setTopSeg] = useState(initialBm);
+
     const scrollRef = useRef<HTMLDivElement>(null);
-    const PAGE_SIZE = 8;
+    const prevHeightRef = useRef<number | null>(null);
+    const bmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     useEffect(() => { void (async () => setAnnotations(await DB.getVRAnnotations(novel.id)))(); }, [novel.id]);
     useEffect(() => { localStorage.setItem(READER_THEME_KEY, themeId); }, [themeId]);
     useEffect(() => { localStorage.setItem(READER_FONT_KEY, String(fontSize)); }, [fontSize]);
-    useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = 0; }, [page]);
+
+    // 翻页：换页存书签 + 回顶
+    useEffect(() => {
+        if (mode !== 'page') return;
+        writeUserBm(novel.id, page * PAGE_SIZE);
+        if (scrollRef.current) scrollRef.current.scrollTop = 0;
+    }, [page, mode, novel.id]);
+
+    // 滚动：prepend 后补偿滚动位置，避免跳动
+    useLayoutEffect(() => {
+        if (prevHeightRef.current != null && scrollRef.current) {
+            const el = scrollRef.current;
+            el.scrollTop += el.scrollHeight - prevHeightRef.current;
+            prevHeightRef.current = null;
+        }
+    }, [winStart]);
+
+    const switchMode = (m: 'page' | 'scroll') => {
+        if (m === mode) return;
+        if (m === 'scroll') {
+            const bm = page * PAGE_SIZE;
+            setWinStart(bm); setWinEnd(Math.min(total, bm + 30)); setTopSeg(bm);
+        } else {
+            setPage(Math.floor(readUserBm(novel.id) / PAGE_SIZE));
+        }
+        setMode(m);
+        localStorage.setItem(READER_MODE_KEY, m);
+    };
+
+    const onScroll = () => {
+        const el = scrollRef.current;
+        if (!el || mode !== 'scroll') return;
+        // 触底加载更多
+        if (el.scrollTop + el.clientHeight > el.scrollHeight - 900 && winEnd < total) {
+            setWinEnd(e => Math.min(total, e + 20));
+        }
+        // 触顶往回加载
+        if (el.scrollTop < 400 && winStart > 0) {
+            prevHeightRef.current = el.scrollHeight;
+            setWinStart(s => Math.max(0, s - 20));
+        }
+        // 节流存书签（取顶部首个可见段）
+        if (bmTimerRef.current) return;
+        bmTimerRef.current = setTimeout(() => {
+            bmTimerRef.current = null;
+            const cur = scrollRef.current;
+            if (!cur) return;
+            const top = cur.scrollTop;
+            const nodes = cur.querySelectorAll<HTMLElement>('[data-seg]');
+            for (const n of Array.from(nodes)) {
+                if (n.offsetTop + n.offsetHeight > top + 4) {
+                    const idx = Number(n.dataset.seg);
+                    setTopSeg(idx); writeUserBm(novel.id, idx);
+                    break;
+                }
+            }
+        }, 300);
+    };
 
     const theme = READER_THEMES.find(t => t.id === themeId) || READER_THEMES[0];
     const annBySeg = useMemo(() => groupAnnotationsBySeg(annotations), [annotations]);
-    const totalPages = Math.max(1, Math.ceil(novel.segments.length / PAGE_SIZE));
-    const segs = novel.segments.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
     const nameOf = (id: string) => characters.find(c => c.id === id)?.name;
+    const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+    const renderSegs = mode === 'page'
+        ? novel.segments.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE)
+        : novel.segments.slice(winStart, winEnd);
 
     return (
         <div className="fixed inset-0 z-50 flex flex-col" style={{ background: theme.bg }}>
@@ -523,12 +622,16 @@ const ReaderModal: React.FC<{ novel: VRWorldNovel; characters: CharacterProfile[
                 <button onClick={onClose} className="p-1.5 -ml-1.5 rounded-full active:bg-black/5" style={{ color: theme.text }}><X size={20} weight="bold" /></button>
                 <div className="min-w-0 flex-1">
                     <div className="text-[14px] font-bold truncate" style={{ color: theme.text }}>{novel.title}</div>
-                    <div className="text-[10px]" style={{ color: theme.sub }}>第 {page * PAGE_SIZE + 1}~{Math.min((page + 1) * PAGE_SIZE, novel.segments.length)} 段 / 共 {novel.segments.length} 段</div>
+                    <div className="text-[10px]" style={{ color: theme.sub }}>
+                        {mode === 'page'
+                            ? `第 ${page * PAGE_SIZE + 1}~${Math.min((page + 1) * PAGE_SIZE, total)} 段 / 共 ${total} 段`
+                            : `读到第 ${topSeg + 1} 段 / 共 ${total} 段 · ${Math.round((topSeg / Math.max(1, total)) * 100)}%`}
+                    </div>
                 </div>
                 <button onClick={() => setShowCtl(s => !s)} className="p-1.5 rounded-full active:bg-black/5" style={{ color: theme.accent }}><Palette size={18} weight="bold" /></button>
             </div>
 
-            {/* 主题 / 字号控制条 */}
+            {/* 控制条：主题 / 字号 / 模式 */}
             {showCtl && (
                 <div className="px-4 py-2.5 shrink-0 space-y-2.5" style={{ background: theme.paper, borderBottom: `1px solid ${theme.accent}22` }}>
                     <div className="flex items-center gap-2">
@@ -545,7 +648,7 @@ const ReaderModal: React.FC<{ novel: VRWorldNovel; characters: CharacterProfile[
                     </div>
                     <div className="flex items-center gap-2">
                         <TextAa size={14} style={{ color: theme.sub }} />
-                        <div className="flex gap-1.5">
+                        <div className="flex gap-1.5 flex-1">
                             {FONT_SIZES.map(fs => (
                                 <button key={fs} onClick={() => setFontSize(fs)}
                                     className="w-9 h-7 rounded-lg font-bold transition-all"
@@ -554,35 +657,45 @@ const ReaderModal: React.FC<{ novel: VRWorldNovel; characters: CharacterProfile[
                                 </button>
                             ))}
                         </div>
+                        {/* 模式切换 */}
+                        <div className="flex gap-1.5">
+                            {(['page', 'scroll'] as const).map(m => (
+                                <button key={m} onClick={() => switchMode(m)}
+                                    className="px-2.5 h-7 rounded-lg text-[11px] font-bold transition-all"
+                                    style={{ background: mode === m ? theme.accent : 'transparent', color: mode === m ? theme.paper : theme.sub, border: `1px solid ${theme.accent}44` }}>
+                                    {m === 'page' ? '翻页' : '滚动'}
+                                </button>
+                            ))}
+                        </div>
                     </div>
                 </div>
             )}
 
             {/* 正文 */}
-            <div ref={scrollRef} className="flex-1 overflow-y-auto px-5 py-4" style={{ background: theme.bg, fontFamily: `'Noto Serif SC','Songti SC','Noto Serif','Georgia',serif` }}>
-                {segs.map(seg => {
-                    const anns = annBySeg.get(seg.idx) || [];
-                    return (
-                        <div key={seg.idx} className="mb-5">
-                            <p className="whitespace-pre-wrap" style={{ color: theme.text, fontSize, lineHeight: 1.9, textIndent: '2em' }}>{seg.text}</p>
-                            {anns.map(a => (
-                                <div key={a.id} className="mt-2 ml-2 rounded-lg px-3 py-2" style={{ background: theme.annBg, borderLeft: `3px solid ${theme.accent}` }}>
-                                    <span className="font-bold" style={{ color: theme.accent, fontSize: fontSize - 3 }}>{nameOf(a.authorId) || a.authorName}</span>
-                                    {a.targetAnnotationId && <span style={{ color: theme.sub, fontSize: fontSize - 3 }}> 回应</span>}
-                                    <span style={{ color: theme.text, fontSize: fontSize - 3 }}>：{a.content}</span>
-                                </div>
-                            ))}
-                        </div>
-                    );
-                })}
+            <div ref={scrollRef} onScroll={mode === 'scroll' ? onScroll : undefined}
+                className="flex-1 overflow-y-auto px-5 py-4" style={{ background: theme.bg, fontFamily: `'Noto Serif SC','Songti SC','Noto Serif','Georgia',serif` }}>
+                {mode === 'scroll' && winStart > 0 && (
+                    <div className="text-center text-[10px] mb-3" style={{ color: theme.sub }}>—— 上滑加载更早内容 ——</div>
+                )}
+                {renderSegs.map(seg => (
+                    <SegBlock key={seg.idx} seg={seg} anns={annBySeg.get(seg.idx) || []} theme={theme} fontSize={fontSize} nameOf={nameOf} />
+                ))}
             </div>
 
-            {/* 翻页 */}
-            <div className="flex items-center justify-between px-5 py-2.5 shrink-0" style={{ background: theme.paper, borderTop: `1px solid ${theme.accent}22` }}>
-                <button disabled={page === 0} onClick={() => setPage(p => Math.max(0, p - 1))} className="text-[12px] disabled:opacity-30 font-semibold" style={{ color: theme.accent }}>‹ 上一页</button>
-                <span className="text-[11px]" style={{ color: theme.sub }}>{page + 1} / {totalPages}</span>
-                <button disabled={page >= totalPages - 1} onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))} className="text-[12px] disabled:opacity-30 font-semibold" style={{ color: theme.accent }}>下一页 ›</button>
-            </div>
+            {/* 底栏 */}
+            {mode === 'page' ? (
+                <div className="flex items-center justify-between px-5 py-2.5 shrink-0" style={{ background: theme.paper, borderTop: `1px solid ${theme.accent}22` }}>
+                    <button disabled={page === 0} onClick={() => setPage(p => Math.max(0, p - 1))} className="text-[12px] disabled:opacity-30 font-semibold" style={{ color: theme.accent }}>‹ 上一页</button>
+                    <span className="text-[11px]" style={{ color: theme.sub }}>{page + 1} / {totalPages}</span>
+                    <button disabled={page >= totalPages - 1} onClick={() => setPage(p => Math.min(totalPages - 1, p + 1))} className="text-[12px] disabled:opacity-30 font-semibold" style={{ color: theme.accent }}>下一页 ›</button>
+                </div>
+            ) : (
+                <div className="flex items-center justify-center gap-4 px-5 py-2 shrink-0" style={{ background: theme.paper, borderTop: `1px solid ${theme.accent}22` }}>
+                    <button onClick={() => { setWinStart(0); setWinEnd(Math.min(total, 30)); setTopSeg(0); if (scrollRef.current) scrollRef.current.scrollTop = 0; }}
+                        className="text-[11px] font-semibold" style={{ color: theme.accent }}>↑ 从头</button>
+                    <span className="text-[10px]" style={{ color: theme.sub }}>滚动阅读 · 自动记录位置</span>
+                </div>
+            )}
         </div>
     );
 };
