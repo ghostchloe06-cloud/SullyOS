@@ -22,20 +22,22 @@ const genLocalId = (p: string) => `${p}_${Date.now().toString(36)}_${Math.random
 // 从寄出第一封开始计时，24h 一个滚动窗口，窗口内最多 PO_DAILY_LIMIT 封，过期自动归零。
 const PO_DAILY_LIMIT = 15;
 const PO_QUOTA_KEY = 'vr_po_send_quota';
+const PO_REPLY_DAILY_LIMIT = 20;                 // 每日回信上限
+const PO_REPLY_QUOTA_KEY = 'vr_po_reply_quota';
 const PO_WINDOW_MS = 24 * 3600_000;
 const charLen = (s: string) => [...(s || '')].length;
-const readSendQuota = (): { windowStart: number; count: number } => {
+const readSendQuota = (key: string = PO_QUOTA_KEY): { windowStart: number; count: number } => {
     try {
-        const raw = JSON.parse(localStorage.getItem(PO_QUOTA_KEY) || 'null');
+        const raw = JSON.parse(localStorage.getItem(key) || 'null');
         if (raw && typeof raw.windowStart === 'number' && typeof raw.count === 'number'
             && Date.now() - raw.windowStart < PO_WINDOW_MS) return raw;
     } catch { /* ignore */ }
     return { windowStart: 0, count: 0 };
 };
-const bumpSendQuota = (n: number) => {
-    const cur = readSendQuota();
+const bumpSendQuota = (n: number, key: string = PO_QUOTA_KEY) => {
+    const cur = readSendQuota(key);
     const windowStart = cur.windowStart || Date.now();
-    try { localStorage.setItem(PO_QUOTA_KEY, JSON.stringify({ windowStart, count: cur.count + n })); } catch { /* ignore */ }
+    try { localStorage.setItem(key, JSON.stringify({ windowStart, count: cur.count + n })); } catch { /* ignore */ }
 };
 const quotaResetHours = (windowStart: number) =>
     windowStart ? Math.max(1, Math.ceil((windowStart + PO_WINDOW_MS - Date.now()) / 3600_000)) : 24;
@@ -1052,15 +1054,26 @@ const PostOfficePanel: React.FC<{ addToast?: (m: string, t?: any) => void; chara
         } catch (e: any) { addToast?.('刷新失败：' + (e?.message || '检查网络'), 'error'); } finally { setBusy(null); }
     };
     const sendReplies = async () => {
-        if (replyQueued.length === 0) return; setBusy('reply');
+        if (replyQueued.length === 0) return;
+        // 前端日额度：每天最多 PO_REPLY_DAILY_LIMIT 封回信，额度不足只发能发的，其余留队列
+        const q = readSendQuota(PO_REPLY_QUOTA_KEY);
+        const remaining = Math.max(0, PO_REPLY_DAILY_LIMIT - q.count);
+        if (remaining <= 0) { addToast?.(`今天已回满 ${PO_REPLY_DAILY_LIMIT} 封，约 ${quotaResetHours(q.windowStart)} 小时后恢复`, 'info'); return; }
+        const batch = replyQueued.slice(0, remaining);
+        const heldBack = replyQueued.length - batch.length;
+        setBusy('reply');
         try {
-            const payload = replyQueued.map(l => ({
+            const payload = batch.map(l => ({
                 letterId: l.remoteLetterId!, pen: l.reply!.pen,
                 content: l.reply!.userNote ? `${l.reply!.content}\n\n——\n${l.reply!.userNote}` : l.reply!.content,
             }));
             await PostOffice.uploadReplies(payload);
-            await DB.saveVRLetters(replyQueued.map(l => ({ ...l, replyStatus: 'sent' as const })));
-            await load(); addToast?.(`已发出 ${payload.length} 封回信`, 'success');
+            bumpSendQuota(batch.length, PO_REPLY_QUOTA_KEY);
+            await DB.saveVRLetters(batch.map(l => ({ ...l, replyStatus: 'sent' as const })));
+            await load();
+            addToast?.(heldBack > 0
+                ? `已发出 ${payload.length} 封回信，今日额度用完，还剩 ${heldBack} 封约 ${quotaResetHours(readSendQuota(PO_REPLY_QUOTA_KEY).windowStart)} 小时后再发`
+                : `已发出 ${payload.length} 封回信`, heldBack > 0 ? 'info' : 'success');
         } catch (e: any) { addToast?.('发送失败：' + (e?.message || '检查网络'), 'error'); } finally { setBusy(null); }
     };
     const collectReplies = async () => {
@@ -1230,21 +1243,32 @@ const PostOfficePanel: React.FC<{ addToast?: (m: string, t?: any) => void; chara
                         );
                     })()}
 
-                    {tab === 'reply' && (
-                        replyQueued.length === 0 ? <p className="text-[10.5px] text-white/35 leading-relaxed">你亲自写好、还没发出的回信会排在这里。</p> : (
+                    {tab === 'reply' && (() => {
+                        const rq = readSendQuota(PO_REPLY_QUOTA_KEY);
+                        const full = rq.count >= PO_REPLY_DAILY_LIMIT;
+                        return (
                             <>
-                                <PagedList items={replyQueued} perPage={6} render={l => (
-                                    <div key={l.id} className="rounded-lg p-2 mb-1.5" style={{ background: 'rgba(255,255,255,.05)' }}>
-                                        <p className="text-[10.5px] text-white/55 leading-snug mb-1">原信（{l.pen}）：<ExpandText text={l.content} limit={80} /></p>
-                                        <p className="text-[11.5px] text-amber-50/90 leading-snug whitespace-pre-wrap">回信：{l.reply!.content}</p>
-                                        <input value={l.reply!.userNote || ''} onChange={e => setUserNote(l, e.target.value)} placeholder="想补充几句一起回？（选填）"
-                                            className="w-full mt-1.5 rounded-md bg-black/20 px-2 py-1 text-[11px] text-white placeholder-white/30 outline-none" />
-                                    </div>
-                                )} />
-                                <button onClick={sendReplies} disabled={!!busy} className="w-full mt-1 rounded-full py-2 text-[12px] font-semibold text-black disabled:opacity-40" style={{ background: 'linear-gradient(120deg,#f3d08a,#e8b75e)' }}>{busy === 'reply' ? '发送中…' : `一键发送回信（${replyQueued.length}）`}</button>
+                                {/* 回信日额度：常驻显示，用完锁发送 */}
+                                <div className="flex items-center justify-between gap-2 text-[10px] mb-2.5 px-2 py-1.5 rounded-lg" style={{ background: 'rgba(255,255,255,.04)' }}>
+                                    <span className="text-white/55">今日已回 <b className={full ? 'text-red-300' : 'text-amber-200/90'}>{rq.count}</b><span className="text-white/35"> / {PO_REPLY_DAILY_LIMIT}</span></span>
+                                    {rq.count > 0 && <span className="text-white/35">约 {quotaResetHours(rq.windowStart)} 小时后{full ? '恢复' : '归零'}</span>}
+                                </div>
+                                {replyQueued.length === 0 ? <p className="text-[10.5px] text-white/35 leading-relaxed">你亲自写好、还没发出的回信会排在这里。</p> : (
+                                    <>
+                                        <PagedList items={replyQueued} perPage={6} render={l => (
+                                            <div key={l.id} className="rounded-lg p-2 mb-1.5" style={{ background: 'rgba(255,255,255,.05)' }}>
+                                                <p className="text-[10.5px] text-white/55 leading-snug mb-1">原信（{l.pen}）：<ExpandText text={l.content} limit={80} /></p>
+                                                <p className="text-[11.5px] text-amber-50/90 leading-snug whitespace-pre-wrap">回信：{l.reply!.content}</p>
+                                                <input value={l.reply!.userNote || ''} onChange={e => setUserNote(l, e.target.value)} placeholder="想补充几句一起回？（选填）"
+                                                    className="w-full mt-1.5 rounded-md bg-black/20 px-2 py-1 text-[11px] text-white placeholder-white/30 outline-none" />
+                                            </div>
+                                        )} />
+                                        <button onClick={sendReplies} disabled={!!busy || full} className="w-full mt-1 rounded-full py-2 text-[12px] font-semibold text-black disabled:opacity-40" style={{ background: 'linear-gradient(120deg,#f3d08a,#e8b75e)' }}>{busy === 'reply' ? '发送中…' : full ? `今日已回满 ${PO_REPLY_DAILY_LIMIT} 封` : `一键发送回信（${replyQueued.length}）`}</button>
+                                    </>
+                                )}
                             </>
-                        )
-                    )}
+                        );
+                    })()}
 
                     {tab === 'inbox' && (
                         inboxWaiting.length === 0 ? <p className="text-[10.5px] text-white/35 leading-relaxed">点上方「刷新收件箱」捞陌生人寄来的信。收到后长按某封，指定角色去回、或你亲自回。</p> : (
