@@ -283,8 +283,12 @@ const GameApp: React.FC = () => {
             fullContext += `\n<<< 角色档案: ${p.name} (ID: ${p.id}) >>>\n${core}\n`;
 
             // 记忆宫殿召回（includeDetailedMemories=false 时 buildCoreContext 不会自动带，这里按需补回）
+            // [防串台] 召回文本自带的标题是泛指的"你脑海中浮现…"，多角色同场时"你"会混淆。
+            //   这里用显式归属把它锁死到当前角色名下，并提醒 LLM 严禁挪用给别人。
             if (p.memoryPalaceEnabled && p.memoryPalaceInjection && p.memoryPalaceInjection.trim()) {
+                fullContext += `\n【⚠️ 以下记忆宫殿召回【仅属于 ${p.name}】，是 TA 一个人的私人记忆，绝不可当成其他角色的经历或挪用给别人】\n`;
                 fullContext += `${p.memoryPalaceInjection}\n`;
+                fullContext += `【${p.name} 的私人记忆结束】\n`;
             }
 
             // 2. Neural Link: Private Chat Sync
