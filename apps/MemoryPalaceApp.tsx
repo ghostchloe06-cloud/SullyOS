@@ -948,16 +948,30 @@ export default function MemoryPalaceApp() {
             return;
         }
 
-        updateCharacter(charId, { autoArchiveEnabled: true } as any);
+        // 重开全自动记忆时，先把聊天隐藏线对齐到向量高水位（hwm）。
+        // 关键修复：palace 向量化在 autoArchive 关闭期间会无条件推进 hwm，
+        // 但 hideBeforeMessageId 被 autoArchiveEnabled gate 冻结，于是出现
+        // 「向量已归档到最新、聊天却还停在上次开启时刻」的空档。
+        // 这些 id ≤ hwm 的消息不会被 unprocessedBufferCount（只数 id > hwm）统计到，
+        // 常规「立即追平」救不回——所以这里无条件把隐藏线补推到 hwm。
+        const { getMemoryPalaceHighWaterMark, getMemoryPalaceUnprocessedBufferCount } = await import('../utils/memoryPalace/pipeline');
+        const hwm = getMemoryPalaceHighWaterMark(charId);
+        const curHide = ((target as any).hideBeforeMessageId as number) || 0;
+        const alignedHide = Math.max(curHide, hwm);
+        updateCharacter(charId, {
+            autoArchiveEnabled: true,
+            ...(alignedHide > curHide ? { hideBeforeMessageId: alignedHide } : {}),
+        } as any);
 
         // 统计未同步消息数并决定是否立即追平历史
         // 口径必须和 pipeline 的缓冲区定义一致：排除热区（最后 200 条），
         // 否则会把"永远不会被处理"的热区也算成未同步，欺骗用户去点立即追平。
-        const { getMemoryPalaceUnprocessedBufferCount } = await import('../utils/memoryPalace/pipeline');
         const unprocessedCount = await getMemoryPalaceUnprocessedBufferCount(charId);
 
         if (unprocessedCount < 10) {
-            addToast('全自动记忆已开启（历史消息都已同步）', 'success');
+            addToast(alignedHide > curHide
+                ? '全自动记忆已开启，已对齐隐藏线（自动隐藏了宫殿期间已归档的旧消息）'
+                : '全自动记忆已开启（历史消息都已同步）', 'success');
             return;
         }
 
@@ -997,7 +1011,10 @@ export default function MemoryPalaceApp() {
         try {
             const MAX_ROUNDS = 50;
             let accumulatedMemories = (target as any).memories ? [...(target as any).memories] : [];
-            let latestHideBefore = (target as any).hideBeforeMessageId;
+            // 起点取「当前隐藏线」与「向量高水位」的较大值：若从空档状态进来
+            //（hwm 已越过隐藏线），即便本轮 buffer 提早 break，最终 updateCharacter
+            // 也不会把隐藏线回退到旧值之下。
+            let latestHideBefore = Math.max((target as any).hideBeforeMessageId || 0, getMemoryPalaceHighWaterMark(charId));
             let totalProcessed = 0;
 
             for (let round = 1; round <= MAX_ROUNDS; round++) {
