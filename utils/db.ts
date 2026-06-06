@@ -2011,7 +2011,7 @@ export const DB = {
           STORE_TRACKERS,
           STORE_TRACKER_ENTRIES,
           STORE_HOTNEWS,
-          STORE_VR_NOVELS, STORE_VR_ANNOTATIONS, STORE_CC_PARTS, STORE_VR_MUSIC, STORE_VR_GUESTBOOK, STORE_VR_LETTERS,
+          STORE_VR_NOVELS, STORE_VR_ANNOTATIONS, STORE_CC_PARTS, STORE_VR_MUSIC, STORE_VR_GUESTBOOK, STORE_VR_LETTERS, STORE_VR_SETTINGS,
           'memory_nodes', 'memory_vectors', 'memory_links', 'topic_boxes', 'anticipations', 'event_boxes',
           'memory_batches', 'pixel_home_assets', 'pixel_home_layouts'
       ].filter(name => db.objectStoreNames.contains(name));
