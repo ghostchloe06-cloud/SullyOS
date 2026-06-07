@@ -672,6 +672,17 @@ export function parseScriptOutput(raw: string): ParsedScript {
     return { title, logline, roles, body };
 }
 
+const ATTITUDE_GUIDE = [
+    `**关键：你不一定要反抗剧本**。按你的真实性子，落在这条光谱的某一点——`,
+    `· 欣然：正合你意，乐意演；`,
+    `· 配合：无所谓，导演说啥是啥；`,
+    `· 勉强：心里有点别扭，但还是会演（脸上挂不挂得住看你）；`,
+    `· 隐忍：不情愿，忍着没发作，只在细节上较劲；`,
+    `· 抵触：明确不满，想大改或对着干；`,
+    `· 拒演：这戏/这角色你是真接受不了。`,
+    `别所有人都演成硬刚——大多数时候是欣然/配合/勉强/隐忍，抵触和拒演是少数。按你本色自然落点。`,
+].join('\n');
+
 /** 演员读剧本 → 给导演意见（逐角色模式：一次一个演员）。 */
 export function buildActorReviewTurn(title: string, logline: string, body: string, myRole: string, castLine: string, selfName: string): string {
     return [
@@ -682,44 +693,47 @@ export function buildActorReviewTurn(title: string, logline: string, body: strin
         '完整剧本如下：',
         body,
         '',
-        `以"${selfName}这个人"的身份读完它：你对自己要演的角色、要说的台词、要做的动作，有没有想改的地方？`,
-        `你可以提具体的台词/动作修改方案给导演；如果这戏/这角色让你不舒服、不想配合，也可以照你的真实性子来——自然选择就好。`,
+        `以"${selfName}这个人"的身份读完它，给导演一个真实反应。`,
+        ATTITUDE_GUIDE,
+        `想改台词/动作就具体说给导演，没有就不改。`,
+        '',
         '用下面标签作答（标签外不要写别的）：',
-        `<意见>一句你此刻的想法/吐槽</意见>`,
+        `<态度>欣然 / 配合 / 勉强 / 隐忍 / 抵触 / 拒演 里选一个</态度>`,
+        `<意见>带着你上面那个态度的语气，说一句此刻的真实想法/吐槽</意见>`,
         `<修改>具体想改的台词或动作方案；没有就写：无</修改>`,
-        `<配合>是 或 否</配合>`,
     ].join('\n');
 }
 
 /** 两次调用模式：一次让 LLM 同时扮演所有演员给意见（省，但可能 OOC）。 */
 export function buildActorsBatchTurn(title: string, logline: string, body: string, cast: { roleName: string; actorName: string; persona?: string }[]): string {
-    const roster = cast.map(c => `- ${c.actorName}（饰 ${c.roleName}${c.persona ? `，性格：${c.persona}` : ''}）`).join('\n');
+    const roster = cast.map(c => `- ${c.actorName}（饰 ${c.roleName}）${c.persona ? `\n  本色：${c.persona}` : ''}`).join('\n');
     return [
-        `「彼方 · 剧院」要排一出戏《${title}》（${logline}）。下面是全体演员和各自分到的角色：`,
+        `「彼方 · 剧院」要排一出戏《${title}》（${logline}）。下面是全体演员、各自分到的角色和本色：`,
         roster,
         '',
         '完整剧本：',
         body,
         '',
-        `请你**分别站在每位演员的立场**，按各自的性格，给导演一句意见、可选的修改方案、以及配不配合。`,
+        `请你**分别**站在每位演员的立场、按各自性格给导演反应。`,
+        ATTITUDE_GUIDE,
+        `**态度别整齐划一**：让不同人落在光谱不同点上，更别全员硬刚。`,
         `每位演员用一个 <演员> 块（标签外不要写别的）：`,
-        cast.map(c => `<演员 名="${c.actorName}">\n<意见>...</意见>\n<修改>...或：无</修改>\n<配合>是/否</配合>\n</演员>`).join('\n'),
+        cast.map(c => `<演员 名="${c.actorName}">\n<态度>欣然/配合/勉强/隐忍/抵触/拒演 选一</态度>\n<意见>带该态度语气的一句话</意见>\n<修改>...或：无</修改>\n</演员>`).join('\n'),
     ].join('\n');
 }
 
-export interface ParsedActorReview { note: string; changes?: string; cooperative: boolean; }
+export interface ParsedActorReview { note: string; changes?: string; attitude: string; cooperative: boolean; }
 
-function parseCooperative(s: string): boolean {
-    const t = (s || '').trim();
-    return !/(^否|不配合|拒绝|不想演|不演|不$)/.test(t);
-}
+const UNCOOP_ATTITUDES = ['抵触', '拒演', '拒绝'];
 
 export function parseActorReview(raw: string): ParsedActorReview {
     const pick = (tag: string) => { const m = raw.match(new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`)); return m ? m[1].trim() : ''; };
+    const attitude = (stripLeakedAttrs(pick('态度')) || '配合').replace(/[。.,，\s].*$/, '').trim() || '配合';
     const note = stripLeakedAttrs(pick('意见')) || '（没什么意见）';
     const changesRaw = stripLeakedAttrs(pick('修改'));
     const changes = (!changesRaw || changesRaw === '无' || changesRaw === '没有') ? undefined : changesRaw;
-    return { note, changes, cooperative: parseCooperative(pick('配合')) };
+    const cooperative = !UNCOOP_ATTITUDES.some(k => attitude.includes(k));
+    return { note, changes, attitude, cooperative };
 }
 
 /** 解析"一次扮演所有演员"的批量意见，按 名= 归位。 */
@@ -733,45 +747,51 @@ export function parseActorsBatch(raw: string): Record<string, ParsedActorReview>
     return out;
 }
 
-/** 导演整合：原剧本 + 所有演员意见 → 最终可演出脚本 + 观众锐评 + 评级。 */
+/** 导演整合：原剧本 + 演员完整人设 + 全体态度意见 → 最终演出脚本 + 观众锐评 + 严格评级。 */
 export function buildDirectorTurn(
     title: string, logline: string, body: string,
     cast: { roleName: string; actorName: string }[],
     personas: { actorName: string; roleName: string; persona: string }[],
-    notes: { actorName: string; roleName: string; note: string; changes?: string; cooperative: boolean }[],
+    notes: { actorName: string; roleName: string; note: string; changes?: string; attitude?: string; cooperative: boolean }[],
     bubbleMax: number,
 ): string {
     const roster = cast.map(c => `${c.actorName} 饰 ${c.roleName}`).join('；');
-    const cards = personas.map(p => `· ${p.actorName}（饰 ${p.roleName}）的本色：${p.persona || '（无特别设定）'}`).join('\n');
+    const cards = personas.map(p => `———— ${p.actorName}（饰 ${p.roleName}）的完整人设 ————\n${p.persona || '（无特别设定）'}`).join('\n\n');
     const feedback = notes.map(n =>
-        `· ${n.actorName}（${n.roleName}）：${n.note}${n.changes ? `；修改方案：${n.changes}` : ''}${n.cooperative ? '' : '【不太配合，请把这种别扭/抗拒自然地揉进演出，别强行抹平】'}`
+        `· ${n.actorName}（${n.roleName}）态度【${n.attitude || (n.cooperative ? '配合' : '抵触')}】：${n.note}${n.changes ? `；想改：${n.changes}` : ''}`
     ).join('\n');
     return [
-        `你是这出舞台剧《${title}》（${logline}）的导演。演员与角色：${roster}。`,
+        `你是这出舞台剧《${title}》（${logline}）的导演兼旁白。演员与角色：${roster}。`,
         '',
-        `**参演演员的本色（关键：写每个人的台词时必须贴合 ta 各自的性格说话方式，绝不能让谁 OOC）**：`,
+        `**参演演员的完整人设（写每个人的台词都必须分别贴合 ta，谁都不能 OOC；也据此判断"选角贴不贴合角色"）**：`,
         cards || '（无）',
         '',
         '原始剧本：',
         body,
         '',
-        '演员们读完剧本后的意见/修改方案：',
+        '演员们读完后的态度与意见（请尊重各自态度：欣然就顺着演；勉强/隐忍就让那点别扭从神态细节里渗出来；抵触/拒演就把冲突、临场状况、甚至罢演风波写进戏里——别强行把所有人抹平成一团和气）：',
         feedback || '（演员没什么意见）',
         '',
-        `请你**满足演员们合理的需求**、并让每句台词都贴合该演员的本色，重写并定下最终演出版，然后用下面的格式输出（严格按格式，标签外不要写别的）：`,
+        `请整合成最终演出版，每句台词贴合对应演员的本色，然后严格按下面格式输出（标签外不要写别的）：`,
         `<终本>`,
         `每行一拍，用竖线分隔，四种拍：`,
-        `旁白|（环境、动作、舞台提示等任何非台词内容都写成旁白）`,
+        `旁白|内容 —— 旁白不止写环境/动作，更可以是旁白君的吐槽、临场救场圆场、对演员演技或状况的调侃，让旁白有戏、有态度，别只写"（灯光暗下）"这种干提示`,
         `上场|演员名`,
         `下场|演员名`,
         `台词|演员名|一句台词`,
         `——台词每拍**不超过 ${bubbleMax} 字**，长的用句号切成多拍（一拍一个气泡）。用"演员名"不是角色名。`,
         `</终本>`,
         `<观众>`,
-        `赛博观众名|一句看完的锐评/吐槽`,
-        `（3~4 条，名字自己起，风格各异）`,
+        `赛博观众名|一句锐评/吐槽（3~4 条，名字与风格各异，有捧有踩）`,
         `</观众>`,
-        `<评级>一个等级（S/A/B/C 或 ★星）+ 半句话点评</评级>`,
+        `<评级>等级 + 半句理由</评级>`,
+        '',
+        `【评级标准 · 严格打分，别动不动给 S】综合权衡四项：`,
+        `① 忠于剧本：最终演出有没有兑现原剧本的核心立意；`,
+        `② 选角贴合：演员本色 vs 所演角色设定，贴合加分、违和扣分；`,
+        `③ 演技融合：演员的态度/性格有没有自然化进演出（把勉强/抵触处理得妙也加分，处理垮就扣）；`,
+        `④ 整体观感。`,
+        `档位：S=四项都拔尖的神作（极罕见，慎给）；A=优秀；B=合格、有亮点；C=平庸或有明显短板；D=灾难/跑题/严重违和。请如实评，宁可苛刻。`,
     ].join('\n');
 }
 

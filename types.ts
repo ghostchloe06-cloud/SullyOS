@@ -893,7 +893,9 @@ export interface VRActorNote {
     note: string;
     /** 具体的台词/动作修改方案（可空） */
     changes?: string;
-    /** 是否配合（角色自然选择，不诱导） */
+    /** 态度光谱：欣然 / 配合 / 勉强 / 隐忍 / 抵触 / 拒演（按角色性子自然落点，不必都硬刚） */
+    attitude?: string;
+    /** 是否配合（由 attitude 推导：抵触/拒演 = false） */
     cooperative: boolean;
 }
 

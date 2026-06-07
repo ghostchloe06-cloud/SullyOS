@@ -17,6 +17,7 @@ import { SCRIPT_TEMPLATE, PLAY_LITERARY_STYLES, PLAY_ART_STYLES } from '../../ut
 import { resolveTheaterApi, generateScript, polishScript, collectActorNotes, charActorCount, runDirector, type TheaterCtx } from '../../utils/vrWorld/theater';
 import { rollNpcChibi, randomNpcName } from '../../utils/vrWorld/npcRoll';
 import { getChibi } from '../../utils/vrWorld/chibi';
+import { CreatorIframe } from '../../components/Like520Event';
 import type { VRScript, VRStagedPlay, VRCastAssign, VRActorNote, VRStageMode, VRPlayRole, Emoji, EmojiCategory, CharacterProfile } from '../../types';
 
 const tid = (p: string) => `${p}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
@@ -233,6 +234,7 @@ const StageView: React.FC<{ script: VRScript; ctx: TheaterCtx; apiConfig: any; a
     const [notes, setNotes] = useState<VRActorNote[]>([]);
     const [polishOpen, setPolishOpen] = useState(false);
     const [rolling, setRolling] = useState('');
+    const [npcEdit, setNpcEdit] = useState<{ roleName: string } | null>(null);
 
     const charOpts = useMemo(() => [{ key: '', label: '— 选演员 —' }, ...ctx.characters.map(c => ({ key: c.id, label: c.name }))], [ctx.characters]);
     const cast = useMemo(() => script.roles.map(r => assign[r.name]).filter(Boolean) as VRCastAssign[], [assign, script.roles]);
@@ -244,14 +246,26 @@ const StageView: React.FC<{ script: VRScript; ctx: TheaterCtx; apiConfig: any; a
         const ch = ctx.characters.find(c => c.id === charId);
         if (ch) setAssign(a => ({ ...a, [role.name]: { roleName: role.name, actorId: ch.id, actorName: ch.name, isNpc: false } }));
     };
-    const rollNpc = async (role: VRPlayRole) => {
+    /** roll 一个 NPC 立绘。keepName=true 时沿用当前名字（重 roll 用）。 */
+    const rollNpc = async (role: VRPlayRole, keepName = false) => {
         setRolling(role.name);
-        const name = randomNpcName(Object.values(assign).map(c => c.actorName));
+        const existing = assign[role.name];
+        const name = keepName && existing?.actorName ? existing.actorName : randomNpcName(Object.values(assign).map(c => c.actorName));
         const npc = await rollNpcChibi();
-        setAssign(a => ({ ...a, [role.name]: { roleName: role.name, actorId: tid('npc'), actorName: name, isNpc: true, npcChibi: npc?.img } }));
+        setAssign(a => ({ ...a, [role.name]: { roleName: role.name, actorId: existing?.isNpc ? existing.actorId : tid('npc'), actorName: name, isNpc: true, npcChibi: npc?.img } }));
         setRolling('');
         addToast?.(npc ? `捏了个 NPC：${name}` : `NPC ${name}（立绘没出来，用占位）`, npc ? 'success' : 'error');
     };
+    /** 打开捏脸器手动捏这个角色的 NPC（不满意 roll 就进去自己捏）。 */
+    const openNpcEdit = (role: VRPlayRole) => {
+        setAssign(a => {
+            if (a[role.name]?.isNpc) return a;
+            const name = randomNpcName(Object.values(a).map(c => c.actorName));
+            return { ...a, [role.name]: { roleName: role.name, actorId: tid('npc'), actorName: name, isNpc: true } };
+        });
+        setNpcEdit({ roleName: role.name });
+    };
+    const applyNpcChibi = (roleName: string, img: string) => setAssign(a => a[roleName] ? { ...a, [roleName]: { ...a[roleName], npcChibi: img } } : a);
 
     const runStaging = async () => {
         const api = await resolveTheaterApi(apiConfig);
@@ -311,14 +325,19 @@ const StageView: React.FC<{ script: VRScript; ctx: TheaterCtx; apiConfig: any; a
                                     <div style={{ fontSize: 11.5, fontWeight: 800, color: TH.text }}>{r.name} <span style={{ fontSize: 9, fontWeight: 400, color: TH.sub }}>{r.persona}</span></div>
                                     {a?.isNpc ? (
                                         <div className="flex items-center gap-2" style={{ marginTop: 6 }}>
-                                            {a.npcChibi ? <img src={a.npcChibi} style={{ height: 30, objectFit: 'contain' }} alt="" /> : <div style={{ height: 28, width: 28, borderRadius: 999, background: TH.bg3, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, color: TH.gold }}>{a.actorName.slice(0, 1)}</div>}
+                                            {a.npcChibi ? <img src={a.npcChibi} style={{ height: 34, objectFit: 'contain' }} alt="" /> : <div style={{ height: 30, width: 30, borderRadius: 999, background: TH.bg3, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, color: TH.gold }}>{a.actorName.slice(0, 1)}</div>}
                                             <span style={{ fontSize: 11.5, color: TH.text }}>{a.actorName} <span style={{ fontSize: 8.5, color: TH.gold }}>NPC</span></span>
-                                            <button onClick={() => setChar(r, '')} style={{ marginLeft: 'auto', color: TH.sub, padding: 4 }}><X size={13} /></button>
+                                            <div className="ml-auto flex items-center gap-1">
+                                                <TButton size="sm" disabled={!!rolling} onClick={() => rollNpc(r, true)} title="换一个">{rolling === r.name ? '🎲…' : '🎲'}</TButton>
+                                                <TButton size="sm" onClick={() => setNpcEdit({ roleName: r.name })} title="进去自己捏">✏️捏</TButton>
+                                                <button onClick={() => setChar(r, '')} style={{ color: TH.sub, padding: 4 }}><X size={14} /></button>
+                                            </div>
                                         </div>
                                     ) : (
                                         <div className="flex items-center gap-1.5" style={{ marginTop: 6 }}>
                                             <div className="flex-1"><TSelect value={a?.actorId || ''} onChange={(v) => setChar(r, v)} options={charOpts} /></div>
                                             <TButton size="sm" disabled={!!rolling} onClick={() => rollNpc(r)}>{rolling === r.name ? '🎲…' : '🎲NPC'}</TButton>
+                                            <TButton size="sm" onClick={() => openNpcEdit(r)} title="进去自己捏一个">✏️</TButton>
                                         </div>
                                     )}
                                 </div>
@@ -350,6 +369,23 @@ const StageView: React.FC<{ script: VRScript; ctx: TheaterCtx; apiConfig: any; a
             )}
 
             <PolishModal open={polishOpen} onClose={() => setPolishOpen(false)} apiConfig={apiConfig} body={script.body} addToast={addToast} onPolished={(body) => { onPolished(body); setPolishOpen(false); addToast?.('润色好啦', 'success'); }} />
+
+            {/* NPC 捏脸器：roll 得不满意就进来自己捏 */}
+            {npcEdit && (() => {
+                const a = assign[npcEdit.roleName];
+                return (
+                    <div style={{ position: 'fixed', inset: 0, zIndex: 330, background: '#180810', display: 'flex', flexDirection: 'column' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '10px 12px', borderBottom: `1px solid ${TH.line}`, color: TH.text, paddingTop: 'calc(var(--chrome-top) + 4px)' }}>
+                            <span style={{ fontWeight: 800, fontFamily: SERIF, fontSize: 14, color: TH.gold }}>捏个群演 · {a?.actorName || 'NPC'}</span>
+                            <button onClick={() => setNpcEdit(null)} style={{ marginLeft: 'auto', color: TH.goldSoft, padding: 4 }}><X size={20} /></button>
+                        </div>
+                        <div style={{ flex: 1, minHeight: 0 }}>
+                            <CreatorIframe mode="char" charName={a?.actorName || 'NPC'} draftKey={`theater_npc_${script.id}_${npcEdit.roleName}`} title="捏个群演" subtitle="THEATER NPC"
+                                onConfirm={(res) => { applyNpcChibi(npcEdit.roleName, res.transparentDataUrl); setNpcEdit(null); addToast?.('NPC 形象已更新', 'success'); }} />
+                        </div>
+                    </div>
+                );
+            })()}
         </div>
     );
 };
@@ -359,13 +395,15 @@ const ActorNoteCard: React.FC<{ note: VRActorNote; cast: VRCastAssign[]; charact
     const assign = cast.find(c => c.actorId === note.actorId);
     const ch = characters.find(c => c.id === note.actorId);
     const img = assign?.npcChibi || (ch ? getChibi(ch).img : undefined);
+    const att = note.attitude || (note.cooperative ? '配合' : '抵触');
+    const attColor = ['抵触', '拒演'].some(k => att.includes(k)) ? TH.crimson : ['勉强', '隐忍'].some(k => att.includes(k)) ? TH.warn : '#86c98a';
     return (
         <button onClick={() => setOpen(o => !o)} className="w-full text-left" style={{ ...cardStyle, border: `1px solid ${note.cooperative ? TH.line : 'rgba(185,56,74,.6)'}` }}>
             <div className="flex items-center gap-2">
                 {img ? <img src={img} style={{ height: 30, width: 30, objectFit: 'contain' }} alt="" /> : <div style={{ height: 28, width: 28, borderRadius: 999, background: TH.bg3, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, color: TH.gold }}>{note.actorName.slice(0, 1)}</div>}
                 <span style={{ fontSize: 11.5, fontWeight: 800, color: TH.text }}>{note.actorName}</span>
                 <span style={{ fontSize: 8.5, color: TH.sub }}>饰 {note.roleName}</span>
-                <span className="ml-auto" style={{ fontSize: 9, fontWeight: 700, color: note.cooperative ? '#86c98a' : TH.crimson }}>{note.cooperative ? '已就绪' : '有意见'}</span>
+                <span className="ml-auto" style={{ fontSize: 9.5, fontWeight: 800, color: attColor, border: `1px solid ${attColor}`, borderRadius: 999, padding: '1px 8px' }}>{att}</span>
             </div>
             <p style={{ fontSize: 11, color: TH.text, marginTop: 4, lineHeight: 1.45 }}>{note.note}</p>
             {open && note.changes && <p style={{ fontSize: 10.5, color: TH.gold, marginTop: 4, paddingLeft: 8, borderLeft: `2px solid ${TH.gold}`, lineHeight: 1.45 }}>改：{note.changes}</p>}
