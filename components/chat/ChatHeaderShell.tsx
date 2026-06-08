@@ -185,6 +185,10 @@ const ChatHeaderShell: React.FC<ChatHeaderShellProps> = ({
     const isPixelHeader = headerStyle === 'pixel';
     const useCenteredLayout = headerAlign === 'center';
     const avatarRadiusClass = avatarShape === 'square' ? 'rounded-sm' : avatarShape === 'rounded' ? 'rounded-xl' : 'rounded-full';
+    // 动森：情绪 buff 胶囊统一奶油底 + 棕字，和谐进绿顶栏（否则各 buff 自带的彩色底铺在绿上很糊）
+    const buffChipStyle = (buff: CharacterBuff): React.CSSProperties => acnh
+        ? { color: '#6b5a3e', borderColor: '#e6dab4', background: '#fbf4de' }
+        : { color: buff.color || '#db2777', borderColor: `${buff.color || '#db2777'}40`, background: `${buff.color || '#db2777'}10` };
 
     const headerToneClass =
         acnh
@@ -265,7 +269,7 @@ const ChatHeaderShell: React.FC<ChatHeaderShellProps> = ({
                             onMouseUp={handleLongPressEnd}
                             onMouseLeave={handleLongPressEnd}
                             className="shrink-0 max-w-[8.75rem] truncate text-[8px] leading-none px-1 py-[3px] rounded-[10px] font-bold border cursor-pointer transition-colors select-none"
-                            style={{ color: buff.color || '#db2777', borderColor: `${buff.color || '#db2777'}40`, background: `${buff.color || '#db2777'}10` }}
+                            style={buffChipStyle(buff)}
                             title={buff.label}
                         >
                             {buff.emoji ? `${buff.emoji} ` : ''}
@@ -275,7 +279,7 @@ const ChatHeaderShell: React.FC<ChatHeaderShellProps> = ({
                     {hiddenBuffCount > 0 && (
                         <button
                             onClick={(e) => { e.stopPropagation(); setIsBuffListExpanded((prev) => !prev); }}
-                            className="shrink-0 min-w-[22px] text-[8px] leading-none px-1 py-[3px] rounded-[10px] font-bold border border-slate-300 text-slate-500 bg-slate-100/90 hover:bg-slate-200/80 transition-colors"
+                            className={`shrink-0 min-w-[22px] text-[8px] leading-none px-1 py-[3px] rounded-[10px] font-bold border transition-colors ${acnh ? 'border-[#e6dab4] text-[#6b5a3e] bg-[#fbf4de]' : 'border-slate-300 text-slate-500 bg-slate-100/90 hover:bg-slate-200/80'}`}
                             title="查看全部状态"
                         >
                             +{hiddenBuffCount}
@@ -290,7 +294,7 @@ const ChatHeaderShell: React.FC<ChatHeaderShellProps> = ({
                                 key={`measure-${buff.id}`}
                                 ref={(node) => { measureChipRefs.current[index] = node; }}
                                 className="inline-flex shrink-0 max-w-[8.75rem] text-[8px] leading-none px-1 py-[3px] rounded-[10px] font-bold border"
-                                style={{ color: buff.color || '#db2777', borderColor: `${buff.color || '#db2777'}40`, background: `${buff.color || '#db2777'}10` }}
+                                style={buffChipStyle(buff)}
                             >
                                 {buff.emoji ? `${buff.emoji} ` : ''}
                                 {buff.label}
@@ -436,7 +440,7 @@ const ChatHeaderShell: React.FC<ChatHeaderShellProps> = ({
                                     onMouseUp={handleLongPressEnd}
                                     onMouseLeave={handleLongPressEnd}
                                     className="text-[10px] px-2 py-1 rounded-lg font-bold border cursor-pointer transition-colors select-none"
-                                    style={{ color: buff.color || '#db2777', borderColor: `${buff.color || '#db2777'}40`, background: `${buff.color || '#db2777'}10` }}
+                                    style={buffChipStyle(buff)}
                                 >
                                     {buff.emoji ? `${buff.emoji} ` : ''}
                                     {buff.label}

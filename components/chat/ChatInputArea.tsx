@@ -555,7 +555,7 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
                     {/* Actions Panel (paginated: page 0 = 内置功能, page 1 = 外部服务) */}
                     {showPanel === 'actions' && (
                         <div
-                            className="overflow-y-auto"
+                            className="overflow-y-auto no-scrollbar"
                             onTouchStart={handleActionsSwipeStart}
                             onTouchMove={handleActionsSwipeMove}
                             onTouchEnd={handleActionsSwipeEnd}
