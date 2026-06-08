@@ -1928,6 +1928,22 @@ const Chat: React.FC = () => {
     // Memoize ChatInputArea callbacks
     const handleSendCallback = useCallback(() => handleSendText(), [char, input, replyTarget]);
     const handleCharSelectCallback = useCallback((id: string) => { setActiveCharacterId(id); setShowPanel('none'); }, []);
+
+    // 兜底：正常情况下 OSContext 启动时一定会保底一个角色，char 不该为空。
+    // 但若 init 期间某个 store 读取失败（数据其实还在 IndexedDB 里），characters 可能暂时为空，
+    // 此时下面 char.chatBackground 会直接抛 "undefined is not an object" 把整个 App 崩到错误页。
+    // 这里给个温和空态，避免硬崩，也好让用户能退回桌面/重启恢复。
+    if (!char) {
+        return (
+            <div className="flex flex-col items-center justify-center h-full bg-[#f1f5f9] text-center px-8 gap-3">
+                <div className="text-4xl">💤</div>
+                <div className="text-slate-600 text-sm font-medium">暂时没有可用的角色</div>
+                <div className="text-slate-400 text-xs leading-relaxed">数据可能未加载完成。请退回桌面后重新进入；若仍为空，重启应用即可恢复。</div>
+                <button onClick={closeApp} className="mt-2 px-4 py-2 rounded-full bg-slate-800 text-white text-xs">返回桌面</button>
+            </div>
+        );
+    }
+
     const chatChromeStyle = osTheme.chatChromeStyle || 'soft';
     const chatBackgroundStyle = osTheme.chatBackgroundStyle || 'plain';
     const chatRootClass =
