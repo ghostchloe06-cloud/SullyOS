@@ -133,21 +133,25 @@ const CHAT_LAYOUT_COMBOS: { name: string; desc: string; config: Partial<OSTheme>
 ];
 
 // --- 桌面整机风格（皮肤）---
-// 动森风壁纸：天空 → 草地渐变 + 太阳 + 云朵 + 起伏山丘 + 飘叶，整张内联 SVG。
+// 动森风壁纸：柔和梦幻的小岛清晨。暖阳 + 景深模糊的远山草坡 + 光斑 + 飘叶，整张内联 SVG。
 const ACNH_WALLPAPER = `data:image/svg+xml,${encodeURIComponent(
   `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 800" preserveAspectRatio="xMidYMid slice">`
   + `<defs><linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">`
-  + `<stop offset="0" stop-color="#BCE7F5"/><stop offset="0.45" stop-color="#D8F0DA"/>`
-  + `<stop offset="0.7" stop-color="#BBE38F"/><stop offset="1" stop-color="#9BD16B"/></linearGradient></defs>`
+  + `<stop offset="0" stop-color="#F8E3CE"/><stop offset="0.32" stop-color="#EDE6D2"/>`
+  + `<stop offset="0.55" stop-color="#CDE7DA"/><stop offset="0.78" stop-color="#AEDD9C"/>`
+  + `<stop offset="1" stop-color="#8FCB6B"/></linearGradient>`
+  + `<filter id="soft" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="18"/></filter>`
+  + `<filter id="soft2"><feGaussianBlur stdDeviation="8"/></filter></defs>`
   + `<rect width="400" height="800" fill="url(#sky)"/>`
-  + `<circle cx="320" cy="120" r="46" fill="#FFF3B0" opacity="0.85"/>`
-  + `<g fill="#ffffff" opacity="0.9"><ellipse cx="90" cy="140" rx="46" ry="24"/><ellipse cx="132" cy="150" rx="40" ry="22"/>`
-  + `<ellipse cx="250" cy="240" rx="38" ry="20"/><ellipse cx="286" cy="248" rx="32" ry="18"/></g>`
-  + `<path d="M0 560 Q100 500 200 555 T400 545 L400 800 L0 800Z" fill="#A6D871" opacity="0.95"/>`
-  + `<path d="M0 640 Q120 580 240 635 T400 625 L400 800 L0 800Z" fill="#8FC85B"/>`
-  + `<path d="M0 720 Q140 670 280 715 T400 705 L400 800 L0 800Z" fill="#7CBA4C"/>`
-  + `<g fill="#7FB85A" opacity="0.5"><path d="M60 300 q30 -18 42 6 q-30 18 -42 -6Z"/>`
-  + `<path d="M330 420 q26 -16 38 5 q-27 16 -38 -5Z"/><path d="M180 200 q22 -14 32 4 q-23 14 -32 -4Z"/></g></svg>`
+  + `<circle cx="300" cy="130" r="92" fill="#FFE9C2" opacity="0.7" filter="url(#soft)"/>`
+  + `<ellipse cx="120" cy="540" rx="220" ry="90" fill="#BFE3A0" opacity="0.8" filter="url(#soft)"/>`
+  + `<ellipse cx="320" cy="580" rx="200" ry="100" fill="#A9D98A" opacity="0.85" filter="url(#soft)"/>`
+  + `<ellipse cx="200" cy="770" rx="320" ry="150" fill="#86C45E" opacity="0.9" filter="url(#soft)"/>`
+  + `<g filter="url(#soft2)"><circle cx="70" cy="220" r="16" fill="#ffffff" opacity="0.5"/>`
+  + `<circle cx="340" cy="300" r="12" fill="#ffffff" opacity="0.45"/><circle cx="150" cy="120" r="10" fill="#ffffff" opacity="0.5"/>`
+  + `<circle cx="250" cy="430" r="14" fill="#FFF6D8" opacity="0.4"/></g>`
+  + `<g opacity="0.5" fill="#7FB85A"><path d="M50 360 q30 -18 42 6 q-30 18 -42 -6Z"/>`
+  + `<path d="M330 470 q26 -16 38 5 q-27 16 -38 -5Z"/></g></svg>`
 )}`;
 
 const DESKTOP_SKINS: { id: string; name: string; desc: string; swatch: string; config: Partial<OSTheme> }[] = [

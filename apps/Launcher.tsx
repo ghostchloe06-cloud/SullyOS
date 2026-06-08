@@ -29,6 +29,37 @@ const DesktopClock = React.memo(() => {
         : virtualTime.hours < 18 ? 'Good Afternoon'
         : 'Good Evening';
 
+    const hh = virtualTime.hours.toString().padStart(2, '0');
+    const mm = virtualTime.minutes.toString().padStart(2, '0');
+
+    // 动森彩蛋：NookPhone「居民代表」奶油时钟卡
+    if (theme.skin === 'animalcrossing') {
+        return (
+            <div className="mt-6 mb-4 animate-fade-in" style={{ color: '#5b4a2f' }}>
+                <div className="flex items-center gap-1.5 mb-1 text-[12px] font-bold tracking-wide">
+                    <span>🍃</span><span>{greeting}, Resident</span>
+                </div>
+                <div className="text-[10px] font-semibold tracking-[0.18em] uppercase mb-2.5 opacity-60">Resident Representative</div>
+                <div className="flex items-stretch gap-3 rounded-[1.6rem] p-4"
+                    style={{
+                        background: 'rgba(255,253,245,0.92)',
+                        border: '2px solid #e6dcc0',
+                        boxShadow: '0 10px 24px -12px rgba(120,90,40,0.45), inset 0 1px 0 rgba(255,255,255,0.7)',
+                    }}>
+                    <div className="flex flex-col justify-center pr-3 mr-1 border-r-2 border-[#ece2c8]">
+                        <span className="text-[13px] font-extrabold text-[#7cba4c] tracking-[0.15em]">{dayName.slice(0, 3)}</span>
+                        <span className="text-[15px] font-black text-[#6b5435] leading-tight">{dateNum} {monthName}</span>
+                    </div>
+                    <div className="flex-1 flex items-center justify-end">
+                        <span className="text-[3.4rem] leading-none font-black text-[#6b5435]" style={{ fontFeatureSettings: '"tnum"' }}>
+                            {hh}<span className="text-[#7cba4c] mx-0.5 animate-pulse">:</span>{mm}
+                        </span>
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
     return (
         <div className="flex flex-col mb-4 mt-5 relative animate-fade-in" style={{ color: contentColor }}>
             {/* 顶部装饰 — 状态胶囊 + 细线 */}
@@ -90,12 +121,18 @@ const CharacterWidget = React.memo(({
     onClick: () => void,
     contentColor: string
 }) => {
+    const { theme } = useOS();
+    const acnh = theme.skin === 'animalcrossing'; // 动森彩蛋：奶油木质角色卡
     return (
         <div className="mb-3 group animate-fade-in">
              <div
                 className="relative h-24 w-full overflow-hidden rounded-3xl cursor-pointer transition-transform duration-300 active:scale-[0.98]"
                 onClick={onClick}
-                style={{
+                style={acnh ? {
+                    background: 'rgba(255,253,245,0.92)',
+                    border: '2px solid #e6dcc0',
+                    boxShadow: '0 10px 24px -12px rgba(120,90,40,0.4), inset 0 1px 0 rgba(255,255,255,0.7)',
+                } : {
                     background: 'rgba(255,255,255,0.08)',
                     backdropFilter: 'blur(24px) saturate(1.4)',
                     WebkitBackdropFilter: 'blur(24px) saturate(1.4)',
@@ -103,8 +140,8 @@ const CharacterWidget = React.memo(({
                     boxShadow: '0 8px 32px rgba(0,0,0,0.15), inset 0 1px 0 rgba(255,255,255,0.08)',
                 }}
              >
-                 {/* 背景虚化角色头像 */}
-                 {char?.avatar && (
+                 {/* 背景虚化角色头像（动森模式下省略，避免糊在奶油底上） */}
+                 {!acnh && char?.avatar && (
                      <div className="absolute inset-0 opacity-25 pointer-events-none"
                          style={{
                              backgroundImage: `url(${char.avatar})`,
@@ -119,8 +156,8 @@ const CharacterWidget = React.memo(({
                      {/* 头像 */}
                      <div className="w-[68px] h-[68px] shrink-0 rounded-2xl overflow-hidden relative bg-slate-800"
                          style={{
-                             border: '1.5px solid rgba(255,255,255,0.25)',
-                             boxShadow: '0 4px 14px rgba(0,0,0,0.25)',
+                             border: acnh ? '2px solid #e6dcc0' : '1.5px solid rgba(255,255,255,0.25)',
+                             boxShadow: acnh ? '0 4px 12px -4px rgba(120,90,40,0.35)' : '0 4px 14px rgba(0,0,0,0.25)',
                          }}>
                          {char ? (
                              <img src={char.avatar} className="w-full h-full object-cover" alt="char" loading="lazy" />
@@ -145,7 +182,7 @@ const CharacterWidget = React.memo(({
                                      style={{ background: 'rgba(239,68,68,0.9)', color: 'white' }}>NEW</div>
                              ) : (
                                  <div className="px-1.5 py-px rounded-full text-[8px] font-bold uppercase tracking-[0.15em]"
-                                     style={{ background: 'rgba(255,255,255,0.18)' }}>Online</div>
+                                     style={acnh ? { background: '#7cba4c', color: 'white' } : { background: 'rgba(255,255,255,0.18)' }}>Online</div>
                              )}
                          </div>
                          <div className="text-xs line-clamp-2 font-medium leading-relaxed opacity-85">
@@ -547,6 +584,7 @@ const Launcher: React.FC = () => {
   };
 
   const contentColor = theme.contentColor || '#ffffff';
+  const acnh = theme.skin === 'animalcrossing'; // 动森彩蛋：Dock 换奶油木质底
   const launcherBottomInset = 'calc(var(--safe-bottom) + 1.25rem)';
   
   const totalUnread = Object.values(unreadMessages).reduce((a, b) => a + b, 0);
@@ -728,7 +766,10 @@ const Launcher: React.FC = () => {
            className="mt-auto flex justify-center w-full px-4 relative z-30"
            style={{ paddingBottom: launcherBottomInset }}
       >
-           <div className="bg-white/30 rounded-[1.75rem] border border-white/25 shadow-[0_8px_40px_rgba(0,0,0,0.22),inset_0_1px_0_rgba(255,255,255,0.08)] px-4 py-3 flex gap-3 sm:gap-6 items-center mx-auto max-w-full justify-between overflow-x-auto no-scrollbar transform-gpu">
+           <div
+             className={`rounded-[1.75rem] px-4 py-3 flex gap-3 sm:gap-6 items-center mx-auto max-w-full justify-between overflow-x-auto no-scrollbar transform-gpu ${acnh ? '' : 'bg-white/30 border border-white/25 shadow-[0_8px_40px_rgba(0,0,0,0.22),inset_0_1px_0_rgba(255,255,255,0.08)]'}`}
+             style={acnh ? { background: 'rgba(255,253,245,0.9)', border: '2px solid #e6dcc0', boxShadow: '0 10px 30px -12px rgba(120,90,40,0.4)' } : undefined}
+           >
                {dockAppsConfig.map(app => (
                    <div key={app.id} className="relative">
                         <AppIcon app={app} onClick={() => openApp(app.id)} variant="dock" size="md" />
