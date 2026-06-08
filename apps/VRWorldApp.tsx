@@ -2474,6 +2474,7 @@ const SettingsView: React.FC<{
                 actions={[
                     { label: '随机一个房间', onClick: () => go() },
                     ...(novelCount > 0 ? [{ label: '图书馆 · 读书写批注', onClick: () => go('library') }] : []),
+                    { label: '剧院 · 写剧本投稿', onClick: () => go('theater') },
                     { label: '听歌房 · 点歌锐评', onClick: () => go('music') },
                     { label: '留言簿 · 发帖版聊', onClick: () => go('guestbook') },
                     { label: '娱乐室 · 放开玩', onClick: () => go('gym') },
