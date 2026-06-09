@@ -326,19 +326,28 @@ const ImportRecoveryPopup: React.FC<{
   );
 };
 
-// App 懒加载时的占位：居中三点轻脉冲，配合外壳的毛玻璃背景不抢戏。
-// chunk 命中缓存后几乎一闪而过，仅首次打开某 App 时短暂可见。
+// App 懒加载占位：关键是「延迟出现」。chunk 命中缓存/快速加载只需几十毫秒，这种时长用户
+// 本就无感——但 Suspense fallback 会立刻渲染，三个点一闪反而把无感瞬切变成能被看见的打断
+// （loading spinner 闪烁反模式）。所以前 ~220ms 一律渲染空（无感），只有真的慢才柔和淡出三点。
 // 用内联 @keyframes 而非 Tailwind 自定义 animate-* —— CDN 版 Tailwind 不可靠生成自定义动画类。
-const AppLoadingFallback: React.FC = () => (
-  <div className="w-full h-full flex items-center justify-center bg-transparent">
-    <style>{`@keyframes appLoadDot{0%,80%,100%{opacity:.3;transform:scale(.8)}40%{opacity:1;transform:scale(1.1)}}`}</style>
-    <div className="flex items-center gap-1.5">
-      <span className="w-2.5 h-2.5 rounded-full bg-primary/70" style={{ animation: 'appLoadDot 1.2s ease-in-out infinite' }} />
-      <span className="w-2.5 h-2.5 rounded-full bg-primary/70" style={{ animation: 'appLoadDot 1.2s ease-in-out infinite', animationDelay: '160ms' }} />
-      <span className="w-2.5 h-2.5 rounded-full bg-primary/70" style={{ animation: 'appLoadDot 1.2s ease-in-out infinite', animationDelay: '320ms' }} />
+const AppLoadingFallback: React.FC = () => {
+  const [show, setShow] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => setShow(true), 220);
+    return () => clearTimeout(t);
+  }, []);
+  if (!show) return null;
+  return (
+    <div className="w-full h-full flex items-center justify-center bg-transparent" style={{ animation: 'appLoadIn 220ms ease-out both' }}>
+      <style>{`@keyframes appLoadIn{from{opacity:0}to{opacity:1}}@keyframes appLoadDot{0%,80%,100%{opacity:.3;transform:scale(.8)}40%{opacity:1;transform:scale(1.1)}}`}</style>
+      <div className="flex items-center gap-1.5">
+        <span className="w-2.5 h-2.5 rounded-full bg-primary/70" style={{ animation: 'appLoadDot 1.2s ease-in-out infinite' }} />
+        <span className="w-2.5 h-2.5 rounded-full bg-primary/70" style={{ animation: 'appLoadDot 1.2s ease-in-out infinite', animationDelay: '160ms' }} />
+        <span className="w-2.5 h-2.5 rounded-full bg-primary/70" style={{ animation: 'appLoadDot 1.2s ease-in-out infinite', animationDelay: '320ms' }} />
+      </div>
     </div>
-  </div>
-);
+  );
+};
 
 const PhoneShell: React.FC = () => {
   const { theme, isLocked, unlock, activeApp, closeApp, openApp, virtualTime, isDataLoaded, toasts, unreadMessages, characters, handleBack, suspendedCall, resumeCall, activeCharacterId, errorDialog, dismissError } = useOS();
