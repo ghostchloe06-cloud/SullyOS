@@ -152,16 +152,19 @@ const VRWorldApp: React.FC = () => {
     const loadFeed = useCallback(async () => {
         const items: FeedItem[] = [];
         for (const c of characters) {
-            // includeProcessed=true：彼方动态必须无视记忆宫殿高水位线（mp_lastMsgId_<charId>）。
-            // 否则角色一聊天，记忆宫殿管线就把高水位推过这些 vr_card 的 id，
-            // getRecentMessagesByCharId 默认会把 id<=hwm 的消息全过滤掉，
-            // 动态流就会在"不知道什么时候"（后台向量化跑完时）突然清零——尽管消息其实还在 IndexedDB 里。
-            // 同时把窗口从 40 放大到 200，避免最近一条动态被大量普通聊天挤出取数窗口。
-            const msgs = await DB.getRecentMessagesByCharId(c.id, 200, true);
+            // 彼方动态取数走 getVRCardsByCharId：全量捞该角色的 vr_card，不受"最近 N 条窗口"、
+            // 记忆宫殿高水位线（mp_lastMsgId_<charId>）、归档隐藏起点（hideBeforeMessageId）影响。
+            // 这些机制只管「LLM 上下文能不能看到」——而彼方动态是用户自己的浏览界面，
+            // 只要消息还在 IndexedDB 里就该一直能看到：
+            //   · 记忆宫殿后台向量化推高水位 → 动态不该突然清零；
+            //   · 角色记忆归档把旧聊天标记为"对 AI 隐藏" → 这些动态依旧存在，用户仍要能回看；
+            //   · 聊天攒多了把旧 vr_card 挤出最近窗口 → 不该因此从动态流消失。
+            // （清空聊天会真删消息，删掉就没了——那是预期行为，逻辑不变。）
+            const msgs = await DB.getVRCardsByCharId(c.id);
             for (const m of msgs) {
                 // 用户在留言簿的发言会广播进每个角色的 vr_card（供 LLM 上下文用），
                 // 但它不是"角色自己的动态"——不进动态流，也不当作 chibi 气泡。
-                if (m.type === 'vr_card' && m.metadata?.vrCard && !m.metadata?.userBoardPost) {
+                if (!m.metadata?.userBoardPost) {
                     items.push({ msgId: m.id, charId: c.id, charName: c.name, avatar: c.avatar, timestamp: m.timestamp, meta: m.metadata as VRCardMeta, content: m.content });
                 }
             }

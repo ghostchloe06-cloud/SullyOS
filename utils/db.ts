@@ -470,6 +470,27 @@ export const DB = {
     });
   },
 
+  // 彼方动态专用：捞某角色全部 vr_card，不受"最近 N 条窗口"、记忆宫殿高水位
+  // （mp_lastMsgId）、归档隐藏起点（char.hideBeforeMessageId）影响。
+  // 这些机制只管「LLM 上下文能否看到」；彼方动态是用户自己的浏览界面，
+  // 只要消息还在 IndexedDB 里就应当永远可见——哪怕它早被新聊天挤出聊天取数窗口、
+  // 或被归档标记为「对 AI 隐藏」。（清空聊天会真删消息，删掉就没了——那是预期行为。）
+  getVRCardsByCharId: async (charId: string): Promise<Message[]> => {
+    const db = await openDB();
+    return new Promise((resolve, reject) => {
+      const transaction = db.transaction(STORE_MESSAGES, 'readonly');
+      const store = transaction.objectStore(STORE_MESSAGES);
+      const index = store.index('charId');
+      const request = index.getAll(IDBKeyRange.only(charId));
+      request.onsuccess = () => {
+          const results = (request.result || []).filter((m: Message) =>
+              !m.groupId && m.type === 'vr_card' && (m as any).metadata?.vrCard);
+          resolve(results);
+      };
+      request.onerror = () => reject(request.error);
+    });
+  },
+
   // Same as getRecentMessagesByCharId but also returns the total count (for UI display)
   getRecentMessagesWithCount: async (charId: string, limit: number): Promise<{ messages: Message[], totalCount: number }> => {
     const db = await openDB();
