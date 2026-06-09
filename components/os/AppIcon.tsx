@@ -4,6 +4,7 @@ import { AppConfig } from '../../types';
 import { Icons } from '../../constants';
 import { useOS } from '../../context/OSContext';
 import { getAcnhIcon } from './acnhIcons';
+import { preloadApp } from './appPreload';
 
 interface AppIconProps {
   app: AppConfig;
@@ -41,6 +42,7 @@ const AppIcon: React.FC<AppIconProps> = React.memo(({ app, onClick, size = 'md',
     return (
       <button
         onClick={onClick}
+        onPointerDown={() => preloadApp(app.id)}
         className="flex flex-col items-center gap-1.5 group relative active:scale-95 transition-transform duration-200"
         style={{ WebkitTapHighlightColor: 'transparent' }}
       >
@@ -66,8 +68,9 @@ const AppIcon: React.FC<AppIconProps> = React.memo(({ app, onClick, size = 'md',
   }
 
   return (
-    <button 
+    <button
       onClick={onClick}
+      onPointerDown={() => preloadApp(app.id)}
       className="flex flex-col items-center gap-1.5 group relative active:scale-95 transition-transform duration-200"
       style={{ WebkitTapHighlightColor: 'transparent' }}
     >
