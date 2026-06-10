@@ -860,7 +860,7 @@ function buildSessionContext({
   metadata
 }) {
   const llmOutputText = readLlmOutputText(llmResponse);
-  const ctx = {
+  const ctx2 = {
     sessionId,
     charId,
     messages,
@@ -871,7 +871,7 @@ function buildSessionContext({
     contactName,
     avatarUrl: avatarUrl || void 0
   };
-  return Object.freeze(ctx);
+  return Object.freeze(ctx2);
 }
 function readLlmOutputText(llmResponse) {
   if (!llmResponse || typeof llmResponse !== "object") return "";
@@ -980,22 +980,22 @@ function ensureStableMessageId(push) {
     { ...obj, messageId: `msg_${randomUUID()}` }
   );
 }
-async function deliverPush(push, payload, ctx, sessionId) {
-  if (ctx.deliver) {
-    await ctx.deliver(push);
+async function deliverPush(push, payload, ctx2, sessionId) {
+  if (ctx2.deliver) {
+    await ctx2.deliver(push);
   } else {
-    await sendPushWithMaybeBlob(ensureStableMessageId(push), payload, ctx, sessionId);
+    await sendPushWithMaybeBlob(ensureStableMessageId(push), payload, ctx2, sessionId);
   }
 }
-async function sendPushesSequentially(pushPayloads, payload, ctx, sessionId, sleep) {
+async function sendPushesSequentially(pushPayloads, payload, ctx2, sessionId, sleep) {
   const total = pushPayloads.length;
-  const spacingMs = Number.isFinite(ctx.spacingMs) && ctx.spacingMs >= 0 ? ctx.spacingMs : SLEEP_BETWEEN_MESSAGES_MS;
+  const spacingMs = Number.isFinite(ctx2.spacingMs) && ctx2.spacingMs >= 0 ? ctx2.spacingMs : SLEEP_BETWEEN_MESSAGES_MS;
   for (let i = 0; i < total; i++) {
     const push = { ...pushPayloads[i] };
     push.messageIndex = i + 1;
     push.totalMessages = total;
     try {
-      await deliverPush(push, payload, ctx, sessionId);
+      await deliverPush(push, payload, ctx2, sessionId);
     } catch (err) {
       if (err && (err.code === "HOOK_THREW" || err.code === "PAYLOAD_TOO_LARGE")) {
         throw err;
@@ -1013,8 +1013,8 @@ async function sendPushesSequentially(pushPayloads, payload, ctx, sessionId, sle
   }
   return total;
 }
-async function emitReasoning(reasoningPush, payload, ctx, sessionId) {
-  await deliverPush(reasoningPush, payload, ctx, sessionId);
+async function emitReasoning(reasoningPush, payload, ctx2, sessionId) {
+  await deliverPush(reasoningPush, payload, ctx2, sessionId);
   return 1;
 }
 function normalizeAiApiUrl(apiUrl) {
@@ -1129,18 +1129,18 @@ function stripReasoningTags(content) {
   if (typeof content !== "string" || !content.includes("<")) return content;
   return content.replace(REASONING_TAG_RE_G, "").trim();
 }
-async function processInstantMessage(payload, ctx) {
-  if (!ctx.onLLMOutput && !ctx.isResume) {
-    return runLegacyInstant(payload, ctx);
+async function processInstantMessage(payload, ctx2) {
+  if (!ctx2.onLLMOutput && !ctx2.isResume) {
+    return runLegacyInstant(payload, ctx2);
   }
-  return runAgenticLoop(payload, ctx);
+  return runAgenticLoop(payload, ctx2);
 }
-async function runLegacyInstant(payload, ctx) {
-  const fetchImpl = ctx.fetch || globalThis.fetch;
-  const sleep = ctx.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
-  const onEvent = typeof ctx.onEvent === "function" ? ctx.onEvent : () => {
+async function runLegacyInstant(payload, ctx2) {
+  const fetchImpl = ctx2.fetch || globalThis.fetch;
+  const sleep = ctx2.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
+  const onEvent = typeof ctx2.onEvent === "function" ? ctx2.onEvent : () => {
   };
-  const spacingMs = Number.isFinite(ctx.spacingMs) && ctx.spacingMs >= 0 ? ctx.spacingMs : SLEEP_BETWEEN_MESSAGES_MS;
+  const spacingMs = Number.isFinite(ctx2.spacingMs) && ctx2.spacingMs >= 0 ? ctx2.spacingMs : SLEEP_BETWEEN_MESSAGES_MS;
   const sessionId = typeof payload.sessionId === "string" && payload.sessionId ? payload.sessionId : `sess_${randomUUID()}`;
   let llmResponse;
   let messageContent;
@@ -1181,7 +1181,7 @@ async function runLegacyInstant(payload, ctx) {
     });
     let reasoningShipped = false;
     try {
-      await emitReasoning(reasoningPush, payload, ctx, sessionId);
+      await emitReasoning(reasoningPush, payload, ctx2, sessionId);
       reasoningShipped = true;
       onEvent({ type: "reasoning_pushed", sessionId });
     } catch (err) {
@@ -1214,7 +1214,7 @@ async function runLegacyInstant(payload, ctx) {
       metadata
     });
     try {
-      await deliverPush(contentPush, payload, ctx, sessionId);
+      await deliverPush(contentPush, payload, ctx2, sessionId);
       onEvent({ type: "push_sent", messageIndex: i + 1, totalMessages: messages.length, sessionId });
     } catch (err) {
       if (err && err.code === "PAYLOAD_TOO_LARGE") throw err;
@@ -1234,15 +1234,15 @@ async function runLegacyInstant(payload, ctx) {
     sessionId
   };
 }
-async function runAgenticLoop(payload, ctx) {
-  const fetchImpl = ctx.fetch || globalThis.fetch;
-  const sleep = ctx.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
-  const onEvent = typeof ctx.onEvent === "function" ? ctx.onEvent : () => {
+async function runAgenticLoop(payload, ctx2) {
+  const fetchImpl = ctx2.fetch || globalThis.fetch;
+  const sleep = ctx2.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
+  const onEvent = typeof ctx2.onEvent === "function" ? ctx2.onEvent : () => {
   };
-  const maxLoopIterations = Number.isInteger(ctx.maxLoopIterations) && ctx.maxLoopIterations > 0 ? ctx.maxLoopIterations : DEFAULT_MAX_LOOP_ITERATIONS;
+  const maxLoopIterations = Number.isInteger(ctx2.maxLoopIterations) && ctx2.maxLoopIterations > 0 ? ctx2.maxLoopIterations : DEFAULT_MAX_LOOP_ITERATIONS;
   const sessionId = typeof payload.sessionId === "string" && payload.sessionId ? payload.sessionId : randomUUID();
-  const autoEmitReasoning = ctx.autoEmitReasoning !== false;
-  if (ctx.isResume) {
+  const autoEmitReasoning = ctx2.autoEmitReasoning !== false;
+  if (ctx2.isResume) {
     onEvent({ type: "continue_received", sessionId, iteration: payload.iteration ?? 0 });
   }
   let messages = Array.isArray(payload.messages) ? payload.messages.slice() : [];
@@ -1282,7 +1282,7 @@ async function runAgenticLoop(payload, ctx) {
           metadata: payload.metadata || {}
         });
         try {
-          await emitReasoning(reasoningPush, payload, ctx, sessionId);
+          await emitReasoning(reasoningPush, payload, ctx2, sessionId);
           onEvent({ type: "reasoning_pushed", sessionId, iteration });
         } catch (err) {
           onEvent({ type: "reasoning_push_failed", sessionId, iteration, cause: err });
@@ -1301,7 +1301,7 @@ async function runAgenticLoop(payload, ctx) {
     });
     let decision;
     try {
-      decision = await ctx.onLLMOutput(sessionCtx);
+      decision = await ctx2.onLLMOutput(sessionCtx);
       assertValidDecision(decision);
     } catch (err) {
       onEvent({ type: "hook_threw", sessionId, iteration, cause: err });
@@ -1316,7 +1316,7 @@ async function runAgenticLoop(payload, ctx) {
         timestamp: (/* @__PURE__ */ new Date()).toISOString()
       });
       try {
-        await deliverPush(diagnostic2, payload, ctx, sessionId);
+        await deliverPush(diagnostic2, payload, ctx2, sessionId);
       } catch (pushErr) {
         onEvent({ type: "diagnostic_push_failed", code: "HOOK_THREW", sessionId, cause: pushErr });
       }
@@ -1333,7 +1333,7 @@ async function runAgenticLoop(payload, ctx) {
     const messagesSent = await sendPushesSequentially(
       decision.pushPayloads,
       payload,
-      ctx,
+      ctx2,
       sessionId,
       sleep
     );
@@ -1357,7 +1357,7 @@ async function runAgenticLoop(payload, ctx) {
     timestamp: (/* @__PURE__ */ new Date()).toISOString()
   });
   try {
-    await deliverPush(diagnostic, payload, ctx, sessionId);
+    await deliverPush(diagnostic, payload, ctx2, sessionId);
   } catch (err) {
     onEvent({ type: "diagnostic_push_failed", code: "LOOP_EXCEEDED", sessionId, cause: err });
   }
@@ -1429,10 +1429,10 @@ function stringifyForError(value) {
     return String(value);
   }
 }
-async function sendPushWithMaybeBlob(pushPayload, payload, ctx, sessionId) {
-  const onEvent = typeof ctx.onEvent === "function" ? ctx.onEvent : () => {
+async function sendPushWithMaybeBlob(pushPayload, payload, ctx2, sessionId) {
+  const onEvent = typeof ctx2.onEvent === "function" ? ctx2.onEvent : () => {
   };
-  const fetchImpl = ctx.fetch || globalThis.fetch;
+  const fetchImpl = ctx2.fetch || globalThis.fetch;
   let serialized;
   try {
     serialized = JSON.stringify(pushPayload);
@@ -1443,18 +1443,18 @@ async function sendPushWithMaybeBlob(pushPayload, payload, ctx, sessionId) {
     throw new HookError("pushPayload serialized to a non-string (likely `undefined`)");
   }
   const byteLen = PUSH_PAYLOAD_BYTE_ENCODER.encode(serialized).byteLength;
-  const maxInline = ctx.blobStore && Number.isInteger(ctx.blobStore.maxInlineBytes) && ctx.blobStore.maxInlineBytes > 0 ? ctx.blobStore.maxInlineBytes : DEFAULT_MAX_INLINE_BYTES;
+  const maxInline = ctx2.blobStore && Number.isInteger(ctx2.blobStore.maxInlineBytes) && ctx2.blobStore.maxInlineBytes > 0 ? ctx2.blobStore.maxInlineBytes : DEFAULT_MAX_INLINE_BYTES;
   if (byteLen <= maxInline) {
     await sendWebPush({
       subscription: payload.pushSubscription,
       payload: serialized,
-      vapid: ctx.vapid,
+      vapid: ctx2.vapid,
       fetch: fetchImpl
     });
     return;
   }
-  if (!ctx.blobStore || !ctx.blobStore.adapter) {
-    const multipart = resolveRuntimeMultipartOptions(ctx);
+  if (!ctx2.blobStore || !ctx2.blobStore.adapter) {
+    const multipart = resolveRuntimeMultipartOptions(ctx2);
     if (!multipart.enabled) {
       onEvent({ type: "payload_too_large", byteLen, maxInline, sessionId });
       throw new PayloadTooLargeError(byteLen, maxInline);
@@ -1468,12 +1468,12 @@ async function sendPushWithMaybeBlob(pushPayload, payload, ctx, sessionId) {
       payload,
       serialized,
       sessionId,
-      vapid: ctx.vapid
+      vapid: ctx2.vapid
     });
     return;
   }
-  const adapter = ctx.blobStore.adapter;
-  const ttl = Number.isInteger(ctx.blobStore.ttlSeconds) && ctx.blobStore.ttlSeconds > 0 ? ctx.blobStore.ttlSeconds : DEFAULT_BLOB_TTL_SECONDS;
+  const adapter = ctx2.blobStore.adapter;
+  const ttl = Number.isInteger(ctx2.blobStore.ttlSeconds) && ctx2.blobStore.ttlSeconds > 0 ? ctx2.blobStore.ttlSeconds : DEFAULT_BLOB_TTL_SECONDS;
   const key = randomUUID();
   try {
     await adapter.put(key, serialized, ttl);
@@ -1482,7 +1482,7 @@ async function sendPushWithMaybeBlob(pushPayload, payload, ctx, sessionId) {
     throw new PayloadTooLargeError(byteLen, maxInline, { cause: err });
   }
   onEvent({ type: "blob_written", key, size: byteLen, sessionId });
-  const blobUrl = buildBlobUrl(ctx.requestUrl, key);
+  const blobUrl = buildBlobUrl(ctx2.requestUrl, key);
   const payloadObj = pushPayload && typeof pushPayload === "object" ? pushPayload : {};
   const envelope = {
     _blob: true,
@@ -1510,7 +1510,7 @@ async function sendPushWithMaybeBlob(pushPayload, payload, ctx, sessionId) {
     await sendWebPush({
       subscription: payload.pushSubscription,
       payload: JSON.stringify(envelope),
-      vapid: ctx.vapid,
+      vapid: ctx2.vapid,
       fetch: fetchImpl
     });
   } catch (err) {
@@ -1518,17 +1518,17 @@ async function sendPushWithMaybeBlob(pushPayload, payload, ctx, sessionId) {
     throw err;
   }
 }
-function resolveRuntimeMultipartOptions(ctx) {
-  const hasMultipart = ctx && ctx.multipart !== void 0;
-  const raw = hasMultipart ? ctx.multipart : {};
+function resolveRuntimeMultipartOptions(ctx2) {
+  const hasMultipart = ctx2 && ctx2.multipart !== void 0;
+  const raw = hasMultipart ? ctx2.multipart : {};
   const config = raw && typeof raw === "object" ? raw : {};
   let enabled = config.enabled !== false;
   let maxChunkBytes = config.maxChunkBytes;
-  if (ctx && ctx.reasoningChunkBytes !== void 0 && maxChunkBytes === void 0) {
-    if (ctx.reasoningChunkBytes === null) {
+  if (ctx2 && ctx2.reasoningChunkBytes !== void 0 && maxChunkBytes === void 0) {
+    if (ctx2.reasoningChunkBytes === null) {
       if (!hasMultipart) enabled = false;
     } else {
-      maxChunkBytes = ctx.reasoningChunkBytes;
+      maxChunkBytes = ctx2.reasoningChunkBytes;
     }
   }
   return {
@@ -2200,11 +2200,11 @@ async function verifyBearerToken(request, signingKey, respond) {
 function createCloudflareWorker(optionsBuilder) {
   let handler = null;
   return {
-    async fetch(request, env, ctx) {
+    async fetch(request, env, ctx2) {
       if (!handler) {
         handler = createInstantHandler(optionsBuilder(env || {}));
       }
-      return handler(request, ctx);
+      return handler(request, ctx2);
     }
   };
 }
@@ -2894,12 +2894,12 @@ async function cleanupExpiredD1Blobs(env) {
   });
   return d1CleanupPromise;
 }
-function scheduleD1BlobCleanup(env, ctx) {
+function scheduleD1BlobCleanup(env, ctx2) {
   if (!shouldUseD1BlobStore(env) || !env.DB) return;
   const now = Date.now();
   if (now - lastD1CleanupAt < D1_CLEANUP_INTERVAL_MS) return;
   lastD1CleanupAt = now;
-  ctx.waitUntil(cleanupExpiredD1Blobs(env));
+  ctx2.waitUntil(cleanupExpiredD1Blobs(env));
 }
 function utilityJson(status, body) {
   return new Response(JSON.stringify(body), {
@@ -3078,7 +3078,7 @@ async function runEmotionEval(body) {
   }
 }
 var src_default = {
-  fetch: async (request, env, ctx) => {
+  fetch: async (request, env, ctx2) => {
     const url = new URL(request.url);
     if (url.pathname === "/version") {
       return handleVersionRequest(request);
@@ -3094,23 +3094,23 @@ var src_default = {
     }
     const requestedEnv = withRequestOversizeTransport({ ...env }, body);
     const workerEnv = await prepareBlobStoreEnv(requestedEnv);
-    scheduleD1BlobCleanup(workerEnv, ctx);
-    return await cfWorker.fetch(request, workerEnv, ctx);
+    scheduleD1BlobCleanup(workerEnv, ctx2);
+    return await cfWorker.fetch(request, workerEnv, ctx2);
   },
   async scheduled(_event, env) {
     const workerEnv = await prepareBlobStoreEnv(env);
     await cleanupExpiredD1Blobs(workerEnv);
   }
 };
-async function onLLMOutput(ctx) {
+async function onLLMOutput(ctx2) {
   const decision = buildPushDecision({
-    llmOutputText: String(ctx.llmOutputText ?? ""),
-    sessionId: ctx.sessionId,
-    iteration: Number(ctx.iteration ?? 0),
-    contactName: ctx.contactName ?? "",
-    avatarUrl: ctx.avatarUrl ?? null,
+    llmOutputText: String(ctx2.llmOutputText ?? ""),
+    sessionId: ctx2.sessionId,
+    iteration: Number(ctx2.iteration ?? 0),
+    contactName: ctx2.contactName ?? "",
+    avatarUrl: ctx2.avatarUrl ?? null,
     // metadata 透传: 客户端 sendInstantPush 时塞了 charId; SW 路由要它分发到具体角色
-    callerMetadata: ctx.metadata && typeof ctx.metadata === "object" ? ctx.metadata : {}
+    callerMetadata: ctx2.metadata && typeof ctx2.metadata === "object" ? ctx2.metadata : {}
   });
   return decision;
 }
@@ -3221,7 +3221,26 @@ function warnIfPayloadLarge(payload, onSizeWarn) {
   } catch {
   }
 }
-export {
-  buildPushDecision,
-  src_default as default
+
+// worker/instant-push/src/deno.ts
+function readEnv() {
+  return {
+    VAPID_PUBLIC_KEY: Deno.env.get("VAPID_PUBLIC_KEY") ?? "",
+    VAPID_PRIVATE_KEY: Deno.env.get("VAPID_PRIVATE_KEY") ?? "",
+    VAPID_EMAIL: Deno.env.get("VAPID_EMAIL"),
+    AMSG_CLIENT_TOKEN: Deno.env.get("AMSG_CLIENT_TOKEN"),
+    AMSG_OVERSIZE_TRANSPORT: Deno.env.get("AMSG_OVERSIZE_TRANSPORT"),
+    AMSG_ENABLE_D1_BLOBSTORE: Deno.env.get("AMSG_ENABLE_D1_BLOBSTORE")
+    // DB 不给: D1 路径在 Deno 入口永远关闭
+  };
+}
+var pendingBackgroundWork = /* @__PURE__ */ new Set();
+var ctx = {
+  waitUntil(work) {
+    const tracked = work.catch(() => {
+    });
+    pendingBackgroundWork.add(tracked);
+    tracked.finally(() => pendingBackgroundWork.delete(tracked));
+  }
 };
+Deno.serve((request) => src_default.fetch(request, readEnv(), ctx));
