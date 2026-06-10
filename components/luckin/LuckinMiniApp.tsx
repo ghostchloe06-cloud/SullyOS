@@ -623,9 +623,12 @@ const ReviewStep: React.FC<{
                         <div className="text-[11px] text-amber-600 leading-relaxed whitespace-pre-wrap break-all">算价未通过 (可先按本地合计下单): {priceErr}</div>
                     ) : preview ? (
                         <>
-                            {original != null && <div className="flex justify-between text-[10px] text-slate-400"><span>商品总价</span><span>{fmtMoney(original)}</span></div>}
-                            {privilege != null && Number(privilege) > 0 && <div className="flex justify-between text-emerald-600"><span>优惠</span><span>-{fmtMoney(privilege)}</span></div>}
-                            {Array.isArray(preview.couponCodeList) && preview.couponCodeList.length > 0 && <div className="flex justify-between text-[11px] text-[#16386F]"><span>已用券</span><span>{preview.couponCodeList.length} 张</span></div>}
+                            {original != null && <div className="flex justify-between text-[10px] text-slate-400"><span>商品总价（面价）</span><span>{fmtMoney(original)}</span></div>}
+                            {privilege != null && Number(privilege) > 0 && <div className="flex justify-between text-emerald-600"><span>已优惠</span><span>-{fmtMoney(privilege)}</span></div>}
+                            {Array.isArray(preview.couponCodeList) && preview.couponCodeList.length > 0 && <div className="flex justify-between text-[11px] text-[#16386F]"><span>已自动用券</span><span>{preview.couponCodeList.length} 张</span></div>}
+                            {(!privilege || Number(privilege) <= 0) && !(Array.isArray(preview.couponCodeList) && preview.couponCodeList.length > 0) && (
+                                <div className="text-[10px] text-slate-400 leading-snug">本单暂无可用券 · 瑞幸券由你的账号/当前活动决定（previewOrder 已自动尝试，非系统问题）</div>
+                            )}
                             <div className="flex justify-between border-t border-[#EFE9DC] pt-1.5"><span className="text-slate-500">实付</span><span className="font-bold text-[#16386F]">{fmtMoney(finalPrice)}</span></div>
                         </>
                     ) : (
