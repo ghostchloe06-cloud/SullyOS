@@ -221,6 +221,13 @@ export async function runVRSession(deps: VRSessionDeps): Promise<VRSessionResult
         } else if (room.id === 'postoffice') {
             // 取一封"还没回过"的来信给角色看（有就可能回信，没有就写新信）
             const letters = await DB.getVRLetters();
+            // 写新信时可借的新闻热点（让"分享新闻/锐评热点"这类信有真实素材，否则模型只能瞎编）
+            let poHotTopics: string[] = [];
+            try {
+                const snap: any = await DB.getLatestHotNewsSnapshot();
+                const items: any[] = snap?.items || snap?.list || [];
+                poHotTopics = items.map(it => it?.title || it?.name || it?.desc).filter(Boolean);
+            } catch { /* 热点拉不到就不聊 */ }
             // 优先：认领自己寄出、已收到回信、还没读过的信 → 读回信、写感触、封存
             poReadTarget = letters.find(l => l.box === 'outbox' && l.status === 'archived'
                 && l.charId === char.id && (l.repliesReceived?.length || 0) > 0 && !l.reaction) || null;
@@ -231,7 +238,7 @@ export async function runVRSession(deps: VRSessionDeps): Promise<VRSessionResult
             if (forcedTarget) {
                 poTarget = forcedTarget;
                 poReadTarget = null; // 强制回信优先于"读自己收到的回信"
-                roomTurn = buildPostOfficeRoomTurn({ pen: forcedTarget.pen, content: forcedTarget.content }, char.name, true);
+                roomTurn = buildPostOfficeRoomTurn({ pen: forcedTarget.pen, content: forcedTarget.content }, char.name, true, poHotTopics);
             } else if (poReadTarget) {
                 roomTurn = buildPostOfficeReadTurn(
                     poReadTarget.content,
@@ -241,7 +248,7 @@ export async function runVRSession(deps: VRSessionDeps): Promise<VRSessionResult
             } else {
                 const targets = letters.filter(l => l.box === 'inbox' && (l.replyStatus ?? 'none') === 'none' && l.remoteLetterId);
                 poTarget = targets.length > 0 ? targets[Math.floor(Math.random() * targets.length)] : null;
-                roomTurn = buildPostOfficeRoomTurn(poTarget ? { pen: poTarget.pen, content: poTarget.content } : null, char.name);
+                roomTurn = buildPostOfficeRoomTurn(poTarget ? { pen: poTarget.pen, content: poTarget.content } : null, char.name, false, poHotTopics);
             }
             // 把"眼前这封信聊的是什么"塞进召回 query —— 邮局没有在场玩家，
             // 召回若只靠聊天历史就抓不到角色对信里话题的相关记忆/观点。
