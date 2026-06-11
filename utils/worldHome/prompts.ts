@@ -64,17 +64,32 @@ function describeHousing(world: WorldProfile, members: CharacterProfile[]): stri
     return lines.join('\n');
 }
 
-/** 与某角色相关的关系条文本（只给"自己和别人"的，不泄露他人之间的私密程度——那是别人的事）。 */
+const relTone = (v: number) => v >= 80 ? '非常亲近' : v >= 60 ? '关系不错' : v >= 40 ? '一般' : v >= 20 ? '有些疏远' : '关系紧张';
+
+/**
+ * 与某角色相关的关系条文本。关系是**有向**的（你对ta ≠ ta对你）：
+ *   - 你→别人：给精确的关系名 + 数值（这是你自己的内心，你当然清楚）
+ *   - 别人→你：只给粗粒度的"你能感觉到的态度"——对方心里的定位和具体程度是对方的
+ *     内心戏，给了数值就等于替这个角色开了上帝视角
+ *   - 他人之间的关系一概不给
+ */
 function describeRelationsFor(world: WorldProfile, charId: string, members: CharacterProfile[], npcNames: Map<string, string>): string {
     const nameOf = (id: string) => members.find(m => m.id === id)?.name || npcNames.get(id) || '';
-    const mine = world.relationships.filter(r => r.aId === charId || r.bId === charId);
-    if (mine.length === 0) return '（还没有建立明确的关系记录，凭你对他们的记忆与第一印象相处）';
-    return mine.map(r => {
-        const other = nameOf(r.aId === charId ? r.bId : r.aId);
-        if (!other) return null;
-        const tone = r.value >= 80 ? '非常亲近' : r.value >= 60 ? '关系不错' : r.value >= 40 ? '一般' : r.value >= 20 ? '有些疏远' : '关系紧张';
-        return `- 你和 ${other}：${r.label ? `${r.label}，` : ''}${tone}（${r.value}/100）`;
-    }).filter(Boolean).join('\n');
+    const outgoing = world.relationships.filter(r => r.fromId === charId);
+    const incoming = world.relationships.filter(r => r.toId === charId);
+    if (outgoing.length === 0 && incoming.length === 0) return '（还没有建立明确的关系记录，凭你对他们的记忆与第一印象相处）';
+    const lines: string[] = [];
+    for (const r of outgoing) {
+        const other = nameOf(r.toId);
+        if (!other) continue;
+        lines.push(`- 你对 ${other}：${r.label ? `${r.label}，` : ''}${relTone(r.value)}（${r.value}/100）`);
+    }
+    for (const r of incoming) {
+        const other = nameOf(r.fromId);
+        if (!other) continue;
+        lines.push(`- 你能隐约感觉到 ${other} 对你的态度：${relTone(r.value)}（只是体感，对方心里真正怎么想你并不知道）`);
+    }
+    return lines.join('\n');
 }
 
 /**

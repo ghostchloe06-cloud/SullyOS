@@ -61,17 +61,19 @@ const dispatch = (name: string, detail: any) => {
     try { window.dispatchEvent(new CustomEvent(name, { detail })); } catch { /* SSR */ }
 };
 
-/** 关系 delta 回填：键对无序（保存时 aId < bId），不存在则按 50 起步。 */
-function applyRelationshipDeltas(world: WorldProfile, beats: WorldCharBeat[], members: CharacterProfile[]): void {
+/**
+ * 关系 delta 回填。关系有向：A 的演绎里"和 B 关系 +2"只代表 **A 对 B** 的好感变了，
+ * B 对 A 怎么想由 B 自己的演绎轮决定——两边完全可以不对等。不存在的边按 50 起步。
+ */
+export function applyRelationshipDeltas(world: WorldProfile, beats: WorldCharBeat[], members: { id: string; name: string }[]): void {
     const idOf = (name: string) => members.find(m => m.name === name)?.id;
     for (const beat of beats) {
         for (const rd of beat.relationshipDeltas || []) {
             const otherId = idOf(rd.withName);
             if (!otherId || otherId === beat.charId) continue;
-            const [aId, bId] = [beat.charId, otherId].sort();
-            let rel = world.relationships.find(r => r.aId === aId && r.bId === bId);
+            let rel = world.relationships.find(r => r.fromId === beat.charId && r.toId === otherId);
             if (!rel) {
-                rel = { aId, bId, value: 50 };
+                rel = { fromId: beat.charId, toId: otherId, value: 50 };
                 world.relationships.push(rel);
             }
             rel.value = Math.max(0, Math.min(100, rel.value + rd.delta));

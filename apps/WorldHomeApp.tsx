@@ -78,7 +78,7 @@ const WorldEditor: React.FC<{
             upd({
                 memberIds: w.memberIds.filter(m => m !== id),
                 houses: w.houses.map(h => ({ ...h, residentIds: h.residentIds.filter(r => r !== id) })),
-                relationships: w.relationships.filter(r => r.aId !== id && r.bId !== id),
+                relationships: w.relationships.filter(r => r.fromId !== id && r.toId !== id),
             });
         } else {
             upd({ memberIds: [...w.memberIds, id] });
@@ -96,29 +96,24 @@ const WorldEditor: React.FC<{
         });
     };
 
-    // 成员两两关系（编辑用：自动补全缺失对）
+    // 成员两两关系（编辑用：每对展开成 A→B 和 B→A 两条有向边，可以不对等）
     const pairs = useMemo(() => {
         const out: { aId: string; bId: string; aName: string; bName: string }[] = [];
         for (let i = 0; i < members.length; i++) {
             for (let j = i + 1; j < members.length; j++) {
-                const [aId, bId] = [members[i].id, members[j].id].sort();
-                out.push({
-                    aId, bId,
-                    aName: members.find(m => m.id === aId)!.name,
-                    bName: members.find(m => m.id === bId)!.name,
-                });
+                out.push({ aId: members[i].id, bId: members[j].id, aName: members[i].name, bName: members[j].name });
             }
         }
         return out;
     }, [members]);
 
-    const relOf = (aId: string, bId: string) => w.relationships.find(r => r.aId === aId && r.bId === bId);
-    const updRel = (aId: string, bId: string, updates: { label?: string; value?: number }) => {
-        const existing = relOf(aId, bId);
+    const relOf = (fromId: string, toId: string) => w.relationships.find(r => r.fromId === fromId && r.toId === toId);
+    const updRel = (fromId: string, toId: string, updates: { label?: string; value?: number }) => {
+        const existing = relOf(fromId, toId);
         if (existing) {
-            upd({ relationships: w.relationships.map(r => (r.aId === aId && r.bId === bId) ? { ...r, ...updates } : r) });
+            upd({ relationships: w.relationships.map(r => (r.fromId === fromId && r.toId === toId) ? { ...r, ...updates } : r) });
         } else {
-            upd({ relationships: [...w.relationships, { aId, bId, value: 50, ...updates }] });
+            upd({ relationships: [...w.relationships, { fromId, toId, value: 50, ...updates }] });
         }
     };
 
@@ -211,22 +206,26 @@ const WorldEditor: React.FC<{
 
             {pairs.length > 0 && (
                 <div className={sectionCls}>
-                    <div className={labelCls}>初始关系（演绎会自动调整数值）</div>
-                    {pairs.map(p => {
-                        const rel = relOf(p.aId, p.bId);
-                        return (
-                            <div key={`${p.aId}_${p.bId}`} className="rounded-xl border border-emerald-200 bg-white p-2.5 space-y-1.5">
-                                <div className="flex items-center gap-2">
-                                    <span className="text-[12px] font-bold text-stone-700 shrink-0">{p.aName} × {p.bName}</span>
-                                    <input className="flex-1 min-w-0 px-2 py-0.5 rounded-lg bg-emerald-50/60 border border-emerald-100 text-[11px]" placeholder="关系名（挚友/死对头/暧昧中…）"
-                                        value={rel?.label || ''} onChange={e => updRel(p.aId, p.bId, { label: e.target.value })} />
-                                    <span className="text-[11px] text-emerald-700 font-bold w-7 text-right">{rel?.value ?? 50}</span>
-                                </div>
-                                <input type="range" min={0} max={100} value={rel?.value ?? 50} className="w-full accent-emerald-600"
-                                    onChange={e => updRel(p.aId, p.bId, { value: parseInt(e.target.value, 10) })} />
-                            </div>
-                        );
-                    })}
+                    <div className={labelCls}>初始关系（有向：两边可以不对等，比如单恋/单方面死对头；演绎会各自调整）</div>
+                    {pairs.map(p => (
+                        <div key={`${p.aId}_${p.bId}`} className="rounded-xl border border-emerald-200 bg-white p-2.5 space-y-2.5">
+                            {([[p.aId, p.bId, p.aName, p.bName], [p.bId, p.aId, p.bName, p.aName]] as const).map(([fromId, toId, fromName, toName]) => {
+                                const rel = relOf(fromId, toId);
+                                return (
+                                    <div key={`${fromId}_${toId}`} className="space-y-1.5">
+                                        <div className="flex items-center gap-2">
+                                            <span className="text-[12px] font-bold text-stone-700 shrink-0">{fromName} → {toName}</span>
+                                            <input className="flex-1 min-w-0 px-2 py-0.5 rounded-lg bg-emerald-50/60 border border-emerald-100 text-[11px]" placeholder={`${fromName} 眼中的关系（挚友/单恋/死对头…）`}
+                                                value={rel?.label || ''} onChange={e => updRel(fromId, toId, { label: e.target.value })} />
+                                            <span className="text-[11px] text-emerald-700 font-bold w-7 text-right">{rel?.value ?? 50}</span>
+                                        </div>
+                                        <input type="range" min={0} max={100} value={rel?.value ?? 50} className="w-full accent-emerald-600"
+                                            onChange={e => updRel(fromId, toId, { value: parseInt(e.target.value, 10) })} />
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    ))}
                 </div>
             )}
 
@@ -439,21 +438,36 @@ const WorldView: React.FC<{
                 })}
             </div>
 
-            {/* 关系条 */}
+            {/* 关系条（有向：同一对上下两根，直观看出不对等） */}
             {world.relationships.length > 0 && (
-                <div className="bg-white/70 rounded-2xl p-3.5 border border-emerald-100 space-y-2">
+                <div className="bg-white/70 rounded-2xl p-3.5 border border-emerald-100 space-y-3">
                     <div className="text-[11px] font-bold text-emerald-800/70 tracking-wide flex items-center gap-1"><UsersThree size={12} weight="bold" />关系</div>
-                    {world.relationships.map(r => (
-                        <div key={`${r.aId}_${r.bId}`}>
-                            <div className="flex justify-between text-[11px] text-stone-700">
-                                <span className="font-semibold">{nameOf(r.aId)} × {nameOf(r.bId)}{r.label ? ` · ${r.label}` : ''}</span>
-                                <span className="text-emerald-700 font-bold">{r.value}</span>
+                    {(() => {
+                        // 同一对的两条有向边排到一起展示
+                        const seen = new Set<string>();
+                        const groups: { fwd: typeof world.relationships[0]; rev?: typeof world.relationships[0] }[] = [];
+                        for (const r of world.relationships) {
+                            const key = [r.fromId, r.toId].sort().join('|');
+                            if (seen.has(key)) continue;
+                            seen.add(key);
+                            groups.push({ fwd: r, rev: world.relationships.find(x => x.fromId === r.toId && x.toId === r.fromId) });
+                        }
+                        return groups.map(({ fwd, rev }) => (
+                            <div key={`${fwd.fromId}_${fwd.toId}`} className="rounded-xl bg-emerald-50/50 border border-emerald-100 p-2.5 space-y-2">
+                                {[fwd, rev].filter(Boolean).map(r => (
+                                    <div key={`${r!.fromId}_${r!.toId}`}>
+                                        <div className="flex justify-between text-[11px] text-stone-700">
+                                            <span className="font-semibold">{nameOf(r!.fromId)} → {nameOf(r!.toId)}{r!.label ? ` · ${r!.label}` : ''}</span>
+                                            <span className="text-emerald-700 font-bold">{r!.value}</span>
+                                        </div>
+                                        <div className="h-1.5 rounded-full bg-emerald-100 overflow-hidden mt-1">
+                                            <div className="h-full bg-gradient-to-r from-emerald-400 to-amber-400" style={{ width: `${r!.value}%` }} />
+                                        </div>
+                                    </div>
+                                ))}
                             </div>
-                            <div className="h-1.5 rounded-full bg-emerald-100 overflow-hidden mt-1">
-                                <div className="h-full bg-gradient-to-r from-emerald-400 to-amber-400" style={{ width: `${r.value}%` }} />
-                            </div>
-                        </div>
-                    ))}
+                        ));
+                    })()}
                 </div>
             )}
 

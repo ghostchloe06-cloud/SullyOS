@@ -765,13 +765,13 @@ export interface WorldHouse {
     residentIds: string[];
 }
 
-/** 成员（或 NPC）两两之间的关系条。key 对无序：保存时始终 aId < bId。 */
+/** 成员（或 NPC）之间的**有向**关系条：from 对 to 的看法，与 to 对 from 的可以不对等。 */
 export interface WorldRelationship {
-    aId: string;
-    bId: string;
-    /** 关系名（挚友/死对头/暧昧中…），用户可编辑，演绎不强行改 */
+    fromId: string;
+    toId: string;
+    /** from 眼中这段关系的名字（我视ta为挚友 / ta是我死对头…），用户可编辑，演绎不强行改 */
     label?: string;
-    /** 0-100，演绎产出的 delta 会落在这里 */
+    /** 0-100，from 对 to 的好感/亲近度，演绎产出的 delta 会落在这里 */
     value: number;
 }
 

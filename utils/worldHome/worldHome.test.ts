@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { extractJson, parseCharBeat, parseNpcScene, storyTimeLabel, buildModeRule, buildWorldCharTurn } from './prompts';
+import { applyRelationshipDeltas } from './engine';
 import { WorldScheduler } from './scheduler';
 import type { CharacterProfile, WorldProfile } from '../../types';
 
@@ -125,12 +126,55 @@ describe('buildWorldCharTurn', () => {
         expect(turn).not.toContain('松弛'); // 心情属于内心状态，不外泄给其他角色
     });
 
+    it('关系有向：自己的视角带数值，对方对自己只有模糊体感（不泄露数值与关系名）', () => {
+        const world = mkWorld({
+            relationships: [
+                { fromId: 'a', toId: 'b', label: '单恋', value: 85 },
+                { fromId: 'b', toId: 'a', label: '普通同事', value: 30 },
+            ],
+        });
+        const members = [mkChar('a', '小满'), mkChar('b', '阿岚')];
+        const turn = buildWorldCharTurn({ world, char: members[0], members, storyTime: '第1天白天', beatsSoFar: [], userName: '' });
+        expect(turn).toContain('你对 阿岚：单恋，非常亲近（85/100）');
+        expect(turn).toContain('你能隐约感觉到 阿岚 对你的态度：有些疏远');
+        expect(turn).not.toContain('30/100');     // 对方的数值是对方的内心
+        expect(turn).not.toContain('普通同事');   // 对方眼中的关系名同理
+    });
+
     it('独居与同居安排都体现在 prompt 里', () => {
         const world = mkWorld({ houses: [{ id: 'h1', name: '合租屋', residentIds: ['a', 'b'] }], memberIds: ['a', 'b', 'c'] });
         const members = [mkChar('a', '小满'), mkChar('b', '阿岚'), mkChar('c', '十一')];
         const turn = buildWorldCharTurn({ world, char: members[0], members, storyTime: '第1天白天', beatsSoFar: [], userName: '' });
         expect(turn).toContain('合租屋：小满、阿岚 同住');
         expect(turn).toContain('十一 独居');
+    });
+});
+
+describe('applyRelationshipDeltas（有向回填）', () => {
+    const members = [{ id: 'a', name: '小满' }, { id: 'b', name: '阿岚' }];
+
+    it('只改"该角色→对方"这条边，反向不动', () => {
+        const world = mkWorld({
+            relationships: [
+                { fromId: 'a', toId: 'b', value: 60 },
+                { fromId: 'b', toId: 'a', value: 20 },
+            ],
+        });
+        applyRelationshipDeltas(world, [
+            { charId: 'a', charName: '小满', location: 'x', narrative: 'y', mood: 'z', relationshipDeltas: [{ withName: '阿岚', delta: 3 }] },
+        ], members);
+        expect(world.relationships.find(r => r.fromId === 'a' && r.toId === 'b')!.value).toBe(63);
+        expect(world.relationships.find(r => r.fromId === 'b' && r.toId === 'a')!.value).toBe(20);
+    });
+
+    it('不存在的边按 50 起步，且数值钳在 0-100', () => {
+        const world = mkWorld({ relationships: [{ fromId: 'a', toId: 'b', value: 99 }] });
+        applyRelationshipDeltas(world, [
+            { charId: 'a', charName: '小满', location: 'x', narrative: 'y', mood: 'z', relationshipDeltas: [{ withName: '阿岚', delta: 5 }] },
+            { charId: 'b', charName: '阿岚', location: 'x', narrative: 'y', mood: 'z', relationshipDeltas: [{ withName: '小满', delta: -4 }] },
+        ], members);
+        expect(world.relationships.find(r => r.fromId === 'a' && r.toId === 'b')!.value).toBe(100);
+        expect(world.relationships.find(r => r.fromId === 'b' && r.toId === 'a')!.value).toBe(46);
     });
 });
 

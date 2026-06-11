@@ -422,6 +422,27 @@ export const openDB = (): Promise<IDBDatabase> => {
   return promise;
 };
 
+/**
+ * 家园关系条读时迁移：早期格式是无序对 {aId,bId}（双方共用一个数值），
+ * 现为有向 {fromId,toId}（你对ta ≠ ta对你）。旧边拆成两条对称有向边，数值/关系名照抄，
+ * 之后各自的演绎会让两边自然分化。
+ */
+const normalizeWorldRelationships = (world: WorldProfile): WorldProfile => {
+    const rels = world.relationships || [];
+    if (!rels.some((r: any) => r.aId !== undefined)) return world;
+    const out: WorldProfile['relationships'] = [];
+    const has = (fromId: string, toId: string) => out.some(r => r.fromId === fromId && r.toId === toId);
+    for (const r of rels as any[]) {
+        if (r.aId !== undefined && r.bId !== undefined) {
+            if (!has(r.aId, r.bId)) out.push({ fromId: r.aId, toId: r.bId, label: r.label, value: r.value ?? 50 });
+            if (!has(r.bId, r.aId)) out.push({ fromId: r.bId, toId: r.aId, label: r.label, value: r.value ?? 50 });
+        } else if (r.fromId !== undefined && r.toId !== undefined && !has(r.fromId, r.toId)) {
+            out.push(r);
+        }
+    }
+    return { ...world, relationships: out };
+};
+
 export const DB = {
   deleteDB: async (): Promise<void> => {
       // 删库前先关掉单例连接, 否则这条还开着的连接会 block 掉 deleteDatabase。
@@ -1826,7 +1847,7 @@ export const DB = {
       if (!db.objectStoreNames.contains(STORE_WORLDS)) return [];
       return new Promise((resolve, reject) => {
           const request = db.transaction(STORE_WORLDS, 'readonly').objectStore(STORE_WORLDS).getAll();
-          request.onsuccess = () => resolve((request.result || []).sort((a: WorldProfile, b: WorldProfile) => b.updatedAt - a.updatedAt));
+          request.onsuccess = () => resolve((request.result || []).map(normalizeWorldRelationships).sort((a: WorldProfile, b: WorldProfile) => b.updatedAt - a.updatedAt));
           request.onerror = () => reject(request.error);
       });
   },
@@ -1836,7 +1857,7 @@ export const DB = {
       if (!db.objectStoreNames.contains(STORE_WORLDS)) return null;
       return new Promise((resolve, reject) => {
           const request = db.transaction(STORE_WORLDS, 'readonly').objectStore(STORE_WORLDS).get(id);
-          request.onsuccess = () => resolve(request.result || null);
+          request.onsuccess = () => resolve(request.result ? normalizeWorldRelationships(request.result) : null);
           request.onerror = () => reject(request.error);
       });
   },
