@@ -99,14 +99,6 @@ const Chat: React.FC = () => {
     const [showProactiveModal, setShowProactiveModal] = useState(false);
     const [showThinkingChainModal, setShowThinkingChainModal] = useState(false);
 
-    // 🛟 人格抢救 Modal：角色被"情感型 0.3"默认值卡住时，进聊天强制弹窗重跑一次检测
-    type PersonalityRescueState =
-        | { open: false }
-        | { open: true; charId: string; charName: string; phase: 'rescuing' }
-        | { open: true; charId: string; charName: string; phase: 'done'; result: { style: string; ruminationTendency: number; reasoning: string } }
-        | { open: true; charId: string; charName: string; phase: 'failed'; error: string };
-    const [personalityRescue, setPersonalityRescue] = useState<PersonalityRescueState>({ open: false });
-
     // Archive Prompts State
     const [archivePrompts, setArchivePrompts] = useState<{id: string, name: string, content: string}[]>(DEFAULT_ARCHIVE_PROMPTS);
     const [selectedPromptId, setSelectedPromptId] = useState<string>('preset_rational');
@@ -696,79 +688,6 @@ const Chat: React.FC = () => {
     // 不再受"当前是否开着该角色聊天页"限制). 之前这里有个 `charId === activeCharacterId` 守卫的
     // handler, 导致 instant 模式下用户不在该角色页时 buff 回不到前端 (只落 DB), 故移除, 同时
     // 避免和 OSContext 双写.
-
-    // 🛟 人格抢救：进聊天后发现角色被卡在"情感型 0.3"显示（真实存储可能是 emotional/0.3，
-    // 也可能是 undefined —— UI 的 `|| 'emotional'` 和 `?? 0.3` fallback 让两者看起来一样）。
-    // 触发后强制弹窗重跑一次检测，每个角色只抢救一次（rescuedKey）。
-    useEffect(() => {
-        if (!char) return;
-        const style = (char as any).personalityStyle;
-        const rumination = (char as any).ruminationTendency;
-        // v2：旧 silent rescue（4fec4d0）已经把 v1 设到一堆虽然仍是 emotional/0.3 的角色上了。
-        // 换 key 让所有用户都获得一次新的抢救机会，不再被历史标记卡死。
-        const rescuedKey = `mp_personality_rescued_v2_${char.id}`;
-        const alreadyRescued = !!localStorage.getItem(rescuedKey);
-
-        // 副 API 没配时 fallback 到主 apiConfig —— 跟 useChatAI.ts 里 mpLLM 的 fallback 策略对齐，
-        // 否则没配过记忆宫殿 lightLLM 的用户会整个抢救流程静默 pass，体感上就是"什么都没触发"。
-        const mpLLMConfigured = memoryPalaceConfig?.lightLLM;
-        const llmForRescue = (mpLLMConfigured?.baseUrl && mpLLMConfigured?.apiKey)
-            ? mpLLMConfigured
-            : (apiConfig?.baseUrl && apiConfig?.apiKey
-                ? { baseUrl: apiConfig.baseUrl, apiKey: apiConfig.apiKey, model: apiConfig.model }
-                : null);
-        const llmSource = (mpLLMConfigured?.baseUrl && mpLLMConfigured?.apiKey) ? 'lightLLM' : (llmForRescue ? 'apiConfig-fallback' : 'none');
-
-        // "UI 显示 情感型 0.3"的所有情况：
-        // - 完整命中 emotional + 0.3
-        // - 完全 undefined/null（从未检测过或失败后没写回）
-        // - 半命中（一项真实一项 fallback）—— 也按可疑处理
-        const styleSuspect = style === 'emotional' || style == null;
-        const rumSuspect = rumination === 0.3 || rumination == null;
-        const isSuspectDefault = styleSuspect && rumSuspect;
-
-        console.log(`🛟 [PersonalityRescue] 检查 ${char.name}: personalityStyle=${JSON.stringify(style)} ruminationTendency=${JSON.stringify(rumination)} suspectDefault=${isSuspectDefault} alreadyRescued=${alreadyRescued} llmSource=${llmSource}`);
-
-        if (!isSuspectDefault) return;
-        if (alreadyRescued) return;
-        if (!llmForRescue) {
-            console.warn(`🛟 [PersonalityRescue] ${char.name} 命中可疑默认值，但既没配副 API 也没配主 API，跳过抢救`);
-            return;
-        }
-
-        // 已经在抢救同一个角色就不重复触发
-        if (personalityRescue.open && personalityRescue.charId === char.id) return;
-
-        let cancelled = false;
-        const rescueCharId = char.id;
-        const rescueCharName = char.name;
-        const persona = [char.systemPrompt || '', char.worldview || ''].filter(Boolean).join('\n');
-
-        setPersonalityRescue({ open: true, charId: rescueCharId, charName: rescueCharName, phase: 'rescuing' });
-        console.log(`🛟 [PersonalityRescue] ${rescueCharName} 命中可疑默认值（情感型 0.3 或 undefined），使用 ${llmSource} 弹窗抢救中...`);
-
-        (async () => {
-            try {
-                const { detectPersonalityStyle } = await import('../utils/memoryPalace/digestion');
-                const result = await detectPersonalityStyle(rescueCharId, rescueCharName, persona, llmForRescue);
-                if (cancelled) return;
-                try { localStorage.setItem(rescuedKey, '1'); } catch {}
-                updateCharacter(rescueCharId, {
-                    personalityStyle: result.style,
-                    ruminationTendency: result.ruminationTendency,
-                } as any);
-                setPersonalityRescue({ open: true, charId: rescueCharId, charName: rescueCharName, phase: 'done', result });
-            } catch (e: any) {
-                if (cancelled) return;
-                // 抢救失败不设 rescuedKey —— 下次打开聊天再试一次
-                console.warn(`🛟 [PersonalityRescue] ${rescueCharName} 抢救失败:`, e?.message || e);
-                setPersonalityRescue({ open: true, charId: rescueCharId, charName: rescueCharName, phase: 'failed', error: e?.message || String(e) });
-            }
-        })();
-
-        return () => { cancelled = true; };
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [char?.id, (char as any)?.personalityStyle, (char as any)?.ruminationTendency, memoryPalaceConfig?.lightLLM?.baseUrl, memoryPalaceConfig?.lightLLM?.apiKey, apiConfig?.baseUrl, apiConfig?.apiKey]);
 
     const handleInputChange = (val: string) => {
         setInput(val);
@@ -2756,92 +2675,6 @@ const Chat: React.FC = () => {
                 onConfirmOrder={handleMcdAppConfirm}
             />
 
-
-            {/* 🛟 人格抢救 Modal —— 把"情感型 0.3"默认值卡住的角色偷偷救活 */}
-            <Modal
-                isOpen={personalityRescue.open}
-                title={
-                    personalityRescue.open && personalityRescue.phase === 'rescuing' ? '糯米鸡抢救中…' :
-                    personalityRescue.open && personalityRescue.phase === 'done' ? '抢救完成！' :
-                    personalityRescue.open && personalityRescue.phase === 'failed' ? '抢救失败' :
-                    '糯米鸡抢救中…'
-                }
-                onClose={() => {
-                    // rescuing 阶段不给关，必须看到结果；其它阶段允许关闭
-                    if (personalityRescue.open && personalityRescue.phase === 'rescuing') return;
-                    setPersonalityRescue({ open: false });
-                }}
-                footer={
-                    personalityRescue.open && personalityRescue.phase !== 'rescuing' ? (
-                        <button
-                            onClick={() => setPersonalityRescue({ open: false })}
-                            className="w-full py-3 bg-purple-600 text-white font-bold rounded-2xl active:scale-95 transition-transform"
-                        >
-                            好
-                        </button>
-                    ) : undefined
-                }
-            >
-                {personalityRescue.open && personalityRescue.phase === 'rescuing' && (
-                    <div className="space-y-3 py-2">
-                        <p className="text-sm text-slate-600 leading-relaxed text-center">
-                            角色的后台有点 bug，糯米鸡抢救一下，马上就好 ✨
-                        </p>
-                        <p className="text-xs text-slate-400 text-center">
-                            正在重新分析 <span className="font-semibold text-slate-600">{personalityRescue.charName}</span> 的认知风格…
-                        </p>
-                        <div className="flex justify-center pt-2">
-                            <div className="w-8 h-8 border-4 border-purple-200 border-t-purple-600 rounded-full animate-spin" />
-                        </div>
-                    </div>
-                )}
-                {personalityRescue.open && personalityRescue.phase === 'done' && (() => {
-                    const styleLabel =
-                        personalityRescue.result.style === 'emotional' ? '情感型' :
-                        personalityRescue.result.style === 'narrative' ? '叙事型' :
-                        personalityRescue.result.style === 'imagery' ? '意象型' :
-                        personalityRescue.result.style === 'analytical' ? '分析型' :
-                        personalityRescue.result.style;
-                    return (
-                        <div className="space-y-3 py-2">
-                            <p className="text-xs text-slate-400 text-center">
-                                <span className="font-semibold text-slate-600">{personalityRescue.charName}</span> 的认知参数已重新生成 🎉
-                            </p>
-                            <div className="bg-purple-50 rounded-2xl p-4 space-y-2 border border-purple-100">
-                                <div className="flex justify-between text-sm">
-                                    <span className="text-slate-500">认知风格</span>
-                                    <span className="font-bold text-purple-700">{styleLabel}</span>
-                                </div>
-                                <div className="flex justify-between text-sm">
-                                    <span className="text-slate-500">反刍倾向</span>
-                                    <span className="font-bold text-purple-700">{personalityRescue.result.ruminationTendency.toFixed(1)}</span>
-                                </div>
-                            </div>
-                            {personalityRescue.result.reasoning && (
-                                <p className="text-xs text-slate-500 leading-relaxed px-1">
-                                    <span className="text-slate-400">糯米鸡的判断：</span>
-                                    {personalityRescue.result.reasoning}
-                                </p>
-                            )}
-                        </div>
-                    );
-                })()}
-                {personalityRescue.open && personalityRescue.phase === 'failed' && (
-                    <div className="space-y-3 py-2">
-                        <p className="text-sm text-slate-600 text-center">
-                            糯米鸡也没救回来 😢
-                        </p>
-                        <p className="text-xs text-slate-400 leading-relaxed text-center">
-                            下次打开聊天再试一次，或去记忆宫殿检查一下副 API 配置。
-                        </p>
-                        <div className="bg-red-50 rounded-xl p-3 border border-red-100">
-                            <p className="text-[11px] text-red-600 break-all font-mono">
-                                {personalityRescue.error}
-                            </p>
-                        </div>
-                    </div>
-                )}
-            </Modal>
 
             {/* Forward Modal */}
             <Modal isOpen={showForwardModal} title="转发聊天记录" onClose={() => setShowForwardModal(false)}>
