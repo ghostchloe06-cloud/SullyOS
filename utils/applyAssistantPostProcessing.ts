@@ -571,6 +571,10 @@ export async function applyAssistantPostProcessing(
         } else {
             // ─── normal path (splitResponse → chunkText → per-chunk save) ───
             const parts = ChatParser.splitResponse(content);
+            // 模型常把 [[QUOTE:]] 单独写一行 (后面紧跟换行或 [[SEND_EMOJI:]]), chunkText/splitResponse
+            // 会把它拆成一个"只有标签没有正文"的 chunk — 剥标签后 hasDisplayContent 为 false 不落库,
+            // 解析出的引用目标若不暂存就会随之丢失。挂到下一条真正落库的文字气泡上。
+            let pendingReplyTarget: { id: number, content: string, name: string } | undefined;
             for (let partIndex = 0; partIndex < parts.length; partIndex++) {
                 const part = parts[partIndex];
 
@@ -601,16 +605,19 @@ export async function applyAssistantPostProcessing(
                             chunk = chunk.replace(QUOTE_CLEAN_DOUBLE, '').replace(QUOTE_CLEAN_SINGLE, '').replace(REPLY_CLEAN_CN, '').trim();
                         }
 
-                        const replyData = chunkReplyTarget;
+                        const replyData = chunkReplyTarget ?? pendingReplyTarget;
 
+                        let chunkSaved = false;
                         if (ChatParser.hasDisplayContent(chunk)) {
                             const cleanChunk = ChatParser.sanitize(chunk);
                             if (cleanChunk) {
                                 await DB.saveMessage({ charId: char.id, role: 'assistant', type: 'text', content: cleanChunk, replyTo: replyData, metadata: takeMeta(mcdInheritMeta) } as any);
                                 setMessages(await DB.getRecentMessagesByCharId(char.id, 200));
                                 globalMsgIndex++;
+                                chunkSaved = true;
                             }
                         }
+                        pendingReplyTarget = chunkSaved ? undefined : replyData;
                     }
                 }
             }
