@@ -1138,6 +1138,10 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
 
           for (const char of characters) {
               try {
+                  // 用户正在 DateApp 里和这个角色见面 —— 角色之前排好的定时消息
+                  // ([schedule_message] 指令) 这轮先压着不投递（不删不读），
+                  // 等用户离开见面界面后，下一轮 5s 检查会自然送达。
+                  if (activeAppRef.current === AppID.Date && activeCharIdScheduleRef.current === char.id) continue;
                   const dueMessages = await DB.getDueScheduledMessages(char.id);
                   if (cancelled) return;
                   if (dueMessages.length > 0) {
