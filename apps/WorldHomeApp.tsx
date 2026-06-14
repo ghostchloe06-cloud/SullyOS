@@ -1451,10 +1451,12 @@ const WorldHomeApp: React.FC<{ embedded?: boolean; onFullscreen?: (full: boolean
     const darkHeader = view === 'world' && worldNight;
     const headerBg = view === 'world'
         ? (worldNight ? '#11142a' : '#cfe7da')
-        : '#f3eee3';
+        : '#f1ebf9';
+    // 列表/编辑页用淡紫奇幻底，和「小小窝」选择页一致
+    const pageBg = view === 'edit' || view === 'list' ? 'linear-gradient(180deg,#efe9f7 0%,#f4eff9 45%,#f7f2fb 100%)' : undefined;
 
     return (
-        <div className="h-full w-full flex flex-col" style={{ background: view === 'edit' || view === 'list' ? '#f3eee3' : undefined }}>
+        <div className="h-full w-full flex flex-col" style={{ background: pageBg }}>
             <GameStyles />
             {/* 顶栏（内嵌进「小小窝」的家园分区时，列表页不再重复 ← 标题，只留齿轮/新建） */}
             <div className={`${embedded && view === 'list' ? 'h-12' : 'h-20'} flex items-end pb-3 px-4 shrink-0 sticky top-0 z-10`} style={{ background: headerBg }}>
@@ -1494,15 +1496,20 @@ const WorldHomeApp: React.FC<{ embedded?: boolean; onFullscreen?: (full: boolean
 
             {view === 'list' && (
                 <div className="flex-1 overflow-y-auto no-scrollbar px-4 pb-24 pt-1 space-y-3">
-                    {/* 游戏封面横幅 */}
-                    <div className="relative rounded-3xl overflow-hidden p-5 shadow-[0_10px_30px_rgba(20,30,60,.3)]" style={{ background: 'linear-gradient(150deg,#16203e 0%,#23315c 55%,#2c4a4f 100%)' }}>
+                    {/* 游戏封面横幅（淡紫梦幻：月亮 + 云霭 + 星点） */}
+                    <div className="relative rounded-3xl overflow-hidden p-5 shadow-[0_10px_30px_rgba(120,100,180,.25)]" style={{ background: 'linear-gradient(150deg,#8e83c4 0%,#a99fd6 52%,#c3c9ea 100%)' }}>
                         <div className="absolute inset-0 pointer-events-none" style={{ backgroundImage: starsBg, animation: 'wh-twinkle 4s ease-in-out infinite' }} />
+                        {/* 月亮 */}
+                        <div className="absolute top-5 right-7 w-12 h-12 rounded-full pointer-events-none" style={{ background: 'radial-gradient(circle at 38% 35%,#fbf7ff,#d9d2ee 70%)', boxShadow: '0 0 26px 6px rgba(255,255,255,.4)' }} />
+                        {/* 云霭 */}
+                        <div className="absolute -bottom-3 -left-4 w-40 h-16 rounded-full bg-white/30 blur-xl pointer-events-none" />
+                        <div className="absolute bottom-2 right-6 w-28 h-12 rounded-full bg-white/20 blur-lg pointer-events-none" />
                         <div className="relative">
-                            <div className="text-[9px] font-black tracking-[0.45em] text-amber-300/80 uppercase">World · Home</div>
-                            <div className="text-[26px] font-black text-white font-serif tracking-[0.18em] mt-1" style={{ textShadow: '0 2px 14px rgba(255,200,100,.25)' }}>家　园</div>
-                            <p className="text-[10.5px] leading-[1.7] text-indigo-100/70 mt-2">
+                            <div className="text-[9px] font-black tracking-[0.45em] text-white/70 uppercase">World · Home</div>
+                            <div className="text-[26px] font-black text-white font-serif tracking-[0.18em] mt-1" style={{ textShadow: '0 2px 14px rgba(90,60,140,.45)' }}>家　园</div>
+                            <p className="text-[10.5px] leading-[1.7] text-white/85 mt-2" style={{ textShadow: '0 1px 6px rgba(80,60,130,.3)' }}>
                                 把同一世界观的角色放进一个世界，让他们在你不看的时候慢慢生活。
-                                每次<b className="text-amber-200">观测</b>，世界推进一段（早/中/晚）——每个角色独立演绎，绝不上帝视角；
+                                每次<b className="text-amber-100">观测</b>，世界推进一段（早/中/晚）——每个角色独立演绎，绝不上帝视角；
                                 NPC 由世界引擎一口气演完。所有故事都会写回各自的聊天与记忆。
                             </p>
                         </div>
@@ -1513,9 +1520,9 @@ const WorldHomeApp: React.FC<{ embedded?: boolean; onFullscreen?: (full: boolean
                         const night = isNightClock(w.storyClock);
                         return (
                             <button key={w.id} onClick={() => { setActiveId(w.id); setView('world'); }}
-                                className="w-full rounded-2xl overflow-hidden text-left shadow-[0_4px_16px_rgba(60,50,30,.12)] active:scale-[0.99] transition-transform border border-white/60">
-                                {/* 世界缩略天空 */}
-                                <div className="relative h-14 flex items-end px-3.5 pb-1.5" style={{ background: night ? 'linear-gradient(180deg,#1a1f3c,#33395f)' : 'linear-gradient(180deg,#7cbbe4,#cfe9d6)' }}>
+                                className="w-full rounded-2xl overflow-hidden text-left shadow-[0_6px_18px_rgba(120,100,180,.18)] active:scale-[0.99] transition-transform border border-white/70">
+                                {/* 世界缩略天空（淡紫梦幻） */}
+                                <div className="relative h-14 flex items-end px-3.5 pb-1.5" style={{ background: night ? 'linear-gradient(180deg,#3a3566,#5b5590)' : 'linear-gradient(180deg,#b3a6dd,#d8d2ee)' }}>
                                     {night && <div className="absolute inset-0" style={{ backgroundImage: starsBg }} />}
                                     <div className="relative flex -space-x-3 items-end">
                                         {ms.slice(0, 5).map(m => <ChibiFigure key={m.id} char={m} size={42} />)}
