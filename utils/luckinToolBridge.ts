@@ -72,7 +72,7 @@ export const LUCKIN_SYSTEM_PROMPT = `
 - 拿不准的细节(冷热/糖度/杯型)按 TA 一贯偏好定; 真没头绪再用一句话确认。
 
 # 工具链 (你自己调, 别让用户调)
-1. **queryShopList**{ deptName?, longitude, latitude } 查门店, 拿 deptId。经纬度系统已在下方给你, 直接用。
+1. **queryShopList**{ deptName?, longitude, latitude } 查门店, 拿 deptId。经纬度系统已在下方给你, 直接用。**用户提到地点/商圈/门店名 (如"花溪公园附近""XX广场店") → 把那个词当 deptName 传** (瑞幸门店多按商圈命名, 能筛中); 用户没提门店 → 不传 deptName, 直接用当前经纬度取最近的店。
 2. **searchProductForMcp**{ deptId, query } 搜商品, 拿 productId+skuCode+productAttrs(规格)。
 3. **switchProduct**{ deptId, productId, skuCode, attrOperationParam:{attributeId, subAttr:{attributeId, operation:3}}, amount } 切规格(冰/热、杯型、糖度) —— **按 TA 偏好把规格调对**, 切完 skuCode 会变, 用新的。
 4. **queryProductDetailInfo**{ deptId, productId } 看商品全部规格。

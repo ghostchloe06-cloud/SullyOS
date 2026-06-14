@@ -16,6 +16,7 @@ import MessageItem from '../components/chat/MessageItem';
 import McdMiniApp from '../components/mcd/McdMiniApp';
 import LuckinMiniApp from '../components/luckin/LuckinMiniApp';
 import LuckinLocationModal from '../components/luckin/LuckinLocationModal';
+import LuckinHelpModal from '../components/luckin/LuckinHelpModal';
 import { PRESET_THEMES, DEFAULT_ARCHIVE_PROMPTS } from '../components/chat/ChatConstants';
 import ChatHeader from '../components/chat/ChatHeaderShell';
 import CharacterEntryTransition from '../components/chat/CharacterEntryTransition';
@@ -1073,6 +1074,7 @@ const Chat: React.FC = () => {
     // 瑞幸聊天点单模式: 激活态用 React state (临时会话态, 不落库)
     const [luckinMode, setLuckinMode] = useState(false);
     const [showLuckinLoc, setShowLuckinLoc] = useState(false); // 瑞一杯定位选择弹窗
+    const [showLuckinHelp, setShowLuckinHelp] = useState(false); // 瑞一杯使用说明
     const luckinActivated = luckinMode;
     const [luckinAppOpen, setLuckinAppOpen] = useState(false); // 旧小程序壳, 现已不主动开
     const luckinConfiguredFlag = useMemo(() => isLuckinConfigured(), [showPanel, luckinActivated]);
@@ -1089,6 +1091,13 @@ const Chat: React.FC = () => {
         setLuckinMode(true);
         setShowLuckinLoc(false);
         addToast(`瑞一杯已开启 ☕ 定位: ${cityName || '已设置'}`, 'info');
+        // 首次启动: 自动弹一次使用说明 (之后收在 banner 的 ? 里)
+        try {
+            if (localStorage.getItem('aetheros.luckin.helpSeen') !== '1') {
+                setShowLuckinHelp(true);
+                localStorage.setItem('aetheros.luckin.helpSeen', '1');
+            }
+        } catch { /* ignore */ }
     }, [addToast]);
 
     const deactivateLuckin = useCallback(() => {
@@ -2795,6 +2804,13 @@ const Chat: React.FC = () => {
                         </div>
                         <div className="flex items-center gap-1.5">
                             <button
+                              onClick={() => setShowLuckinHelp(true)}
+                              title="瑞一杯怎么用"
+                              className="w-5 h-5 flex items-center justify-center bg-[#0B1F3A]/10 text-[#0B1F3A] rounded-full text-[11px] font-bold active:scale-95"
+                            >
+                              ?
+                            </button>
+                            <button
                               onClick={() => setShowLuckinLoc(true)}
                               className="px-2.5 py-0.5 bg-[#0B1F3A]/10 text-[#0B1F3A] rounded-full text-[11px] font-bold active:scale-95"
                             >
@@ -2975,6 +2991,12 @@ const Chat: React.FC = () => {
                 open={showLuckinLoc}
                 onClose={() => setShowLuckinLoc(false)}
                 onPick={onLuckinLocationPick}
+            />
+
+            {/* 🦌 瑞一杯使用说明 (首次自动弹 + banner ? 调出) */}
+            <LuckinHelpModal
+                open={showLuckinHelp}
+                onClose={() => setShowLuckinHelp(false)}
             />
 
 
