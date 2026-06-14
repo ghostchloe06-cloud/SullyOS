@@ -6,6 +6,7 @@ import PhoneShell from './components/PhoneShell';
 import BuildBadge from './components/BuildBadge';
 import DevDebugPanel from './components/DevDebugPanel';
 import VRBroadcast from './components/VRBroadcast';
+import WorldBroadcast from './components/WorldBroadcast';
 import { isIOSStandaloneWebApp } from './utils/iosStandalone';
 import { installDevDebugLifecycleCapture } from './utils/devDebug';
 
@@ -43,6 +44,7 @@ const App: React.FC = () => {
       <BuildBadge />
       <DevDebugPanel />
       <VRBroadcast />
+      <WorldBroadcast />
     </>
   );
 };

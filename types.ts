@@ -37,6 +37,7 @@ export enum AppID {
   HotNews = 'hot_news', // 热点 — 分时段召回的多平台热榜可视化（决定角色可能聊起的话题）
   VRWorld = 'vrworld', // 彼方 — 角色自主登入的虚拟世界（定时驱动，房间里看小说/听歌/留言，产出活动卡注入聊天+记忆）
   CharCreatorDev = 'char_creator_dev', // 捏脸系统开发模式 — 仅开发模式可见，向捏人器指定类目追加自定义部件
+  WorldHome = 'world_home', // 家园 — 同世界观多角色共同生活的大世界（观测驱动演绎，每角色独立 LLM 调用 + NPC 世界引擎）
 }
 
 export interface SystemLog {
@@ -746,6 +747,285 @@ export interface VRCardMeta {
     // --- 邮局专用 ---
     /** 本次写信/回信的正文摘要 */
     letterExcerpt?: string;
+}
+
+// ============================================================
+// 家园（WorldHome）—— 同世界观多角色共同生活的大世界
+// ============================================================
+
+/**
+ * user 在该世界里的存在感模式：
+ * - light: 轻度——只是观察角色的一个切面，角色依旧以 user 为最重要的人（与 chatapp 聊天人设一致）
+ * - medium: 中度——user 是世界中普通的一份子，不特殊
+ * - heavy: 重度——user 不存在 / 是透明的幽灵，演绎中完全无视（通常用于看角色之间的关系）
+ */
+export type WorldHomeMode = 'light' | 'medium' | 'heavy';
+
+/**
+ * 时间模式（与存在感模式 WorldHomeMode 正交，创建时单独选）：
+ * - real: 真实时间——演绎进各角色的聊天与记忆（world_card），适合「真实系角色」。
+ *         真实使用里中间会穿插大量真人聊天，卡片自然稀疏，不会刷屏。
+ * - sim:  模拟时间——可自定义起始年月日，**不进记忆/聊天**；适合给 OC 们开小剧场图一乐。
+ *         每 20 天（= 40 个半天/轮）自动结一卷：生成一份小说体总结（含人物关系动态走向
+ *         与评价），归档这 20 天原文，往后只把「该角色单方面视角的总结 + ta 最后一天 +
+ *         本卷沉淀的氛围」分开喂回各角色——避免角色被迫开上帝视角。
+ */
+export type WorldTimeMode = 'real' | 'sim';
+
+/** 模拟时间的起始日期（sim 模式专用）。 */
+export interface WorldSimDate {
+    year: number;
+    month: number;
+    day: number;
+}
+
+/** 世界里的 NPC：没有记忆系统，完全服务于世界观，由"世界引擎"一次 LLM 调用全部演绎。 */
+export interface WorldNPC {
+    id: string;
+    name: string;
+    /** 一句话人设（职业/性格/与谁有关） */
+    persona: string;
+    /** 可视化兜底 emoji（NPC 不走捏人系统） */
+    emoji?: string;
+}
+
+/** 居住安排：一间小屋及其住户。不在任何小屋里的成员视为独居（各自的小屋）。 */
+export interface WorldHouse {
+    id: string;
+    name: string;
+    residentIds: string[];
+}
+
+/** 成员（或 NPC）之间的**有向**关系条：from 对 to 的看法，与 to 对 from 的可以不对等。 */
+export interface WorldRelationship {
+    fromId: string;
+    toId: string;
+    /** from 眼中这段关系的名字（我视ta为挚友 / ta是我死对头…），用户可编辑，演绎不强行改 */
+    label?: string;
+    /** 0-100，from 对 to 的好感/亲近度，演绎产出的 delta 会落在这里 */
+    value: number;
+}
+
+/** 世界内消息（私聊/群聊通用）。fromId 可以是成员 charId 或 NPC id。 */
+export interface WorldChatMessage {
+    id: string;
+    fromId: string;
+    fromName: string;
+    text: string;
+    /** 发出时的轮数与剧情时间（手机 UI 按轮分隔显示） */
+    round: number;
+    storyTime: string;
+    timestamp: number;
+}
+
+/**
+ * 世界内消息线程。这是"手机是真手机"的落点：
+ * A 先演绎时发出的私聊/群聊立刻落线程，B 后演绎时就能在自己的手机上下文里
+ * 看到并回应——消息跨角色、跨轮交替传递，而不是各自的独白。
+ */
+export interface WorldThread {
+    /** dm 线程 id = 'dm_' + 两个 charId 排序后拼接；群聊 = 'group_main' */
+    id: string;
+    kind: 'dm' | 'group';
+    /** 群聊名（dm 不用） */
+    name?: string;
+    memberIds: string[];
+    messages: WorldChatMessage[];
+}
+
+/** 大段正文的文风。 */
+export type WorldNarrativeStyle = 'warm' | 'inner' | 'drama' | 'breezy' | 'sitcom' | 'custom';
+
+/**
+ * 伏笔：角色这半天瞒下的事（timeline 里 shared=false 对应的内幕）。
+ * 躺在世界的伏笔栏里，用户可点击"引爆"——下一轮演绎时注入给被瞒者
+ * （你发现了…）与当事人（你瞒的事败露了…），生成冲突。
+ */
+export interface WorldSeed {
+    id: string;
+    charId: string;
+    charName: string;
+    /** 瞒下的事 */
+    text: string;
+    /** 瞒着谁（成员名；空数组 = 瞒着所有人） */
+    hideFrom: string[];
+    round: number;
+    storyTime: string;
+    /** pending=躺着 / armed=用户已点引爆，下一轮爆发 / resolved=已爆发 */
+    status: 'pending' | 'armed' | 'resolved';
+}
+
+/**
+ * 用户对某角色"内心冲动"的决策/留言（想辞职？想告白？）。
+ * 下一轮演绎时以"内心的声音"注入该角色（light 模式下会联想到 user），注入后消费掉。
+ */
+export interface WorldDirective {
+    id: string;
+    charId: string;
+    /** 冲动原文（注入时引用） */
+    impulseText: string;
+    /** 用户的意见 */
+    text: string;
+    createdRound: number;
+}
+
+/** 一个"世界"的完整定义（IndexedDB worlds 表）。 */
+export interface WorldProfile {
+    id: string;
+    name: string;
+    /** 世界观总述（这个世界是什么样的，发生在哪，大家以什么身份生活） */
+    worldview: string;
+    mode: WorldHomeMode;
+    /** 时间模式（创建时选定，默认 real 真实时间；旧世界无此字段时按 real 处理） */
+    timeMode?: WorldTimeMode;
+    /** sim 模式的起始日期（不设时按创建当天） */
+    simStartDate?: WorldSimDate;
+    /** real 模式：世界已演到的「现实段」（早/中/晚跟着真实时钟走）。dayKey=YYYY-MM-DD，seg=0早/1中/2晚。
+     *  只能补当天错过的段，过了今天就补不了；未演过时为空。 */
+    realClock?: { dayKey: string; seg: number };
+    /** sim 模式：已被卷入章节总结的剧情时钟数（round ≤ 此值的原文已归档，不再喂原文） */
+    simSummarizedClock?: number;
+    /** sim 模式：每 20 天结一卷的章节总结（按 index 升序累积；最新一卷参与下一卷的上文喂养） */
+    chapters?: WorldChapter[];
+    /** 大段正文的文风（默认 warm 细腻日常） */
+    narrativeStyle?: WorldNarrativeStyle;
+    /** narrativeStyle='custom' 时的自定义文风提示词 */
+    narrativeStyleCustom?: string;
+    /** 大段正文的叙述人称：first=第一人称(我) / second=第二人称(你) / third=第三人称(名字/ta)。默认 first */
+    narrationPerson?: 'first' | 'second' | 'third';
+    /** 参与的角色（CharacterProfile.id） */
+    memberIds: string[];
+    npcs: WorldNPC[];
+    houses: WorldHouse[];
+    relationships: WorldRelationship[];
+    /** 世界内消息线程（私聊 + 世界群聊），随演绎累积，每线程截留最近若干条 */
+    threads?: WorldThread[];
+    /** 伏笔栏 */
+    seeds?: WorldSeed[];
+    /** 待注入的用户决策（消费后移除） */
+    directives?: WorldDirective[];
+    /** 社交动态的互动：key = `${round}_${charId}_${postIdx}`，值含点赞数 + 评论（NPC/路人）。 */
+    feedReactions?: Record<string, { likes: number; comments: { from: string; text: string }[] }>;
+    /** 每天离线 tick 的时段（早/午/晚），空数组 = 仅手动观测推进 */
+    offlineTickSlots?: ('morning' | 'noon' | 'evening')[];
+    /** 剧情时钟：累计推进的半天数（0 = 第1天白天） */
+    storyClock: number;
+    /** 生成内容是否注入各成员的 1v1 聊天（默认 true） */
+    injectToChat?: boolean;
+    /** 该世界专属 API 覆盖；不设则回落全局 apiConfig */
+    api?: { baseUrl: string; apiKey: string; model: string };
+    createdAt: number;
+    updatedAt: number;
+}
+
+/** 一轮演绎中单个角色的产出（一次独立 LLM 调用，确保没人开上帝视角）。 */
+export interface WorldCharBeat {
+    charId: string;
+    charName: string;
+    /** 角色根据环境自判定的主要位置 */
+    location: string;
+    /** 大段正文：聚焦一件有意义的事/一次内心拉扯（按世界设定的文风），私人视角，不外传 */
+    narrative: string;
+    /** 心情（一两个词） */
+    mood: string;
+    /** 数值面板（体力/心情值/自定义键） */
+    statusPanel?: Record<string, number | string>;
+    /**
+     * 这半天的具体时间轴。shared=false 的条目是角色想瞒着的——
+     * 不会传递给其他角色，并会被提炼进伏笔栏（secrets）。
+     */
+    timeline?: { time: string; place: string; event: string; shared: boolean }[];
+    /** 备忘录（完全私人：只有本人和屏幕外的用户看得到） */
+    memo?: string[];
+    /** 状态背后的冲动/待决策（想辞职/想告白…），用户可以帮忙拿主意 */
+    impulse?: { text: string; options?: string[] };
+    /** 瞒下的事（→ 伏笔栏）。hideFrom 空数组 = 瞒所有人 */
+    secrets?: { text: string; hideFrom?: string[] }[];
+    /** 手机内容（dms/group 会立刻落进 world.threads，链内后续角色与下一轮都能收到） */
+    phone?: {
+        posts?: string[];
+        dms?: { to: string; lines: string[] }[];
+        /** 发到世界群聊的话 */
+        group?: string[];
+    };
+    /** 共处时当面对在场成员说的话（不是手机）——对话对象的演绎轮里会完整听到并被要求回应 */
+    dialogues?: { with: string; lines: string[] }[];
+    /** 本轮产出的关系变化（按名字回填到 world.relationships）。newLabel：仅在关系重大转折时，
+     *  角色对这段关系的新看法/称呼（覆盖 label，平时不给）。 */
+    relationshipDeltas?: { withName: string; delta: number; reason?: string; newLabel?: string }[];
+}
+
+/** 一轮演绎（"观测"或离线 tick 触发，推进半天剧情时间；IndexedDB world_episodes 表）。 */
+export interface WorldEpisode {
+    id: string;
+    worldId: string;
+    /** 第几轮（= 演绎完成后的 storyClock） */
+    round: number;
+    /** 剧情时间标签（第N天 白天/夜晚） */
+    storyTime: string;
+    trigger: 'observe' | 'tick';
+    /** NPC 群像（一次调用全部 NPC） */
+    npcScene?: string;
+    /** NPC 留下的、可被下一轮角色接住的事件钩子 */
+    npcHooks?: string[];
+    beats: WorldCharBeat[];
+    /** 机械拼接的本轮梗概，喂给下一轮做连续性 */
+    summary: string;
+    createdAt: number;
+}
+
+/**
+ * sim（模拟时间）模式下每 20 天结的一卷「章节总结」。
+ *
+ * 喂养路径（同样严格防上帝视角）：
+ *   - synopsis / relationshipEval：全知小说体梗概，**只给屏幕外的用户看**（图一乐），绝不喂角色。
+ *   - atmosphere：这一卷沉淀下来的氛围基调，可喂给所有角色（不含隐私）。
+ *   - perspectives[charId]：每个角色「单方面视角」的回顾——只含 ta 知道/经历的，
+ *     往后单独喂回对应角色，作为 ta 对这 20 天的记忆。
+ *   - lastDayBeats：每个角色这一卷最后一天的 beat，连同其单视角总结作为下一卷的上文。
+ */
+export interface WorldChapter {
+    id: string;
+    worldId: string;
+    /** 第几卷（1 起） */
+    index: number;
+    /** 覆盖的剧情时钟区间（含） */
+    fromClock: number;
+    toClock: number;
+    /** 区间起止的时间文本（sim 模式是日期） */
+    fromLabel: string;
+    toLabel: string;
+    /** 全知小说体梗概（给用户看，含人物关系动态走向与评价） */
+    synopsis: string;
+    /** 关系网这一卷的走向评价 */
+    relationshipEval?: string;
+    /** 这一卷沉淀的氛围基调（影响下一卷，喂给所有角色） */
+    atmosphere?: string;
+    /** 每个角色的单方面视角总结（分开喂回各自） */
+    perspectives: { charId: string; charName: string; text: string }[];
+    /** 每个角色这一卷最后一天的 beat（作为下一卷上文） */
+    lastDayBeats: WorldCharBeat[];
+    createdAt: number;
+}
+
+/** 注入聊天的 world_card 消息的 metadata 结构。 */
+export interface WorldCardMeta {
+    worldCard: true;
+    worldId: string;
+    worldName: string;
+    mode: WorldHomeMode;
+    round: number;
+    storyTime: string;
+    location?: string;
+    mood?: string;
+    narrative?: string;
+    statusPanel?: Record<string, number | string>;
+    timeline?: { time: string; place: string; event: string; shared: boolean }[];
+    memo?: string[];
+    impulse?: { text: string; options?: string[] };
+    phonePosts?: string[];
+    /** 发到世界群聊的话 */
+    phoneGroup?: string[];
 }
 
 /** 邮局：一封信收到的回复（留档用）。 */
@@ -2029,7 +2309,7 @@ export interface GameSession {
     lastPlayedAt: number;
 }
 
-export type MessageType = 'text' | 'image' | 'emoji' | 'interaction' | 'transfer' | 'system' | 'social_card' | 'chat_forward' | 'xhs_card' | 'score_card' | 'music_card' | 'mcd_card' | 'html_card' | 'news_card' | 'vr_card' | 'trpg_card';
+export type MessageType = 'text' | 'image' | 'emoji' | 'interaction' | 'transfer' | 'system' | 'social_card' | 'chat_forward' | 'xhs_card' | 'score_card' | 'music_card' | 'mcd_card' | 'luckin_card' | 'html_card' | 'news_card' | 'vr_card' | 'trpg_card' | 'world_card';
 
 export interface Message {
     id: number;
@@ -2105,6 +2385,8 @@ export interface FullBackupData {
     vrPresets?: { key: string; name: string; prompt: string; blurb?: string }[]; // 剧院·用户自定义写作风格预设
     vrLetters?: VRLetter[];                    // 邮局信件（本地存档+队列）
     vrSettings?: any[];                        // 彼方设置（独立 API + 调用记录）
+    worlds?: WorldProfile[];                   // 家园·世界定义
+    worldEpisodes?: WorldEpisode[];            // 家园·演绎历史
     vrPostOffice?: Record<string, string>;     // 邮局本机配置：身份 deviceId / 后端地址（存 localStorage）
     songs?: SongSheet[]; // Songwriting app data
     

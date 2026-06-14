@@ -7,12 +7,13 @@ import {
     GalleryImage, FullBackupData, GroupProfile, SocialPost, StudyCourse, GameSession, Worldbook, NovelBook, Emoji, EmojiCategory,
     BankTransaction, SavingsGoal, BankFullState, DollhouseState, XhsStockImage, XhsActivityRecord, SongSheet, QuizSession, GuidebookSession,
     LifeSimState, HandbookEntry, Tracker, TrackerEntry, HotNewsSnapshot,
-    VRWorldNovel, VRNovelAnnotation, CustomCreatorPart, VRMusicRoomState, VRGuestbookState, VRScript, VRStagedPlay, VRLetter
+    VRWorldNovel, VRNovelAnnotation, CustomCreatorPart, VRMusicRoomState, VRGuestbookState, VRScript, VRStagedPlay, VRLetter,
+    WorldProfile, WorldEpisode
 } from '../types';
 import { exportPostOfficeLocal, importPostOfficeLocal } from './vrWorld/postOffice';
 
 const DB_NAME = 'AetherOS_Data';
-const DB_VERSION = 62; // Bumped: v62 add messages [charId, type] 复合索引（彼方动态按 vr_card 直取，免 getAll 整段聊天史）
+const DB_VERSION = 64; // Bumped: v64 ensure worlds / world_episodes stores exist（v63 漏建：已到 v63 的库不会再触发 upgrade，补一版重建）
 
 const STORE_CHARACTERS = 'characters';
 const STORE_MESSAGES = 'messages';
@@ -59,6 +60,8 @@ const STORE_VR_PRESETS = 'vr_presets';            // 剧院·用户自定义写�
 const STORE_VR_LETTERS = 'vr_letters';            // 邮局信件（本地存档 + 待寄出/待回复队列）
 const STORE_VR_SETTINGS = 'vr_settings';          // 彼方设置单例：独立 API（id='api'）+ 调用记录（id='apilog'）
 const STORE_API_CALL_LOG = 'api_call_log';        // 全局 API 调用记录单例（id='log'，保留近 5 天）
+const STORE_WORLDS = 'worlds';                    // 家园·世界定义（成员/NPC/居住/关系/模式）
+const STORE_WORLD_EPISODES = 'world_episodes';    // 家园·演绎历史（每轮一条，index worldId）
 
 // API 调用记录：保留近 5 天，超期丢弃；再加一个硬上限防止异常情况撑爆
 const API_CALL_LOG_MAX_AGE_MS = 5 * 24 * 60 * 60 * 1000;
@@ -279,6 +282,13 @@ export const openDB = (): Promise<IDBDatabase> => {
       createStore(STORE_VR_SETTINGS, { keyPath: 'id' });
       createStore(STORE_API_CALL_LOG, { keyPath: 'id' });
 
+      // v63: 家园（同世界观多角色大世界）
+      createStore(STORE_WORLDS, { keyPath: 'id' });
+      if (!db.objectStoreNames.contains(STORE_WORLD_EPISODES)) {
+          const weStore = db.createObjectStore(STORE_WORLD_EPISODES, { keyPath: 'id' });
+          weStore.createIndex('worldId', 'worldId', { unique: false });
+      }
+
       createStore(STORE_BANK_TX, { keyPath: 'id' });
       createStore(STORE_BANK_DATA, { keyPath: 'id' });
       createStore(STORE_XHS_STOCK, { keyPath: 'id' });
@@ -410,6 +420,27 @@ export const openDB = (): Promise<IDBDatabase> => {
 
   dbPromise = promise;
   return promise;
+};
+
+/**
+ * 家园关系条读时迁移：早期格式是无序对 {aId,bId}（双方共用一个数值），
+ * 现为有向 {fromId,toId}（你对ta ≠ ta对你）。旧边拆成两条对称有向边，数值/关系名照抄，
+ * 之后各自的演绎会让两边自然分化。
+ */
+const normalizeWorldRelationships = (world: WorldProfile): WorldProfile => {
+    const rels = world.relationships || [];
+    if (!rels.some((r: any) => r.aId !== undefined)) return world;
+    const out: WorldProfile['relationships'] = [];
+    const has = (fromId: string, toId: string) => out.some(r => r.fromId === fromId && r.toId === toId);
+    for (const r of rels as any[]) {
+        if (r.aId !== undefined && r.bId !== undefined) {
+            if (!has(r.aId, r.bId)) out.push({ fromId: r.aId, toId: r.bId, label: r.label, value: r.value ?? 50 });
+            if (!has(r.bId, r.aId)) out.push({ fromId: r.bId, toId: r.aId, label: r.label, value: r.value ?? 50 });
+        } else if (r.fromId !== undefined && r.toId !== undefined && !has(r.fromId, r.toId)) {
+            out.push(r);
+        }
+    }
+    return { ...world, relationships: out };
 };
 
 export const DB = {
@@ -1810,6 +1841,78 @@ export const DB = {
       transaction.objectStore(STORE_VR_LETTERS).delete(id);
   },
 
+  // --- 家园（世界定义 + 演绎历史）---
+  getWorlds: async (): Promise<WorldProfile[]> => {
+      const db = await openDB();
+      if (!db.objectStoreNames.contains(STORE_WORLDS)) return [];
+      return new Promise((resolve, reject) => {
+          const request = db.transaction(STORE_WORLDS, 'readonly').objectStore(STORE_WORLDS).getAll();
+          request.onsuccess = () => resolve((request.result || []).map(normalizeWorldRelationships).sort((a: WorldProfile, b: WorldProfile) => b.updatedAt - a.updatedAt));
+          request.onerror = () => reject(request.error);
+      });
+  },
+
+  getWorld: async (id: string): Promise<WorldProfile | null> => {
+      const db = await openDB();
+      if (!db.objectStoreNames.contains(STORE_WORLDS)) return null;
+      return new Promise((resolve, reject) => {
+          const request = db.transaction(STORE_WORLDS, 'readonly').objectStore(STORE_WORLDS).get(id);
+          request.onsuccess = () => resolve(request.result ? normalizeWorldRelationships(request.result) : null);
+          request.onerror = () => reject(request.error);
+      });
+  },
+
+  saveWorld: async (world: WorldProfile): Promise<void> => {
+      const db = await openDB();
+      const tx = db.transaction(STORE_WORLDS, 'readwrite');
+      tx.objectStore(STORE_WORLDS).put(world);
+      return new Promise((resolve, reject) => {
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+      });
+  },
+
+  deleteWorld: async (id: string): Promise<void> => {
+      const db = await openDB();
+      // 连带删掉该世界的全部演绎历史
+      const tx = db.transaction([STORE_WORLDS, STORE_WORLD_EPISODES], 'readwrite');
+      tx.objectStore(STORE_WORLDS).delete(id);
+      const epStore = tx.objectStore(STORE_WORLD_EPISODES);
+      const cursorReq = epStore.index('worldId').openCursor(IDBKeyRange.only(id));
+      cursorReq.onsuccess = () => {
+          const cursor = cursorReq.result;
+          if (cursor) { cursor.delete(); cursor.continue(); }
+      };
+      return new Promise((resolve, reject) => {
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+      });
+  },
+
+  getWorldEpisodes: async (worldId: string, limit: number = 30): Promise<WorldEpisode[]> => {
+      const db = await openDB();
+      if (!db.objectStoreNames.contains(STORE_WORLD_EPISODES)) return [];
+      return new Promise((resolve, reject) => {
+          const index = db.transaction(STORE_WORLD_EPISODES, 'readonly').objectStore(STORE_WORLD_EPISODES).index('worldId');
+          const request = index.getAll(IDBKeyRange.only(worldId));
+          request.onsuccess = () => {
+              const all = (request.result || []).sort((a: WorldEpisode, b: WorldEpisode) => b.round - a.round);
+              resolve(all.slice(0, limit));
+          };
+          request.onerror = () => reject(request.error);
+      });
+  },
+
+  saveWorldEpisode: async (episode: WorldEpisode): Promise<void> => {
+      const db = await openDB();
+      const tx = db.transaction(STORE_WORLD_EPISODES, 'readwrite');
+      tx.objectStore(STORE_WORLD_EPISODES).put(episode);
+      return new Promise((resolve, reject) => {
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+      });
+  },
+
   // --- 彼方独立 API + 调用记录（vr_settings 单例 store）---
   getVRApiConfig: async (): Promise<any | null> => {
       const db = await openDB();
@@ -2095,7 +2198,7 @@ export const DB = {
           });
       };
 
-      const [characters, messages, themes, emojis, emojiCategories, assets, galleryImages, userProfiles, diaries, tasks, anniversaries, roomTodos, roomNotes, groups, journalStickers, socialPosts, courses, games, worldbooks, novels, bankTx, bankData, xhsActivities, xhsStockImages, songs, quizzes, guidebookSessions, scheduledMessages, lifeSimStates, handbooks, trackers, trackerEntries, hotNewsSnapshots, vrNovels, vrAnnotations, customCreatorParts, vrMusic, vrGuestbook, vrScripts, vrStagedPlays, vrPresets, vrLetters, vrSettings] = await Promise.all([
+      const [characters, messages, themes, emojis, emojiCategories, assets, galleryImages, userProfiles, diaries, tasks, anniversaries, roomTodos, roomNotes, groups, journalStickers, socialPosts, courses, games, worldbooks, novels, bankTx, bankData, xhsActivities, xhsStockImages, songs, quizzes, guidebookSessions, scheduledMessages, lifeSimStates, handbooks, trackers, trackerEntries, hotNewsSnapshots, vrNovels, vrAnnotations, customCreatorParts, vrMusic, vrGuestbook, vrScripts, vrStagedPlays, vrPresets, vrLetters, vrSettings, worlds, worldEpisodes] = await Promise.all([
           getAllFromStore(STORE_CHARACTERS),
           getAllFromStore(STORE_MESSAGES),
           getAllFromStore(STORE_THEMES),
@@ -2139,6 +2242,8 @@ export const DB = {
           getAllFromStore(STORE_VR_PRESETS),
           getAllFromStore(STORE_VR_LETTERS),
           getAllFromStore(STORE_VR_SETTINGS),
+          getAllFromStore(STORE_WORLDS),
+          getAllFromStore(STORE_WORLD_EPISODES),
       ]);
 
       const userProfile = userProfiles.length > 0 ? {
@@ -2177,6 +2282,8 @@ export const DB = {
           vrLetters,
           vrSettings,
           vrPostOffice: exportPostOfficeLocal(), // 邮局本机配置（身份/后端地址，存 localStorage）
+          worlds,
+          worldEpisodes,
       };
   },
 
@@ -2213,6 +2320,7 @@ export const DB = {
           STORE_TRACKER_ENTRIES,
           STORE_HOTNEWS,
           STORE_VR_NOVELS, STORE_VR_ANNOTATIONS, STORE_CC_PARTS, STORE_VR_MUSIC, STORE_VR_GUESTBOOK, STORE_VR_SCRIPTS, STORE_VR_PLAYS, STORE_VR_PRESETS, STORE_VR_LETTERS, STORE_VR_SETTINGS,
+          STORE_WORLDS, STORE_WORLD_EPISODES,
           'memory_nodes', 'memory_vectors', 'memory_links', 'topic_boxes', 'anticipations', 'event_boxes',
           'memory_batches', 'pixel_home_assets', 'pixel_home_layouts'
       ].filter(name => db.objectStoreNames.contains(name));
@@ -2299,6 +2407,8 @@ export const DB = {
           data.vrPresets !== undefined,
           data.vrLetters !== undefined,
           (data as any).vrPostOffice !== undefined,
+          data.worlds !== undefined,
+          data.worldEpisodes !== undefined,
           data.pixelHomeAssets !== undefined,
           data.pixelHomeLayouts !== undefined,
           data.userProfile !== undefined,
@@ -2574,6 +2684,14 @@ export const DB = {
           importPostOfficeLocal((data as any).vrPostOffice);
           (data as any).vrPostOffice = undefined;
       }, 1);
+      await runSection('家园世界', data.worlds !== undefined, async () => {
+          await clearAndAdd(STORE_WORLDS, data.worlds, '家园世界', false);
+          data.worlds = undefined as any;
+      }, data.worlds?.length || 0);
+      await runSection('家园演绎历史', data.worldEpisodes !== undefined, async () => {
+          await clearAndAdd(STORE_WORLD_EPISODES, data.worldEpisodes, '家园演绎历史', false);
+          data.worldEpisodes = undefined as any;
+      }, data.worldEpisodes?.length || 0);
       await runSection('歌曲', data.songs !== undefined, async () => {
           await clearAndAdd(STORE_SONGS, data.songs, '歌曲', false);
           data.songs = undefined as any;

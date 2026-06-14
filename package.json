@@ -33,12 +33,14 @@
     "@rei-standard/amsg-sw": "2.3.1",
     "jszip": "^3.10.1",
     "pg": "^8.20.0",
+    "qrcode": "^1.5.4",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "web-push": "^3.6.7"
   },
   "devDependencies": {
     "@capacitor/cli": "^6.0.0",
+    "@types/qrcode": "^1.5.6",
     "@types/react": "^18.2.43",
     "@types/react-dom": "^18.2.17",
     "@vitejs/plugin-react": "^4.2.1",

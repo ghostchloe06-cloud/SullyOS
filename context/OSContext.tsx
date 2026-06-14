@@ -6,6 +6,8 @@ import { ProactiveChat } from '../utils/proactiveChat';
 import { VRScheduler } from '../utils/vrWorld/scheduler';
 import { runVRSession } from '../utils/vrWorld/runSession';
 import { VR_DEFAULT_INTERVAL_MIN } from '../utils/vrWorld/constants';
+import { WorldScheduler } from '../utils/worldHome/scheduler';
+import { runWorldEpisode } from '../utils/worldHome/engine';
 import { ChatParser } from '../utils/chatParser';
 import { safeFetchJson } from '../utils/safeApi';
 import { recordApiCall, setApiCallAmbientContext } from '../utils/apiCallLog';
@@ -1831,10 +1833,42 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
               .map(c => ({ charId: c.id, intervalMinutes: c.vrState?.intervalMinutes || VR_DEFAULT_INTERVAL_MIN }))
       );
 
+      // 「家园」演绎 —— 引擎跑在全局：用户不在家园界面（可能正在和别人私聊）时，
+      // 观测/离线 tick 触发的一轮链式演绎照样完成并注入 world_card。
+      const runWorld = async (worldId: string, trigger: 'observe' | 'tick') => {
+          if (!userProfileRef.current) return;
+          try {
+              const world = await DB.getWorld(worldId);
+              if (!world) return;
+              await runWorldEpisode({
+                  world,
+                  characters: charactersRef.current,
+                  apiConfig: apiConfigRef.current,
+                  userProfile: userProfileRef.current,
+                  groups: groupsRef.current,
+                  realtimeConfig: realtimeConfigRef.current,
+                  memoryPalaceConfig: memoryPalaceConfigRef.current,
+                  trigger,
+              });
+          } catch (e) {
+              console.error('[WorldHome] runWorld error', e);
+          }
+      };
+      WorldScheduler.onTrigger((worldId, trigger) => { void runWorld(worldId, trigger); });
+      // 调度表存 localStorage 不随备份迁移，按 IndexedDB 里的世界配置对账
+      void DB.getWorlds()
+          .then(worlds => WorldScheduler.reconcile(
+              worlds
+                  .filter(w => (w.offlineTickSlots?.length || 0) > 0)
+                  .map(w => ({ worldId: w.id, slots: w.offlineTickSlots! }))
+          ))
+          .catch(() => {});
+
       return () => {
           // Cleanup: detach proactive listeners when OSContext unmounts (unlikely but safe)
           ProactiveChat.onTrigger(() => {});
           VRScheduler.onTrigger(() => {});
+          WorldScheduler.onTrigger(() => {});
       };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isDataLoaded]);

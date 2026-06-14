@@ -113,6 +113,7 @@ const isSullyChar = (char: CharacterProfile): boolean => {
 const sullyPresets = (): Record<string, string> => ({
     skin: 'skin_1',
     fronthair: 'fronthair_99',
+    back2: 'back2_99',
     eyes: 'eyes_99',
 });
 

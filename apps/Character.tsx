@@ -57,6 +57,7 @@ const CharacterCard: React.FC<{
 const Character: React.FC = () => {
   const { closeApp, openApp, characters, activeCharacterId, setActiveCharacterId, addCharacter, updateCharacter, deleteCharacter, apiConfig, addToast, userProfile, customThemes, addCustomTheme, worldbooks, addWorldbook } = useOS();
   const [view, setView] = useState<'list' | 'detail'>('list');
+  const [charPage, setCharPage] = useState(0); // 角色列表分页（每页 6 个）
   const [detailTab, setDetailTab] = useState<'identity' | 'memory' | 'impression'>('identity');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [formData, setFormData] = useState<CharacterProfile | null>(null);
@@ -974,20 +975,43 @@ ${isInitialGeneration ? `
                    </div>
                </div>
                <div className="flex-1 overflow-y-auto px-5 pb-20 no-scrollbar flex flex-col gap-3">
-                   {characters.map(char => (
-                       <CharacterCard 
-                           key={char.id} 
-                           char={char} 
-                           onClick={() => { setEditingId(char.id); setView('detail'); }} 
-                           onDelete={(e) => { 
-                               e.stopPropagation(); 
-                               setDeleteConfirmTarget(char.id); 
-                           }} 
-                       />
-                   ))}
-                   <button onClick={addCharacter} className="w-full py-4 rounded-3xl border border-dashed border-slate-300 text-slate-400 text-sm hover:bg-white/30 transition-all flex items-center justify-center gap-2 shrink-0">
-                       <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg>新建链接
-                   </button>
+                   {(() => {
+                       const PAGE_SIZE = 6;
+                       const totalPages = Math.max(1, Math.ceil(characters.length / PAGE_SIZE));
+                       const page = Math.min(charPage, totalPages - 1);
+                       const pageChars = characters.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
+                       return (
+                           <>
+                               {pageChars.map(char => (
+                                   <CharacterCard
+                                       key={char.id}
+                                       char={char}
+                                       onClick={() => { setEditingId(char.id); setView('detail'); }}
+                                       onDelete={(e) => {
+                                           e.stopPropagation();
+                                           setDeleteConfirmTarget(char.id);
+                                       }}
+                                   />
+                               ))}
+                               <button onClick={addCharacter} className="w-full py-4 rounded-3xl border border-dashed border-slate-300 text-slate-400 text-sm hover:bg-white/30 transition-all flex items-center justify-center gap-2 shrink-0">
+                                   <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg>新建链接
+                               </button>
+                               {totalPages > 1 && (
+                                   <div className="flex items-center justify-center gap-3 pt-2 shrink-0">
+                                       <button onClick={() => setCharPage(Math.max(0, page - 1))} disabled={page === 0}
+                                           className="w-9 h-9 rounded-full bg-white/60 border border-white/50 shadow-sm flex items-center justify-center text-slate-500 disabled:opacity-30 active:scale-90 transition-all">
+                                           <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
+                                       </button>
+                                       <span className="text-sm text-slate-500 font-medium tabular-nums min-w-[40px] text-center">{page + 1}/{totalPages}</span>
+                                       <button onClick={() => setCharPage(Math.min(totalPages - 1, page + 1))} disabled={page >= totalPages - 1}
+                                           className="w-9 h-9 rounded-full bg-white/60 border border-white/50 shadow-sm flex items-center justify-center text-slate-500 disabled:opacity-30 active:scale-90 transition-all">
+                                           <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" /></svg>
+                                       </button>
+                                   </div>
+                               )}
+                           </>
+                       );
+                   })()}
                </div>
            </div>
        ) : formData && (
@@ -1056,7 +1080,7 @@ ${isInitialGeneration ? `
                            
                            <div>
                                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block">核心指令 (System Prompt)</label>
-                               <textarea value={formData.systemPrompt} onChange={(e) => handleChange('systemPrompt', e.target.value)} className="w-full h-40 bg-white rounded-3xl p-5 text-sm shadow-sm resize-none focus:ring-1 focus:ring-primary/20 transition-all" placeholder="设定..." />
+                               <textarea value={formData.systemPrompt} onChange={(e) => handleChange('systemPrompt', e.target.value)} className="w-full h-40 bg-white rounded-3xl p-5 text-sm shadow-sm resize-none focus:ring-1 focus:ring-primary/20 transition-all vr-reader-scroll" placeholder="设定..." />
                            </div>
 
                            <div>
@@ -1064,8 +1088,8 @@ ${isInitialGeneration ? `
                                <textarea 
                                     value={formData.worldview || ''} 
                                     onChange={(e) => handleChange('worldview', e.target.value)} 
-                                    className="w-full h-24 bg-white rounded-3xl p-5 text-sm shadow-sm resize-none focus:ring-1 focus:ring-primary/20 transition-all" 
-                                    placeholder="在这个世界里，魔法是存在的..." 
+                                    className="w-full h-24 bg-white rounded-3xl p-5 text-sm shadow-sm resize-none focus:ring-1 focus:ring-primary/20 transition-all vr-reader-scroll"
+                                    placeholder="在这个世界里，魔法是存在的..."
                                 />
                            </div>
 

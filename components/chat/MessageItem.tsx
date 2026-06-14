@@ -5,6 +5,8 @@ import React, { useRef, useState } from 'react';
 import { Message, ChatTheme } from '../../types';
 import { tryParseLifeSimResetCard } from '../../utils/lifeSimChatCard';
 import McdCard from './McdCard';
+import LuckinCard from './LuckinCard';
+import LuckinCheckoutCard from './LuckinCheckoutCard';
 
 // 思考链卡片支持的 4 种风格预设 — 同时被 MessageItem 与 ThinkingChainSettingsModal 复用
 export type ThinkingChainStyleId = 'echo' | 'whisper' | 'minimal' | 'custom';
@@ -676,6 +678,9 @@ interface MessageItemProps {
     /** 麦当劳菜单卡里点了"发送给角色"时调用 */
     onMcdSendCart?: (items: import('./McdCard').McdCartItem[]) => void;
     onMcdCandidate?: (item: import('./McdCard').McdCartItem) => void;
+    /** 瑞幸菜单卡 (与麦当劳同构) */
+    onLuckinSendCart?: (items: import('./LuckinCard').LuckinCartItem[]) => void;
+    onLuckinCandidate?: (item: import('./LuckinCard').LuckinCartItem) => void;
     /** 思考链卡片视觉与交互 */
     thinkingChainOptions?: {
         styleId?: ThinkingChainStyleId;
@@ -715,6 +720,8 @@ const MessageItem = React.memo(({
     pendingIndicator = true,
     onMcdSendCart,
     onMcdCandidate,
+    onLuckinSendCart,
+    onLuckinCandidate,
     thinkingChainOptions,
 }: MessageItemProps) => {
     const isUser = m.role === 'user';
@@ -1430,6 +1437,68 @@ const MessageItem = React.memo(({
         );
     }
 
+    if (m.type === 'luckin_card') {
+        const meta = m.metadata || {};
+        const kind = meta.luckinCardKind;
+        // 来自小程序的卡片 (proposal / cart / candidate) → 主聊天里只渲染一张"刷卡"占位
+        if (kind === 'proposal' || kind === 'cart' || kind === 'candidate' || meta.fromLuckinMiniApp) {
+            const label = kind === 'proposal' ? '推荐了几样'
+                : kind === 'cart' ? '想下单的购物车'
+                : kind === 'candidate' ? '问问意见'
+                : '瑞幸卡片';
+            const summary = kind === 'proposal' && Array.isArray(meta.luckinProposal?.items)
+                ? `${meta.luckinProposal.items.length} 件: ${meta.luckinProposal.items.slice(0, 3).map((i: any) => i.name).join(' / ')}${meta.luckinProposal.items.length > 3 ? '…' : ''}`
+                : kind === 'cart' && Array.isArray(meta.luckinCartItems)
+                ? `${meta.luckinCartItems.length} 件: ${meta.luckinCartItems.slice(0, 3).map((i: any) => i.name).join(' / ')}${meta.luckinCartItems.length > 3 ? '…' : ''}`
+                : kind === 'candidate' && meta.luckinCandidate?.name
+                ? `「${meta.luckinCandidate.name}」`
+                : '';
+            return commonLayout(
+                <div className="w-60 rounded-2xl overflow-hidden border border-blue-200 shadow-sm bg-gradient-to-br from-blue-50 to-sky-50 select-none">
+                    <div className="flex items-center gap-2 px-3 py-2 bg-gradient-to-r from-blue-600 to-sky-500">
+                        <span className="text-lg">🦌</span>
+                        <div className="flex-1 min-w-0">
+                            <div className="text-[10px] text-white/70 leading-none">瑞幸卡片</div>
+                            <div className="text-[11px] font-bold text-white leading-tight">{label}</div>
+                        </div>
+                    </div>
+                    <div className="px-3 py-2 text-[10px] text-slate-500 leading-snug min-h-[28px]">
+                        {summary || '在瑞幸小程序里查看完整内容'}
+                    </div>
+                    <div className="px-3 pb-2 text-[9px] text-blue-700/60 italic">
+                        💳 已记录在瑞幸记录里
+                    </div>
+                </div>
+            );
+        }
+        // 结账卡 (聊天点单 previewOrder 的终点): 可改数量 + 直接扫码支付
+        if (kind === 'checkout' && meta.luckinToolResult) {
+            return commonLayout(
+                <LuckinCheckoutCard
+                    deptId={meta.luckinToolArgs?.deptId}
+                    args={meta.luckinToolArgs}
+                    preview={meta.luckinToolResult}
+                    loc={meta.luckinLoc}
+                />
+            );
+        }
+        // 工具结果卡 (门店/商品/订单) 或老的 luckin_card → 走 LuckinCard 渲染
+        return commonLayout(
+            <LuckinCard
+                toolName={meta.luckinToolName || m.content || 'luckin_tool'}
+                args={meta.luckinToolArgs}
+                result={meta.luckinToolResult}
+                error={meta.luckinToolError}
+                rawText={meta.luckinToolRawText}
+                kind={kind || 'generic'}
+                onSendCart={onLuckinSendCart}
+                onCandidate={onLuckinCandidate}
+                cartItems={meta.luckinCartItems}
+                candidateItem={meta.luckinCandidate}
+            />
+        );
+    }
+
     if (m.type === 'vr_card') {
         const md: any = m.metadata || {};
         const roomNameMap: Record<string, string> = {
@@ -1485,6 +1554,74 @@ const MessageItem = React.memo(({
                     <div className="px-3 py-1.5 border-t border-white/10 flex items-center justify-between">
                         <span className="text-[9px] text-indigo-300/60 italic">{md.userBoardPost ? '你发布到留言墙' : 'Ta 独自度过的时间'}</span>
                         <span className="text-[9px] text-amber-200/70 font-bold tracking-wide">{md.userBoardPost ? '彼方' : '＋记忆'}</span>
+                    </div>
+                </div>
+            </div>
+        );
+        return commonLayout(card);
+    }
+
+    if (m.type === 'world_card') {
+        const md: any = m.metadata || {};
+        const timeStr = new Date(m.timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' });
+        const narrative: string = md.narrative || '';
+        const panel: Record<string, any> = (md.statusPanel && typeof md.statusPanel === 'object') ? md.statusPanel : {};
+        const posts: string[] = Array.isArray(md.phonePosts) ? md.phonePosts : [];
+        const card = (
+            <div className="w-64">
+                <div
+                    className="relative rounded-2xl overflow-hidden border border-violet-200/70 shadow-[0_6px_20px_rgba(150,130,200,0.22)]"
+                    style={{ background: 'linear-gradient(160deg,#fbf7ff 0%,#f1ebfa 55%,#eae3f6 100%)' }}
+                >
+                    {/* 顶部淡紫光晕 + 月亮 + 星点（浅色系，和彼方的深色拉开差异） */}
+                    <div className="absolute -top-6 -right-4 w-24 h-24 rounded-full pointer-events-none" style={{ background: 'radial-gradient(circle,rgba(214,196,244,.55),transparent 70%)' }} />
+                    <div className="absolute top-2.5 right-3.5 w-5 h-5 rounded-full pointer-events-none" style={{ background: 'radial-gradient(circle at 38% 35%,#ffffff,#d9cdf0 72%)', boxShadow: '0 0 10px 2px rgba(200,180,245,.5)' }} />
+                    <div className="absolute inset-0 pointer-events-none opacity-60" style={{ backgroundImage: 'radial-gradient(1px 1px at 20% 22%,#c9b8ec,transparent),radial-gradient(1px 1px at 60% 16%,#e7c9f0,transparent),radial-gradient(1px 1px at 40% 34%,#bcd0f0,transparent)' }} />
+                    {/* 头部：家园 · 世界名 · 剧情时间 */}
+                    <div className="relative px-3 pt-2.5 pb-2 flex items-center gap-2 border-b border-violet-200/50">
+                        <span className="text-base leading-none text-violet-400" style={{ filter: 'drop-shadow(0 1px 3px rgba(180,150,230,.5))' }}>⌂</span>
+                        <div className="flex-1 min-w-0">
+                            <div className="text-[9px] tracking-[0.25em] text-violet-400/90 font-bold uppercase">家园 · {md.storyTime || '生活记录'}</div>
+                            <div className="text-[12px] text-[#5b4b7a] font-semibold truncate font-serif">{md.worldName || '共同世界'}</div>
+                        </div>
+                        <span className="text-[9px] text-violet-400/60">{timeStr}</span>
+                    </div>
+                    {/* 行为描述 */}
+                    <div className="relative px-3 py-2.5">
+                        <p className="text-[11px] text-[#6a5790] mb-1">
+                            <span className="font-bold text-rose-400">{charName || 'Ta'}</span>
+                            {md.location ? ` 在${md.location}` : ''}{md.mood ? ` · ${md.mood}` : ''}
+                        </p>
+                        {narrative && (
+                            <p className="text-[12px] leading-[1.6] text-[#4a3f63] whitespace-pre-wrap max-h-44 overflow-y-auto no-scrollbar">
+                                {narrative}
+                            </p>
+                        )}
+                        {/* 数值面板 */}
+                        {Object.keys(panel).length > 0 && (
+                            <div className="mt-2 flex flex-wrap gap-1">
+                                {Object.entries(panel).map(([k, v]) => (
+                                    <span key={k} className="text-[9px] px-1.5 py-0.5 rounded-full bg-violet-100/80 text-violet-600 border border-violet-200/70">
+                                        {k} {String(v)}
+                                    </span>
+                                ))}
+                            </div>
+                        )}
+                        {/* 发的动态 */}
+                        {posts.length > 0 && (
+                            <div className="mt-2 space-y-1">
+                                {posts.map((p, i) => (
+                                    <div key={i} className="text-[11px] leading-snug text-violet-700/85 pl-2 border-l-2 border-rose-300/70">
+                                        {p}
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                    {/* 页脚 */}
+                    <div className="relative px-3 py-1.5 border-t border-violet-200/50 flex items-center justify-between">
+                        <span className="text-[9px] text-violet-400/70 italic">Ta 在那个世界的生活</span>
+                        <span className="text-[9px] text-rose-400/80 font-bold tracking-wide">＋记忆</span>
                     </div>
                 </div>
             </div>
