@@ -1380,7 +1380,7 @@ const WorldView: React.FC<{
 // ============================================================
 // 主组件
 // ============================================================
-const WorldHomeApp: React.FC = () => {
+const WorldHomeApp: React.FC<{ embedded?: boolean }> = ({ embedded }) => {
     const { closeApp, characters, addToast, apiConfig, apiPresets } = useOS();
     const [worlds, setWorlds] = useState<WorldProfile[]>([]);
     const [view, setView] = useState<'list' | 'edit' | 'world'>('list');
@@ -1449,15 +1449,19 @@ const WorldHomeApp: React.FC = () => {
     return (
         <div className="h-full w-full flex flex-col" style={{ background: view === 'edit' || view === 'list' ? '#f3eee3' : undefined }}>
             <GameStyles />
-            {/* 顶栏 */}
-            <div className="h-20 flex items-end pb-3 px-4 shrink-0 sticky top-0 z-10" style={{ background: headerBg }}>
+            {/* 顶栏（内嵌进「小小窝」的家园分区时，列表页不再重复 ← 标题，只留齿轮/新建） */}
+            <div className={`${embedded && view === 'list' ? 'h-12' : 'h-20'} flex items-end pb-3 px-4 shrink-0 sticky top-0 z-10`} style={{ background: headerBg }}>
                 <div className="flex items-center gap-2 w-full">
-                    <button onClick={goBack} className="p-2 -ml-2 rounded-full hover:bg-black/5 active:scale-90 transition-transform">
-                        <ArrowLeft size={22} weight="bold" className={darkHeader ? 'text-indigo-100' : 'text-stone-800'} />
-                    </button>
-                    <h1 className={`text-xl font-black tracking-wide font-serif flex items-center gap-2 truncate ${darkHeader ? 'text-indigo-50' : 'text-stone-900'}`}>
-                        {headerTitle}
-                    </h1>
+                    {!(embedded && view === 'list') && (
+                        <>
+                            <button onClick={goBack} className="p-2 -ml-2 rounded-full hover:bg-black/5 active:scale-90 transition-transform">
+                                <ArrowLeft size={22} weight="bold" className={darkHeader ? 'text-indigo-100' : 'text-stone-800'} />
+                            </button>
+                            <h1 className={`text-xl font-black tracking-wide font-serif flex items-center gap-2 truncate ${darkHeader ? 'text-indigo-50' : 'text-stone-900'}`}>
+                                {headerTitle}
+                            </h1>
+                        </>
+                    )}
                     {view === 'list' && (
                         <div className="ml-auto flex items-center gap-0.5">
                             <button onClick={() => setShowApiSettings(true)} className="p-2 rounded-full hover:bg-black/5 active:scale-90 transition-transform" title="家园 API 设置">

@@ -12,9 +12,20 @@ import { safeResponseJson } from '../utils/safeApi';
 import { Door, Sparkle, Image, GearSix, Camera } from '@phosphor-icons/react';
 import { FURNITURE_ICONS } from '../utils/furnitureIcons';
 import PixelHomeView from './pixelHome/PixelHomeView';
+import WorldHomeApp from './WorldHomeApp';
 
 const TWEMOJI_BASE = 'https://cdnjs.cloudflare.com/ajax/libs/twemoji/14.0.2/72x72';
 const twemojiUrl = (codepoint: string) => `${TWEMOJI_BASE}/${codepoint}.png`;
+
+/** 拜访小屋卡片的柔色底（按序循环，营造每个房间各有色调的奇幻感）。 */
+const ROOM_CARD_TINTS = [
+    'linear-gradient(180deg,rgba(120,92,170,.42),rgba(34,26,62,.6))',
+    'linear-gradient(180deg,rgba(70,80,135,.42),rgba(26,28,56,.62))',
+    'linear-gradient(180deg,rgba(150,132,192,.4),rgba(52,42,86,.6))',
+    'linear-gradient(180deg,rgba(110,150,200,.4),rgba(34,52,86,.6))',
+    'linear-gradient(180deg,rgba(132,96,176,.42),rgba(46,30,78,.6))',
+    'linear-gradient(180deg,rgba(70,64,92,.46),rgba(24,22,40,.64))',
+];
 
 // --- 1. 免版权贴纸素材库 (Sticker Library) ---
 // 使用手绘 SVG 图标替代 Twemoji，更精致的视觉体验
@@ -1074,17 +1085,17 @@ ${!shouldGenerateTodo ? `(系统: 今日待办已存在，无需生成，请忽�
                         </div>
                     </div>
 
-                    {/* Tab 栏：描金外框（家园点击直接进大世界，不再多一层封面） */}
+                    {/* Tab 栏：描金外框（三个分区都在这一页内切换，不跳走） */}
                     <div className="mt-5 rounded-2xl p-1.5 flex gap-1" style={{ background: 'rgba(255,255,255,.04)', border: '1px solid rgba(212,185,120,.25)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,.06)' }}>
                         {([
                             { id: 'room', label: '🏠 小小窝' },
                             { id: 'worldHome', label: '🌍 家园' },
                             { id: 'pixelHome', label: '🎮 像素家园' },
                         ] as const).map(tab => {
-                            const active = tab.id !== 'worldHome' && homeTab === tab.id;
+                            const active = homeTab === tab.id;
                             return (
                                 <button key={tab.id}
-                                    onClick={() => { if (tab.id === 'worldHome') openApp(AppID.WorldHome); else setHomeTab(tab.id); }}
+                                    onClick={() => setHomeTab(tab.id)}
                                     className="relative flex-1 py-2.5 rounded-xl text-[12px] font-bold tracking-wide transition-all"
                                     style={active
                                         ? { background: 'linear-gradient(180deg,rgba(124,92,180,.5),rgba(80,60,140,.35))', color: '#f4ecff', border: '1px solid rgba(190,160,255,.4)', boxShadow: '0 0 18px rgba(150,110,220,.4)' }
@@ -1097,50 +1108,69 @@ ${!shouldGenerateTodo ? `(系统: 今日待办已存在，无需生成，请忽�
                     </div>
                 </div>
 
-                {/* 描述 */}
-                <p className="relative z-10 text-center text-[11px] text-amber-100/45 mt-4 px-8 leading-relaxed">
-                    {homeTab === 'pixelHome' ? '像素风的家——自由装修、布置房间、潜入记忆。' : '走进谁的房间，看看 ta 此刻在做什么、翻翻屋里的小物件。'}
-                </p>
+                {homeTab === 'worldHome' ? (
+                    /* 家园分区：直接内嵌大世界本体，保持顶部三栏（不再跳走/不再多一层封面） */
+                    <div className="relative z-10 flex-1 min-h-0 mt-3 overflow-hidden">
+                        <WorldHomeApp embedded />
+                    </div>
+                ) : (
+                    <>
+                        {/* 描述 */}
+                        <p className="relative z-10 text-center text-[11px] text-amber-100/45 mt-4 px-8 leading-relaxed">
+                            {homeTab === 'pixelHome' ? '像素风的家——自由装修、布置房间、潜入记忆。' : '走进谁的房间，看看 ta 此刻在做什么、翻翻屋里的小物件。'}
+                        </p>
 
-                {/* 角色网格 */}
-                <div className="relative z-10 flex-1 overflow-y-auto no-scrollbar px-5 pt-4 pb-4">
-                    {characters.length === 0 ? (
-                        <div className="text-center text-amber-100/40 text-[12px] py-16">还没有角色，先去「神经链接」创建一个吧。</div>
-                    ) : (
-                        <div className="grid grid-cols-2 gap-4">
-                            {characters.map(c => {
-                                const pixel = homeTab === 'pixelHome';
-                                return (
-                                    <button key={c.id} onClick={() => { if (pixel) { setActiveCharacterId(c.id); setViewState('pixelHome'); } else handleEnterRoom(c); }}
-                                        className="group relative rounded-2xl px-3 pt-7 pb-5 flex flex-col items-center active:scale-95 transition-all overflow-hidden"
-                                        style={{ background: 'linear-gradient(180deg,rgba(62,54,100,.55),rgba(28,24,52,.6))', border: '1px solid rgba(200,180,255,.14)', boxShadow: '0 8px 24px rgba(0,0,0,.35)' }}>
-                                        {/* 四角描金边框 */}
-                                        <span className="absolute top-1.5 left-1.5 w-3.5 h-3.5 border-t border-l rounded-tl" style={{ borderColor: 'rgba(212,185,120,.5)' }} />
-                                        <span className="absolute top-1.5 right-1.5 w-3.5 h-3.5 border-t border-r rounded-tr" style={{ borderColor: 'rgba(212,185,120,.5)' }} />
-                                        <span className="absolute bottom-1.5 left-1.5 w-3.5 h-3.5 border-b border-l rounded-bl" style={{ borderColor: 'rgba(212,185,120,.5)' }} />
-                                        <span className="absolute bottom-1.5 right-1.5 w-3.5 h-3.5 border-b border-r rounded-br" style={{ borderColor: 'rgba(212,185,120,.5)' }} />
-                                        {/* 头像 + 双层装饰环 */}
-                                        <div className="relative w-[88px] h-[88px] flex items-center justify-center">
-                                            <div className="absolute inset-0 rounded-full" style={{ border: '1px solid rgba(212,185,120,.35)' }} />
-                                            <div className="absolute inset-[5px] rounded-full" style={{ border: '1px solid rgba(212,185,120,.18)' }} />
-                                            <div className="w-[72px] h-[72px] rounded-full overflow-hidden" style={{ boxShadow: '0 0 16px rgba(150,120,220,.4)' }}>
-                                                <img src={c.avatar} className="w-full h-full object-cover" alt={c.name} />
-                                            </div>
-                                            <div className="absolute bottom-0 right-1 w-6 h-6 rounded-full flex items-center justify-center text-[11px]" style={{ background: '#241d3e', border: '1px solid rgba(212,185,120,.3)' }}>{pixel ? '🎮' : '🏠'}</div>
-                                        </div>
-                                        <span className="mt-3 text-[14px] text-amber-50 font-semibold tracking-wide" style={{ fontFamily: `'Noto Serif SC',serif` }}>{c.name}</span>
-                                        <span className="mt-0.5 text-[10px] text-amber-100/40">{pixel ? '进 ta 的像素家园' : '拜访 ta 的房间'}</span>
-                                    </button>
-                                );
-                            })}
+                        {/* 角色网格 */}
+                        <div className="relative z-10 flex-1 overflow-y-auto no-scrollbar px-5 pt-4 pb-4">
+                            {characters.length === 0 ? (
+                                <div className="text-center text-amber-100/40 text-[12px] py-16">还没有角色，先去「神经链接」创建一个吧。</div>
+                            ) : (
+                                <div className="grid grid-cols-2 gap-4">
+                                    {characters.map((c, i) => {
+                                        const pixel = homeTab === 'pixelHome';
+                                        const tint = ROOM_CARD_TINTS[i % ROOM_CARD_TINTS.length];
+                                        return (
+                                            <button key={c.id} onClick={() => { if (pixel) { setActiveCharacterId(c.id); setViewState('pixelHome'); } else handleEnterRoom(c); }}
+                                                className="group relative rounded-2xl px-3 pt-8 pb-5 flex flex-col items-center active:scale-95 transition-all overflow-hidden"
+                                                style={{ background: tint, border: '1px solid rgba(212,185,120,.28)', boxShadow: '0 10px 26px rgba(0,0,0,.4)' }}>
+                                                {/* 内描金细框 + 四角宝石 */}
+                                                <div className="absolute inset-[7px] rounded-xl pointer-events-none" style={{ border: '1px solid rgba(212,185,120,.22)' }} />
+                                                <span className="absolute top-[10px] left-[10px] w-1.5 h-1.5 rotate-45" style={{ background: 'rgba(226,200,130,.7)' }} />
+                                                <span className="absolute top-[10px] right-[10px] w-1.5 h-1.5 rotate-45" style={{ background: 'rgba(226,200,130,.7)' }} />
+                                                <span className="absolute bottom-[10px] left-[10px] w-1.5 h-1.5 rotate-45" style={{ background: 'rgba(226,200,130,.7)' }} />
+                                                <span className="absolute bottom-[10px] right-[10px] w-1.5 h-1.5 rotate-45" style={{ background: 'rgba(226,200,130,.7)' }} />
+                                                {/* 头像 + 罗盘纹 + 双层环 */}
+                                                <div className="relative w-[92px] h-[92px] flex items-center justify-center">
+                                                    {/* 罗盘刻度环 */}
+                                                    <div className="absolute w-[124px] h-[124px] rounded-full" style={{ background: 'repeating-conic-gradient(from 0deg, rgba(212,185,120,.16) 0deg 2.4deg, transparent 2.4deg 9deg)', WebkitMaskImage: 'radial-gradient(circle, transparent 40%, #000 44%, #000 50%, transparent 55%)', maskImage: 'radial-gradient(circle, transparent 40%, #000 44%, #000 50%, transparent 55%)' }} />
+                                                    {/* 柔光 */}
+                                                    <div className="absolute w-[110px] h-[110px] rounded-full" style={{ background: 'radial-gradient(circle, rgba(190,160,235,.22), transparent 62%)' }} />
+                                                    <div className="absolute inset-[8px] rounded-full" style={{ border: '1px solid rgba(212,185,120,.4)' }} />
+                                                    <div className="absolute inset-[12px] rounded-full" style={{ border: '1px solid rgba(212,185,120,.18)' }} />
+                                                    <div className="w-[70px] h-[70px] rounded-full overflow-hidden" style={{ boxShadow: '0 0 18px rgba(160,130,225,.5)' }}>
+                                                        <img src={c.avatar} className="w-full h-full object-cover" alt={c.name} />
+                                                    </div>
+                                                    <div className="absolute bottom-0 right-1.5 w-[22px] h-[22px] rounded-full flex items-center justify-center" style={{ background: 'rgba(246,241,231,.95)', boxShadow: '0 1px 5px rgba(0,0,0,.45)' }}>
+                                                        {pixel ? <span className="text-[10px]">🎮</span> : (
+                                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} className="w-3.5 h-3.5 text-amber-700"><path strokeLinecap="round" strokeLinejoin="round" d="M2.25 12l8.954-8.955c.44-.439 1.152-.439 1.591 0L21.75 12M4.5 9.75v10.125c0 .621.504 1.125 1.125 1.125H9.75v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c.621 0 1.125-.504 1.125-1.125V9.75" /></svg>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                                <span className="mt-3 text-[14px] text-amber-50 font-semibold tracking-wide" style={{ fontFamily: `'Noto Serif SC',serif` }}>{c.name}</span>
+                                                <span className="mt-0.5 text-[10px] text-amber-100/45">{pixel ? '进 ta 的像素家园' : '拜访 ta 的房间'}</span>
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            )}
                         </div>
-                    )}
-                </div>
 
-                {/* 底部装饰 */}
-                <div className="relative z-10 shrink-0 pb-4 flex items-center justify-center gap-2.5 text-[8.5px] tracking-[0.35em] text-amber-200/35 font-bold">
-                    <span>EXPLORE</span><span className="text-amber-200/20">◆</span><span>CONNECT</span><span className="text-amber-200/20">◆</span><span>DISCOVER</span>
-                </div>
+                        {/* 底部装饰 */}
+                        <div className="relative z-10 shrink-0 pb-4 flex items-center justify-center gap-2.5 text-[8.5px] tracking-[0.35em] text-amber-200/35 font-bold">
+                            <span>EXPLORE</span><span className="text-amber-200/20">◆</span><span>CONNECT</span><span className="text-amber-200/20">◆</span><span>DISCOVER</span>
+                        </div>
+                    </>
+                )}
             </div>
         );
     }
