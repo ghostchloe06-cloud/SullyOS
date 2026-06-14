@@ -669,15 +669,15 @@ const WorldEditor: React.FC<{
                     </div>
                 )}
                 <div className="pt-1">
-                    <div className={`${labelCls} mb-1.5`}>叙述人称（大段正文用第几人称写）</div>
-                    <div className="grid grid-cols-3 gap-1.5">
-                        {([['first', '第一人称', '「我」'], ['second', '第二人称', '「你」'], ['third', '第三人称', '名字/ta']] as const).map(([p, name, hint]) => {
+                    <div className={`${labelCls} mb-1.5`}>叙述人称（大段正文怎么称呼自己）</div>
+                    <div className="grid grid-cols-2 gap-1.5">
+                        {([['first', '第一人称', '「我推开门…」'], ['third', '第三人称', `「${members[0]?.name || '名字'}推开门…」`]] as const).map(([p, name, hint]) => {
                             const on = (w.narrationPerson || 'first') === p;
                             return (
                                 <button key={p} onClick={() => upd({ narrationPerson: p })}
-                                    className={`px-2 py-2 rounded-xl border text-center transition-all ${on ? 'bg-stone-900 border-stone-900 text-white shadow-md' : 'bg-white border-stone-200 text-stone-700'}`}>
+                                    className={`px-2.5 py-2 rounded-xl border text-left transition-all ${on ? 'bg-stone-900 border-stone-900 text-white shadow-md' : 'bg-white border-stone-200 text-stone-700'}`}>
                                     <div className="text-[12px] font-bold">{name}</div>
-                                    <div className={`text-[9.5px] mt-0.5 ${on ? 'text-white/65' : 'text-stone-400'}`}>{hint}</div>
+                                    <div className={`text-[10px] mt-0.5 ${on ? 'text-white/65' : 'text-stone-400'}`}>{hint}</div>
                                 </button>
                             );
                         })}
