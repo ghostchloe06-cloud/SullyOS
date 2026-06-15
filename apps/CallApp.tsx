@@ -134,20 +134,23 @@ const splitTextForTts = (rawText: string, maxChunkLen = 120): string[] => {
     return arr;
   }).filter(Boolean);
 };
-// 语气词标签 → 展示用的图标 + 中文小标签（把朗读用的 (sighs) 渲染成好看的徽章）
-const SOUND_TAG_META: Record<string, { icon: string; zh: string }> = {
-  chuckle: { icon: '😏', zh: '轻笑' }, laughs: { icon: '😄', zh: '笑' },
-  sighs: { icon: '😮‍💨', zh: '叹气' }, coughs: { icon: '😷', zh: '咳' },
-  'clear-throat': { icon: '😤', zh: '清嗓' }, groans: { icon: '😣', zh: '哼唧' },
-  breath: { icon: '🌬️', zh: '换气' }, pant: { icon: '😮‍💨', zh: '喘' },
-  inhale: { icon: '🫁', zh: '吸气' }, exhale: { icon: '🌬️', zh: '呼气' },
-  gasps: { icon: '😲', zh: '倒吸气' }, sniffs: { icon: '👃', zh: '吸鼻' },
-  snorts: { icon: '😆', zh: '喷笑' }, 'lip-smacking': { icon: '😋', zh: '咂嘴' },
-  humming: { icon: '🎵', zh: '哼唱' }, hissing: { icon: '😬', zh: '嘶' },
-  emm: { icon: '🤔', zh: '嗯' },
+// 语气词标签 → 展示用的中文小标签（把朗读用的 (sighs) 渲染成极简徽章，不用 emoji）
+const SOUND_TAG_META: Record<string, string> = {
+  chuckle: '轻笑', laughs: '笑', sighs: '叹气', coughs: '咳',
+  'clear-throat': '清嗓', groans: '哼唧', breath: '换气', pant: '喘',
+  inhale: '吸气', exhale: '呼气', gasps: '倒吸气', sniffs: '吸鼻',
+  snorts: '喷笑', 'lip-smacking': '咂嘴', humming: '哼唱', hissing: '嘶', emm: '嗯',
 };
 const SOUND_TAG_NAMES = Object.keys(SOUND_TAG_META).join('|');
 const SOUND_TAG_SPLIT_RE = new RegExp(`(（[^（）\\n]{1,48}）|\\((?:${SOUND_TAG_NAMES})\\)|\\n)`, 'gi');
+// 迷你声波条——呼应通话界面的波形主题，纯矢量
+const SoundWaveGlyph = ({ accent }: { accent: string }) => (
+  <span className="inline-flex items-center gap-[1.5px] align-middle" style={{ height: '0.7em' }} aria-hidden>
+    {[0.4, 0.85, 0.6, 1, 0.5].map((h, i) => (
+      <span key={i} className="w-[1.5px] rounded-full" style={{ height: `${h * 100}%`, background: accent, opacity: 0.85 }} />
+    ))}
+  </span>
+);
 const renderAssistantLine = (text: string, accent = '#8b5cf6') => {
   // 朗读用的停顿标记 <#0.4#> 不显示出来
   const trimmed = text.replace(/<#[\d.]+#>/g, '').trim();
@@ -157,11 +160,12 @@ const renderAssistantLine = (text: string, accent = '#8b5cf6') => {
     if (part === '\n') return <div key={`br-${idx}`} className="h-2" />;
     const soundMatch = part.match(new RegExp(`^\\((${SOUND_TAG_NAMES})\\)$`, 'i'));
     if (soundMatch) {
-      const meta = SOUND_TAG_META[soundMatch[1].toLowerCase()];
+      const zh = SOUND_TAG_META[soundMatch[1].toLowerCase()];
       return (
-        <span key={`snd-${idx}`} className="inline-flex items-center gap-0.5 align-middle mx-0.5 px-1.5 py-[1px] rounded-full text-[0.72em] font-medium"
-          style={{ background: `${accent}26`, color: accent, border: `1px solid ${accent}40` }}>
-          <span>{meta.icon}</span><span className="opacity-90">{meta.zh}</span>
+        <span key={`snd-${idx}`} className="inline-flex items-center gap-1 align-middle mx-0.5 px-1.5 py-[1px] rounded-full text-[0.7em] font-medium tracking-wide"
+          style={{ background: `${accent}1f`, color: accent, border: `1px solid ${accent}33` }}>
+          <SoundWaveGlyph accent={accent} />
+          <span className="opacity-95">{zh}</span>
         </span>
       );
     }
