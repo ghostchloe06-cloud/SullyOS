@@ -3127,6 +3127,7 @@ function withSseAntiBufferingHeaders(resp) {
   const headers = new Headers(resp.headers);
   headers.set("Cache-Control", "no-cache, no-transform");
   headers.set("X-Accel-Buffering", "no");
+  headers.set("Timing-Allow-Origin", "*");
   return new Response(resp.body, {
     status: resp.status,
     statusText: resp.statusText,
