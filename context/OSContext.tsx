@@ -23,6 +23,11 @@ import { LocalNotifications } from '@capacitor/local-notifications';
 import { Capacitor } from '@capacitor/core';
 import { formatBytes } from '../utils/format';
 import { isEmotionEvalSkipped } from '../utils/devDebug';
+// 备份用：把存在 localStorage 的本机配置随导出一起带走（键名须与 importFullData 对齐）
+import { exportPostOfficeLocal } from '../utils/vrWorld/postOffice';
+import { exportWorldHomeLocal } from '../utils/worldHome/localBackup';
+import { exportLuckinLocal } from '../utils/luckinMcpClient';
+import { exportMcdLocal } from '../utils/mcdMcpClient';
 
 const normalizeProactiveAiContent = (raw: string): string => {
   let cleaned = raw;
@@ -2590,7 +2595,10 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
               'daily_schedule', 'memory_batches',
               'pixel_home_assets', 'pixel_home_layouts',
               // 「彼方」虚拟世界各房间 store —— 早期导出清单漏了，导致备份不含房间数据
-              'vr_novels', 'vr_annotations', 'cc_custom_parts', 'vr_music', 'vr_guestbook', 'vr_letters', 'vr_settings'
+              // 剧院的 vr_scripts(投稿剧本) / vr_plays(角色演过的话剧) / vr_presets(写作风格预设)
+              // 之前也漏在这份清单外，导出后这三类剧院数据全丢（导入端其实早已支持恢复）
+              'vr_novels', 'vr_annotations', 'cc_custom_parts', 'vr_music', 'vr_guestbook', 'vr_letters', 'vr_settings',
+              'vr_scripts', 'vr_plays', 'vr_presets'
           ];
 
           if (mode === 'full') {
@@ -2739,6 +2747,14 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
                   }
                   return Object.keys(flags).length > 0 ? flags : undefined;
               })() : undefined,
+
+              // 本机 localStorage 配置（导入端 importFullData 已支持恢复，之前导出漏发导致丢失）
+              //  · 瑞幸 / 麦当劳 MCP 的点单 token + 启用状态（用户说的「那个码」）
+              //  · 邮局身份、家园全局 API + 文风收藏
+              vrPostOffice: (mode === 'text_only' || mode === 'full') ? exportPostOfficeLocal() : undefined,
+              worldHomeLocal: (mode === 'text_only' || mode === 'full') ? exportWorldHomeLocal() : undefined,
+              luckinLocal: (mode === 'text_only' || mode === 'full') ? exportLuckinLocal() : undefined,
+              mcdLocal: (mode === 'text_only' || mode === 'full') ? exportMcdLocal() : undefined,
           };
 
           const totalSteps = storesToProcess.length + 3;
@@ -2951,6 +2967,9 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
                   case 'cc_custom_parts': backupData.customCreatorParts = processedData; break;
                   case 'vr_letters': backupData.vrLetters = processedData; break;
                   case 'vr_settings': backupData.vrSettings = processedData; break;
+                  case 'vr_scripts': backupData.vrScripts = processedData; break;
+                  case 'vr_plays': backupData.vrStagedPlays = processedData; break;        // 角色演过的话剧
+                  case 'vr_presets': backupData.vrPresets = processedData; break;
                   // 单例 store：导入端期望单个对象（取首条），非数组
                   case 'vr_music': backupData.vrMusicRoom = Array.isArray(processedData) ? (processedData[0] || undefined) : (processedData || undefined); break;
                   case 'vr_guestbook': backupData.vrGuestbook = Array.isArray(processedData) ? (processedData[0] || undefined) : (processedData || undefined); break;
