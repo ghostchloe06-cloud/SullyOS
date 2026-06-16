@@ -557,9 +557,6 @@ function withSseAntiBufferingHeaders(resp: Response): Response {
   const headers = new Headers(resp.headers);
   headers.set('Cache-Control', 'no-cache, no-transform');
   headers.set('X-Accel-Buffering', 'no');
-  // 让前端能读到这条跨域请求的 PerformanceResourceTiming 细节 (尤其 nextHopProtocol —— 验
-  // h3/QUIC)。跨域资源默认把这些字段屏蔽成空, 必须 worker 显式放行 Timing-Allow-Origin。
-  headers.set('Timing-Allow-Origin', '*');
   return new Response(resp.body, {
     status: resp.status,
     statusText: resp.statusText,

@@ -2726,7 +2726,7 @@ function classifyLLMOutput(text) {
 }
 
 // utils/instantWorkerVersion.ts
-var INSTANT_WORKER_VERSION = "2026-06-10";
+var INSTANT_WORKER_VERSION = "2026-06-16";
 
 // worker/instant-push/src/index.ts
 var MULTIPART_TRANSPORT = { enabled: true };
@@ -3129,7 +3129,6 @@ function withSseAntiBufferingHeaders(resp) {
   const headers = new Headers(resp.headers);
   headers.set("Cache-Control", "no-cache, no-transform");
   headers.set("X-Accel-Buffering", "no");
-  headers.set("Timing-Allow-Origin", "*");
   return new Response(resp.body, {
     status: resp.status,
     statusText: resp.statusText,

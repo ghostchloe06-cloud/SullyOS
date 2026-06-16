@@ -812,21 +812,6 @@ function instantTrace(
   appendDevDebugLog('instant-push', { label: `trace:${event}`, data: entry });
 }
 
-// 从 Performance Resource Timing 里捞最近一条 /instant 请求实际协商的协议 (h3 / h2 / http/1.1)。
-// 纯客户端读取, 不依赖库; 拿不到就返 undefined。遥测用, 任何异常都吞掉不影响主流程。
-function getWorkerNextHopProtocol(): string | undefined {
-  try {
-    if (typeof performance === 'undefined' || !performance.getEntriesByType) return undefined;
-    const entries = performance.getEntriesByType('resource') as PerformanceResourceTiming[];
-    for (let i = entries.length - 1; i >= 0; i--) {
-      if (entries[i].name.includes('/instant')) {
-        return entries[i].nextHopProtocol || undefined;
-      }
-    }
-  } catch { /* ignore */ }
-  return undefined;
-}
-
 // /instant 与 /continue 都把预分配的 sessionId 作为 SW 投递的 requestId; 优先取
 // payload 自带的 instantTraceId (老格式兼容), 否则回落 sessionId / messageId。
 function resolveInstantTraceId(payload: any, fallback?: string): string {
@@ -1104,18 +1089,6 @@ export async function sendInstantPushAndAwaitReply(
       // 压到 ~50KB, 绕开「大 body 上传撑过超时被中间层掐」。上下文全量不变。线上契约见
       // worker decodeGzipRequestBody。旧版库忽略此选项、明文发, 向后兼容。
       compressRequest: true,
-      // SSE 原始读遥测: 每次 reader.read() 后回调原始字节信息 (含被解析层静默丢弃的
-      // `: keepalive` 注释帧), 排查「连接静默期里有没有字节真到达」用。
-      onRawRead: (meta: any) => {
-        instantTrace(sessionId, 'sse-raw-read', {
-          byteLength: meta?.byteLength,
-          done: meta?.done,
-          textPreview: meta?.textPreview,
-          contentEncoding: meta?.contentEncoding,
-          contentType: meta?.contentType,
-          status: meta?.status,
-        });
-      },
     });
 
     // amsg-client 2.5.0 的 .d.ts 是 JSDoc + JS, TS 推断 result.detail 时只看到必填的
@@ -1141,8 +1114,6 @@ export async function sendInstantPushAndAwaitReply(
       cancelledByCaller: detail.cancelledByCaller,
       sseDeliveredOk,
       sseBusinessError,
-      // 这次 /instant 请求实际走的协议 (h3 = QUIC / h2 / http/1.1)，验证「HTTP/3 长连接 ~42s 被掐」假设。
-      nextHopProtocol: getWorkerNextHopProtocol(),
     });
 
     // ─── outcome 映射回 InstantOutcome ───────────────────────────────────
