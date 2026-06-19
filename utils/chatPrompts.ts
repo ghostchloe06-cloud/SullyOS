@@ -346,11 +346,11 @@ ${uname} 的化身正挂在《彼方》的【${roomName}】${act ? `，状态写
         const notionEnabled = !!(realtimeConfig?.notionEnabled && realtimeConfig?.notionApiKey && realtimeConfig?.notionDatabaseId);
         const notionNotesEnabled = !!(realtimeConfig?.notionEnabled && realtimeConfig?.notionApiKey && realtimeConfig?.notionNotesDatabaseId);
         const feishuEnabled = !!(realtimeConfig?.feishuEnabled && realtimeConfig?.feishuAppId && realtimeConfig?.feishuAppSecret && realtimeConfig?.feishuBaseId && realtimeConfig?.feishuTableId);
-        // Per-character XHS override: MCP-only
+        // Per-character XHS: 必须由角色自己的开关显式打开（UI 默认关闭）。
+        // 不再回退到全局 realtimeConfig.xhsEnabled —— 否则配置了 lite/MCP 后，
+        // 即使角色开关显示为关，未显式设置过(undefined)的角色仍会收到小红书提示词。
         const mcpXhsAvailable = !!(realtimeConfig?.xhsMcpConfig?.enabled && realtimeConfig?.xhsMcpConfig?.serverUrl);
-        const xhsEnabled = char.xhsEnabled !== undefined
-            ? !!(char.xhsEnabled && mcpXhsAvailable)
-            : !!(realtimeConfig?.xhsEnabled && mcpXhsAvailable);
+        const xhsEnabled = !!(char.xhsEnabled && mcpXhsAvailable);
 
         baseSystemPrompt += `### 聊天 App 行为规范 (Chat App Rules)
             **严格注意，你正在手机聊天，无论之前是什么模式，哪怕上一句话你们还面对面在一起，当前，你都是已经处于线上聊天状态了，请不要输出你的行为**
