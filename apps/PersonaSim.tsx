@@ -61,7 +61,7 @@ interface Props {
     onExit: () => void;
     openLifeLog: () => void;
     sim: SimState;
-    onStart: (mode: 'daily' | 'event', theme: string, presence: 'default' | 'light' | 'none') => void;
+    onStart: (mode: 'daily' | 'event', theme: string, presence: 'default' | 'light' | 'none', tone: 'mix' | 'depressive' | 'darkhumor' | 'cute') => void;
     onConsumed: () => void;
 }
 
@@ -112,8 +112,9 @@ const Typewriter: React.FC<{ drafts: string[]; sent?: string | null; className?:
 export async function generatePersonaScript(opts: {
     char: CharacterProfile; userProfile: UserProfile; apiConfig: SimApiConfig;
     mode: 'daily' | 'event'; theme: string; userPresence?: 'default' | 'light' | 'none';
+    tone?: 'mix' | 'depressive' | 'darkhumor' | 'cute';
 }): Promise<SimScript> {
-    const { char, userProfile, apiConfig, mode, theme, userPresence = 'default' } = opts;
+    const { char, userProfile, apiConfig, mode, theme, userPresence = 'default', tone = 'mix' } = opts;
     await injectMemoryPalace(char, undefined, theme, userProfile.name);
     const context = ContextBuilder.buildCoreContext(char, userProfile, true, char.memoryPalaceInjection);
     const msgs = await DB.getMessagesByCharId(char.id);
@@ -126,7 +127,7 @@ export async function generatePersonaScript(opts: {
     }).join('\n');
     const firstTs = msgs.find(m => typeof m.timestamp === 'number')?.timestamp;
     const acquaintance = describeAcquaintance(firstTs, userProfile.name, char.name);
-    const prompt = buildDirectorPrompt(context, recent, mode, theme, char.name, acquaintance, userProfile.name, userPresence);
+    const prompt = buildDirectorPrompt(context, recent, mode, theme, char.name, acquaintance, userProfile.name, userPresence, tone);
     const res = await fetch(`${apiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiConfig.apiKey}` },
@@ -153,6 +154,7 @@ const PersonaSim: React.FC<Props> = ({ targetChar, onExit, openLifeLog, sim, onS
     const [mode, setMode] = useState<'daily' | 'event'>('daily');
     const [theme, setTheme] = useState('');
     const [presence, setPresence] = useState<'default' | 'light' | 'none'>('default');
+    const [tone, setTone] = useState<'mix' | 'depressive' | 'darkhumor' | 'cute'>('mix');
     const [script, setScript] = useState<SimScript | null>(null);
     const [idx, setIdx] = useState(0);
     const [autoplay, setAutoplay] = useState(false);
@@ -180,7 +182,7 @@ const PersonaSim: React.FC<Props> = ({ targetChar, onExit, openLifeLog, sim, onS
         const trimmed = t.trim();
         if (!trimmed) { addToast('请选择或输入体验内容', 'error'); return; }
         setMode(m); setTheme(trimmed);
-        onStart(m, trimmed, presence);
+        onStart(m, trimmed, presence, tone);
     };
 
     // ----- consume a ready script (generated in background) and start playing -----
@@ -371,6 +373,29 @@ const PersonaSim: React.FC<Props> = ({ targetChar, onExit, openLifeLog, sim, onS
                             const active = presence === o.id;
                             return (
                                 <button key={o.id} onClick={() => setPresence(o.id)}
+                                    className="rounded-2xl py-2.5 border transition active:scale-[0.98] text-center"
+                                    style={active
+                                        ? { background: ACCENT, color: '#1a1530', borderColor: 'transparent' }
+                                        : { background: 'rgba(255,255,255,0.035)', borderColor: 'rgba(255,255,255,0.06)', color: 'rgba(255,255,255,0.8)' }}>
+                                    <div className="text-[12.5px] font-semibold">{o.label}</div>
+                                    <div className={`text-[9px] mt-0.5 ${active ? 'text-[#1a1530]/70' : 'text-white/35'}`}>{o.desc}</div>
+                                </button>
+                            );
+                        })}
+                    </div>
+
+                    {/* 演出基调（丧的大前提下偏哪种味道） */}
+                    <div className="text-[10px] uppercase tracking-wider text-white/40 mb-2 px-1">演出基调</div>
+                    <div className="grid grid-cols-2 gap-2 mb-5">
+                        {([
+                            { id: 'mix', label: '随心', desc: '每场随机' },
+                            { id: 'depressive', label: '致郁', desc: '一路丧到底' },
+                            { id: 'darkhumor', label: '黑色幽默', desc: '病态又好笑' },
+                            { id: 'cute', label: '轻盈可爱', desc: '丧但俏皮' },
+                        ] as const).map(o => {
+                            const active = tone === o.id;
+                            return (
+                                <button key={o.id} onClick={() => setTone(o.id)}
                                     className="rounded-2xl py-2.5 border transition active:scale-[0.98] text-center"
                                     style={active
                                         ? { background: ACCENT, color: '#1a1530', borderColor: 'transparent' }
@@ -1033,7 +1058,26 @@ function buildMemoryText(s: SimScript): string {
 
 // 「本场变奏」——每次随机抽几根轴当硬约束，打破固定的起床→刷手机→睡觉流水账
 const vPick = <T,>(arr: T[]): T => arr[Math.floor(Math.random() * arr.length)];
-function buildVariation(): string {
+// 各基调对应的「情绪底色」候选池（丧是公共底子，差异在上层笔触）
+const MOOD_POOLS: Record<'depressive' | 'darkhumor' | 'cute', string[]> = {
+    depressive: [
+        '平静钝感，情绪几乎贴着地面', '隐隐的烦躁，说不清为什么',
+        '麻木、抽离，像隔着一层玻璃', '怀念某个具体的人或时刻',
+        '低度焦虑，反复确认某件小事', '自我欺骗，嘴上一套、行为一套',
+    ],
+    darkhumor: [
+        '把糟糕的处境吐槽成段子，越惨越想损两句', '一本正经地做一件很荒诞的事，自己都觉得好笑',
+        '用调侃和自嘲盖住真实的难受', '病态的事被 TA 说得稀松平常，反而透着冷幽默',
+        '神经质的好笑，笑完心里更凉', '对自己的烂摊子幸灾乐祸，黑色玩笑停不下来',
+    ],
+    cute: [
+        '丧归丧，行为里却冒出一股傻气和俏皮', '小题大做地认真，可爱又好笑',
+        '幼稚的小执拗，像个长不大的小孩', '自娱自乐，给自己找些无聊但开心的小乐子',
+        '轻飘飘的钝感，丧里带点萌', '对一件小事莫名上头，傻乎乎地投入',
+    ],
+};
+
+function buildVariation(tone: 'mix' | 'depressive' | 'darkhumor' | 'cute' = 'mix'): string {
     const entry = vPick([
         '从一个不起眼的中间时刻切入（绝不要从「起床/醒来/关闹钟」开始）',
         '从午后犯困、注意力涣散的那一刻切入',
@@ -1066,12 +1110,10 @@ function buildVariation(): string {
         '以「和某一个联系人有一搭没一搭的聊天」为主要表达',
         '以「一堆与主线无关的环境碎片（通知/待办/标签页/购物车）」为主要表达',
     ]);
-    const mood = vPick([
-        '平静钝感，情绪几乎贴着地面', '隐隐的烦躁，说不清为什么',
-        '一闪而过的开心，自己都没太当回事', '麻木、抽离，像隔着一层玻璃',
-        '怀念某个具体的人或时刻', '低度焦虑，反复确认某件小事',
-        '自我欺骗，嘴上一套、行为一套',
-    ]);
+    const moodPool = tone === 'mix'
+        ? [...MOOD_POOLS.depressive, ...MOOD_POOLS.darkhumor, ...MOOD_POOLS.cute]
+        : MOOD_POOLS[tone];
+    const mood = vPick(moodPool);
     const anchor = vPick([
         '一杯早就凉掉的咖啡/茶', '一条打好了却没发出去的消息', '一张忘了删的截图',
         '一个挂了半年的待办', '一首单曲循环的歌', '一个一直没人回的群',
@@ -1101,7 +1143,21 @@ function buildPresenceRule(presence: 'default' | 'light' | 'none', userName: str
     }
 }
 
-function buildDirectorPrompt(context: string, recent: string, mode: 'daily' | 'event', theme: string, name: string, acquaintance: string, userName: string, presence: 'default' | 'light' | 'none'): string {
+// 演出基调：丧始终是底子，差异在上层笔触
+function buildToneRule(tone: 'mix' | 'depressive' | 'darkhumor' | 'cute'): string {
+    switch (tone) {
+        case 'depressive':
+            return `【本场基调：致郁】纯粹的低气压——钝感、麻木、克制、贴着地面。不要插科打诨，不要俏皮，让难受安安静静地泡着。`;
+        case 'darkhumor':
+            return `【本场基调：黑色幽默】底子依然压抑、病态、不健康，但表达上要有**神经质的好笑**——self-aware 的自嘲、把惨事讲成段子、一本正经地做荒诞的事、越黑暗越想笑。参考《安迪和莉莉的棺材》那种味道：可爱的皮、病态的里，笑完心里更冷。**绝不能滑成轻松搞笑或正能量，丧的内核一秒都不能丢。**`;
+        case 'cute':
+            return `【本场基调：轻盈可爱】丧是底子，但笔触要**俏皮、轻盈、带点傻气和萌**——小题大做、幼稚的小执拗、自娱自乐、对无聊小事莫名上头。像素小可爱那种可爱感，可爱里藏着钝痛。**不要变成纯治愈/打鸡血，钝痛始终在底下垫着。**`;
+        default:
+            return `【本场基调：随心】基调随「情绪底色」自然流动——可丧、可黑色幽默、可俏皮轻盈，允许一场之内有起伏。但无论哪种笔触，**丧/钝痛的内核始终在底下垫着**，不要变成纯粹的轻松或正能量。`;
+    }
+}
+
+function buildDirectorPrompt(context: string, recent: string, mode: 'daily' | 'event', theme: string, name: string, acquaintance: string, userName: string, presence: 'default' | 'light' | 'none', tone: 'mix' | 'depressive' | 'darkhumor' | 'cute'): string {
     return `${context}
 
 ### [最近的聊天上下文]
@@ -1113,10 +1169,11 @@ ${recent || '（暂无最近对话）'}
 体验内容：「${theme}」
 关系时间线（重要护栏）：${acquaintance}
 你的存在感（${userName || '用户'}在这一天里的位置 · 必须严格遵守）：${buildPresenceRule(presence, userName)}
+${buildToneRule(tone)}
 
 观众（用户）将**成为 ${name}**，通过 TA 使用手机的行为，亲身经历这段时间。
 
-${buildVariation()}
+${buildVariation(tone)}
 
 【铁律】
 1. 不要把故事讲出来，不要解释人物，不要分析情绪，不要总结意义。一切通过**手机行为 / 数字痕迹 / 内心独白 / 环境碎片**自然呈现。
