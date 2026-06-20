@@ -5,6 +5,7 @@ import { OSTheme, DesktopDecoration, AppearancePreset, Toast } from '../types';
 import { INSTALLED_APPS, Icons } from '../constants';
 import { processImage } from '../utils/file';
 import { DB } from '../utils/db';
+import { isStatusBarHidden } from '../utils/iosStandalone';
 import { Sparkle } from '@phosphor-icons/react';
 import { ChatAppearanceEditor as ModularChatAppearanceEditor } from '../components/appearance/ChatAppearanceEditor';
 import { Capacitor } from '@capacitor/core';
@@ -1060,13 +1061,13 @@ const Appearance: React.FC = () => {
                     <div className="flex items-center justify-between">
                         <div>
                             <div className="text-sm font-medium text-slate-700">隐藏顶部时间栏</div>
-                            <div className="text-[10px] text-slate-400 mt-0.5">隐藏屏幕顶部的时间、电量等信息</div>
+                            <div className="text-[10px] text-slate-400 mt-0.5">隐藏屏幕顶部的时间、电量（iOS 全屏默认隐藏，避免与系统重复）</div>
                         </div>
                         <button
-                            onClick={() => updateTheme({ hideStatusBar: !theme.hideStatusBar })}
-                            className={`w-12 h-7 rounded-full transition-colors relative ${theme.hideStatusBar ? 'bg-primary' : 'bg-slate-200'}`}
+                            onClick={() => updateTheme({ hideStatusBar: !isStatusBarHidden(theme.hideStatusBar) })}
+                            className={`w-12 h-7 rounded-full transition-colors relative ${isStatusBarHidden(theme.hideStatusBar) ? 'bg-primary' : 'bg-slate-200'}`}
                         >
-                            <div className={`absolute top-1 w-5 h-5 bg-white rounded-full shadow-sm transition-transform ${theme.hideStatusBar ? 'translate-x-6' : 'translate-x-1'}`} />
+                            <div className={`absolute top-1 w-5 h-5 bg-white rounded-full shadow-sm transition-transform ${isStatusBarHidden(theme.hideStatusBar) ? 'translate-x-6' : 'translate-x-1'}`} />
                         </button>
                     </div>
                 </section>

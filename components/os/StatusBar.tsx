@@ -2,6 +2,7 @@
 import React, { useEffect, useState } from 'react';
 import { useOS } from '../../context/OSContext';
 import Modal from './Modal';
+import { isStatusBarHidden } from '../../utils/iosStandalone';
 
 // TypeScript definition for Web Battery API
 interface BatteryManager extends EventTarget {
@@ -60,14 +61,15 @@ const StatusBar: React.FC = () => {
 
   const hasError = systemLogs.length > 0;
 
+  // 时钟/电量条是否隐藏：外观「隐藏顶部时间栏」开关 + 平台默认（iOS 全屏 PWA 系统已有状态栏，默认隐藏避免双显）。
+  // 仅隐藏下面这条时钟/电量条；错误指示器 + 系统调试终端与本开关无关，始终独立渲染。virtualTime 实为真实时间，隐藏不丢信息。
+  const hideOsStatusBar = isStatusBarHidden(theme.hideStatusBar);
+
   return (
     <>
-      {/* TODO(safe-area-B): 时钟/电量贴灵动岛
-         现象：iOS 全屏 PWA 下时间电量偏下，没贴住系统灵动岛两侧（dev 与 master 都如此，非某次迁移引入）。
-         根因：下面 paddingTop 用了整段 var(--safe-top)(灵动岛设备≈59px)+ items-start，把内容压到安全区底部，
-               而不是在灵动岛高度内垂直居中。要往上贴就得减小这个 paddingTop（如在 safe-top 内居中、或用更小的固定偏移）。
-         注意：StatusBar 是所有 App 共用的全局组件，改这里会同时移动每个 App 的时钟，且有与灵动岛碰撞的风险，
-               需单独改 + 单独真机验证，别和某个 App 的迁移捆在一起。 */}
+      {/* safe-area-B 解法：iOS 全屏 PWA 下系统状态栏（真实时间/电量）删不掉，隐掉 SullyOS 自己这条避免双显。
+         非 iOS standalone（安卓/桌面浏览器无系统状态栏）仍渲染，作为虚拟手机自己的状态栏。 */}
+      {!hideOsStatusBar && (
       <div
           className="w-full flex justify-between items-start px-6 text-[11px] font-bold z-50 absolute top-0 left-0 bg-transparent transition-colors duration-500 select-none pointer-events-none"
           style={{
@@ -105,6 +107,7 @@ const StatusBar: React.FC = () => {
           </div>
         </div>
       </div>
+      )}
 
       {/* Independent Error Indicator - Floating below status bar */}
       {hasError && (

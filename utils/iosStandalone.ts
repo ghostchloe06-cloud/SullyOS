@@ -52,6 +52,15 @@ export const isStandaloneDisplayMode = (): boolean => {
 
 export const isIOSStandaloneWebApp = (): boolean => isIOSDevice() && isStandaloneDisplayMode();
 
+// 顶部时钟/电量条是否隐藏：外观「隐藏顶部时间栏」开关显式设过就听用户的；没设过(undefined)按平台默认——
+// iOS 全屏 PWA 系统状态栏(真实时间/电量)删不掉，默认隐藏 SullyOS 这条避免双显。
+// 必须用 ?? 而非 ||：显式 false（用户主动要显示）不能被平台默认 true 盖掉。
+// 只决定时钟/电量条；错误指示器、系统调试终端等与本开关无关，始终独立显示。
+export const isStatusBarHidden = (
+    hideStatusBar?: boolean,
+    platformDefaultHidden: boolean = isIOSStandaloneWebApp(),
+): boolean => hideStatusBar ?? platformDefaultHidden;
+
 const isTextEntryElement = (target: EventTarget | null): target is HTMLElement => {
     if (!(target instanceof HTMLElement)) return false;
     if (target.isContentEditable) return true;

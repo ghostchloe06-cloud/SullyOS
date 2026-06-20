@@ -131,7 +131,7 @@ import { App as CapApp } from '@capacitor/app';
 import { StatusBar as CapStatusBar, Style as StatusBarStyle } from '@capacitor/status-bar';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import { Capacitor } from '@capacitor/core';
-import { isIOSStandaloneWebApp } from '../utils/iosStandalone';
+import { isIOSStandaloneWebApp, isStatusBarHidden } from '../utils/iosStandalone';
 import AppErrorBoundary from './os/AppErrorBoundary';
 import GlobalMiniPlayer from './os/GlobalMiniPlayer';
 import ErrorDialog from './os/ErrorDialog';
@@ -469,6 +469,14 @@ const AppLoadingFallback: React.FC<{ onReturn?: () => void }> = ({ onReturn }) =
 const PhoneShell: React.FC = () => {
   const { theme, isLocked, unlock, activeApp, closeApp, openApp, virtualTime, isDataLoaded, toasts, unreadMessages, characters, handleBack, suspendedCall, resumeCall, activeCharacterId, errorDialog, dismissError } = useOS();
   const useIOSStandaloneLayout = isIOSStandaloneWebApp();
+
+  // 顶部时钟/电量条是否隐藏（外观「隐藏顶部时间栏」开关 + 平台默认：iOS 全屏 PWA 系统已有状态栏，默认隐藏避免双显）。
+  // 隐藏时把 --chrome-top 退化成 --safe-top，让用 chrome-top 让位的顶栏（交换日记/彼方/剧场）不再为已隐藏的状态栏多留 1.5rem。
+  const statusBarHidden = isStatusBarHidden(theme.hideStatusBar);
+  useEffect(() => {
+    document.documentElement.classList.toggle('sully-statusbar-hidden', statusBarHidden);
+  }, [statusBarHidden]);
+
   // 冷启动「世界入场」是否已结束。结束前由 BootSequence 接管整屏（同时取代旧的黑屏 spinner）。
   const [bootDone, setBootDone] = useState(false);
 
@@ -817,8 +825,9 @@ const PhoneShell: React.FC = () => {
             </AppErrorBoundary>
           </div>
 
-          {/* Overlays: Status Bar (Top) */}
-          {!theme.hideStatusBar && <StatusBar />}
+          {/* Overlays: Status Bar (Top) —— 常驻渲染：时钟/电量条由开关+平台默认决定显隐（StatusBar 内部 isStatusBarHidden），
+              错误指示器、系统调试终端与开关无关、始终在。 */}
+          <StatusBar />
           
           {/* Overlays: Suspended Call Bar */}
           {suspendedCall && activeApp !== AppID.Call && (

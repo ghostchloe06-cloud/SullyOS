@@ -143,6 +143,12 @@
         width: 100vw;
         font-family: var(--app-font);
       }
+      /* 顶部时钟/电量条被隐藏时（外观开关或平台默认，由 PhoneShell 切换 .sully-statusbar-hidden），
+         chrome-top 不再需要那 1.5rem 状态栏预留，退化成 safe-top，
+         避免用 --chrome-top 让位的顶栏（交换日记/彼方/剧场等）顶部多留空白。 */
+      html.sully-statusbar-hidden {
+        --chrome-top: var(--safe-top);
+      }
       body.ios-standalone {
         min-height: var(--app-height);
         height: var(--app-height);
