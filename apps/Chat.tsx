@@ -841,15 +841,6 @@ const Chat: React.FC = () => {
         if (type === 'text') {
             let xhsCardCreated = false;
             let webpageCardCreated = false;
-            // 纯分享判定：去掉链接 + 小红书样板（【标题】/emoji/暗号）后，还剩用户自己写的话吗？
-            const linkResidual = (txt: string): string => txt
-                .replace(/https?:\/\/\S+/g, ' ')
-                .replace(/【[^】]*】/g, ' ')
-                .replace(/[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{FE0F}\u{2B00}-\u{2BFF}]/gu, ' ')
-                .replace(/[A-Za-z0-9_\-]{8,}/g, ' ')
-                .replace(/\d+/g, ' ')
-                .replace(/[\s,，。.!！?？、:：;；#·\-—…"'""''（）()]/g, '')
-                .trim();
             const xhsFullMatch = text.match(/xiaohongshu\.com\/(?:discovery\/item|explore)\/([a-f0-9]{24})/);
             const xhsShortMatch = text.match(/(?:https?:\/\/)?xhslink\.com\/[A-Za-z0-9/]+/i);
             if (xhsFullMatch || xhsShortMatch) {
@@ -947,11 +938,8 @@ const Chat: React.FC = () => {
                 }
             }
 
-            // 删掉原始链接文本、只留卡片：
-            //  - 小红书分享文案整体是样板（摘要/序号/口令提示）→ 建卡成功就删；
-            //  - 网页分享则保留「用户自己写了话」的情况（linkResidual 非空时不删）。
-            const shouldDeleteOriginal = xhsCardCreated || (webpageCardCreated && !linkResidual(text));
-            if (shouldDeleteOriginal && savedUserMsgId) {
+            // 一段话里出现链接 = 整条就是分享（符合用户习惯）→ 建卡成功就删原文，只留卡片。
+            if ((xhsCardCreated || webpageCardCreated) && savedUserMsgId) {
                 await DB.deleteMessage(savedUserMsgId);
             }
         }
