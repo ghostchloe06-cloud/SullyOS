@@ -1211,38 +1211,40 @@ Format:
                     const PER_PAGE = 6;
                     const pageCount = Math.max(1, Math.ceil(characters.length / PER_PAGE));
                     const cur = Math.min(selectPage, pageCount - 1);
+                    const pageChars = characters.slice(cur * PER_PAGE, cur * PER_PAGE + PER_PAGE);
                     return (
                         <div className="flex-1 min-h-0 flex flex-col">
-                            <div
-                                className="flex-1 min-h-0 flex overflow-x-auto snap-x snap-mandatory no-scrollbar overscroll-contain"
-                                onScroll={e => {
-                                    const el = e.currentTarget;
-                                    const p = Math.round(el.scrollLeft / el.clientWidth);
-                                    if (p !== cur) setSelectPage(p);
-                                }}>
-                                {Array.from({ length: pageCount }, (_, pi) => (
-                                    <div key={pi} className="w-full shrink-0 snap-center px-5 grid grid-cols-2 grid-rows-3 gap-4 content-center pb-4 pt-2">
-                                        {characters.slice(pi * PER_PAGE, pi * PER_PAGE + PER_PAGE).map(c => (
-                                            <div key={c.id} onClick={() => handleSelectChar(c)}
-                                                className="min-h-0 rounded-3xl border border-white/[0.07] bg-white/[0.03] backdrop-blur-xl p-4 flex flex-col items-center justify-center gap-3 cursor-pointer active:scale-95 transition group hover:border-violet-400/50 hover:shadow-[0_0_24px_rgba(157,124,255,0.25)] relative overflow-hidden">
-                                                <div className="absolute -top-10 -right-10 w-28 h-28 rounded-full blur-3xl bg-violet-500/0 group-hover:bg-violet-500/20 transition" />
-                                                <div className="w-20 h-20 rounded-full p-[2px] border-2 border-white/15 group-hover:border-violet-400/70 transition-colors relative z-10 shrink-0">
-                                                    <img src={c.avatar} className="w-full h-full rounded-full object-cover grayscale group-hover:grayscale-0 transition-all" />
-                                                </div>
-                                                <div className="text-center relative z-10">
-                                                    <div className="font-semibold text-white/90 text-sm group-hover:text-violet-300">{c.name}</div>
-                                                    <div className="text-[10px] text-white/35 font-mono mt-1 tracking-widest">CONNECT &gt;</div>
-                                                </div>
-                                            </div>
-                                        ))}
+                            <div className="flex-1 min-h-0 px-5 grid grid-cols-2 grid-rows-3 gap-4 content-center pb-4 pt-2">
+                                {pageChars.map(c => (
+                                    <div key={c.id} onClick={() => handleSelectChar(c)}
+                                        className="min-h-0 rounded-3xl border border-white/[0.07] bg-white/[0.03] backdrop-blur-xl p-4 flex flex-col items-center justify-center gap-3 cursor-pointer active:scale-95 transition group hover:border-violet-400/50 hover:shadow-[0_0_24px_rgba(157,124,255,0.25)] relative overflow-hidden">
+                                        <div className="absolute -top-10 -right-10 w-28 h-28 rounded-full blur-3xl bg-violet-500/0 group-hover:bg-violet-500/20 transition" />
+                                        <div className="w-20 h-20 rounded-full p-[2px] border-2 border-white/15 group-hover:border-violet-400/70 transition-colors relative z-10 shrink-0">
+                                            <img src={c.avatar} className="w-full h-full rounded-full object-cover grayscale group-hover:grayscale-0 transition-all" />
+                                        </div>
+                                        <div className="text-center relative z-10">
+                                            <div className="font-semibold text-white/90 text-sm group-hover:text-violet-300">{c.name}</div>
+                                            <div className="text-[10px] text-white/35 font-mono mt-1 tracking-widest">CONNECT &gt;</div>
+                                        </div>
                                     </div>
                                 ))}
                             </div>
                             {pageCount > 1 && (
-                                <div className="shrink-0 flex items-center justify-center gap-2 pb-6 pt-3">
-                                    {Array.from({ length: pageCount }, (_, pi) => (
-                                        <span key={pi} className={`h-1.5 rounded-full transition-all ${pi === cur ? 'w-5 bg-violet-400' : 'w-1.5 bg-white/25'}`} />
-                                    ))}
+                                <div className="shrink-0 flex items-center justify-center gap-4 pb-6 pt-3">
+                                    <button onClick={() => setSelectPage(Math.max(0, cur - 1))} disabled={cur === 0}
+                                        className="w-9 h-9 rounded-full flex items-center justify-center text-white/80 bg-white/[0.05] border border-white/[0.08] active:scale-90 transition disabled:opacity-30 disabled:active:scale-100">
+                                        <CaretLeft size={16} weight="bold" />
+                                    </button>
+                                    <div className="flex items-center gap-2">
+                                        {Array.from({ length: pageCount }, (_, pi) => (
+                                            <button key={pi} onClick={() => setSelectPage(pi)} aria-label={`第 ${pi + 1} 页`}
+                                                className={`h-2 rounded-full transition-all active:scale-90 ${pi === cur ? 'w-5 bg-violet-400' : 'w-2 bg-white/25'}`} />
+                                        ))}
+                                    </div>
+                                    <button onClick={() => setSelectPage(Math.min(pageCount - 1, cur + 1))} disabled={cur === pageCount - 1}
+                                        className="w-9 h-9 rounded-full flex items-center justify-center text-white/80 bg-white/[0.05] border border-white/[0.08] active:scale-90 transition disabled:opacity-30 disabled:active:scale-100">
+                                        <CaretLeft size={16} weight="bold" className="rotate-180" />
+                                    </button>
                                 </div>
                             )}
                         </div>
