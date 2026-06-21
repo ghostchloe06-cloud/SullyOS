@@ -651,7 +651,7 @@ const MoodThought: React.FC<{ text: string; vibe?: Vibe }> = ({ text, vibe = 'ca
                     }}>{d}</span>
                 ))}
                 <p className="text-[20px] text-center leading-relaxed animate-fade-in font-semibold"
-                    style={{ color: vibeTint.happy }}>
+                    style={{ background: 'linear-gradient(90deg,#ffd6ec,#ffb3d9,#ffc2e0)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
                     {text}
                 </p>
             </div>
