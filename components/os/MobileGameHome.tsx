@@ -25,18 +25,20 @@ const PAL = {
     cloud: '#faf6ff',   // 近白紫
 };
 
-// 白色磨砂粉紫卡（气泡黏土鼓润边：外柔影 + 底内阴影 + 顶内高光）
+// 扁平手绘卡（二次元风格）：浅色底 + 轻描边 + 很淡的平面投影，不要鼓凸
 const CARD = {
-    background: 'linear-gradient(150deg, rgba(255,255,255,0.78), rgba(238,231,249,0.56))',
-    boxShadow: '0 9px 22px rgba(150,120,200,0.2), inset 0 -4px 8px rgba(180,150,214,0.18), inset 0 4px 6px rgba(255,255,255,0.95)',
-    backdropFilter: 'blur(14px) saturate(1.1)',
-    WebkitBackdropFilter: 'blur(14px) saturate(1.1)',
+    background: 'rgba(255,255,255,0.62)',
+    border: '1.5px solid rgba(186,166,224,0.32)',
+    boxShadow: '0 5px 14px rgba(150,120,200,0.12)',
+    backdropFilter: 'blur(10px) saturate(1.05)',
+    WebkitBackdropFilter: 'blur(10px) saturate(1.05)',
 } as React.CSSProperties;
 
-// 气泡黏土瓷砖（快捷入口图标底）—— 充气鼓润感
-const CLAY = {
-    background: 'linear-gradient(160deg, #ffffff 0%, #efe7f9 100%)',
-    boxShadow: '0 10px 20px rgba(150,120,200,0.28), inset 0 -5px 9px rgba(182,152,216,0.34), inset 0 5px 7px rgba(255,255,255,0.98)',
+// 扁平手绘瓷砖（快捷入口图标底）：干净白底 + 轻描边 + 浅平面投影
+const TILE = {
+    background: '#fbf9ff',
+    border: '1.5px solid rgba(186,166,224,0.34)',
+    boxShadow: '0 5px 12px rgba(150,120,200,0.12)',
 } as React.CSSProperties;
 
 const FONT_DISPLAY = `'DM Serif Display', serif`;     // 大时钟 / Lv / 日期数字
@@ -334,9 +336,9 @@ const MobileGameHome: React.FC = () => {
                 <div className="grid grid-cols-4 gap-2.5 animate-fade-in">
                     {QUICK_ENTRIES.map(e => (
                         <button key={e.id} onClick={() => openApp(e.id)} className="flex flex-col items-center gap-2 active:scale-90 transition-transform">
-                            <div className="relative w-[3.9rem] h-[3.9rem] rounded-[1.55rem] flex items-center justify-center" style={CLAY}>
+                            <div className="relative w-[3.9rem] h-[3.9rem] rounded-[1.55rem] flex items-center justify-center" style={TILE}>
                                 <span className="absolute top-1.5 right-2 text-[8px]" style={{ color: PAL.pink, opacity: 0.85 }}>✦</span>
-                                <div className="w-[2.4rem] h-[2.4rem]" style={{ filter: 'drop-shadow(0 3px 5px rgba(150,120,200,0.3))' }}>{renderAppArt(e.id)}</div>
+                                <div className="w-[2.4rem] h-[2.4rem]">{renderAppArt(e.id)}</div>
                             </div>
                             <span className="text-[11px]" style={{ fontFamily: FONT_CN, color: PAL.grape }}>{e.cn}</span>
                         </button>
@@ -352,7 +354,7 @@ const MobileGameHome: React.FC = () => {
                             style={CARD}>
                             <Sparkles items={[[10, 18, 9, PAL.pink, 0.7], [90, 80, 8, PAL.peri, 0.6]]} />
                             <span className="absolute top-2.5 left-3.5 text-[12px] tabular-nums" style={{ fontFamily: FONT_DISPLAY, color: PAL.lilac }}>{String(i + 1).padStart(2, '0')}</span>
-                            <div className="absolute right-2.5 top-1/2 -translate-y-1/2 w-[3.9rem] h-[3.9rem] pointer-events-none" style={{ filter: 'drop-shadow(0 4px 7px rgba(150,120,200,0.3))' }}>
+                            <div className="absolute right-2.5 top-1/2 -translate-y-1/2 w-[3.9rem] h-[3.9rem] pointer-events-none">
                                 {renderAppArt(card.id)}
                             </div>
                             <div className="relative mt-2">
