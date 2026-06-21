@@ -60,6 +60,26 @@ export function isXhsUrl(url: string): boolean {
   return /xiaohongshu\.com|xhslink\.com/i.test(url);
 }
 
+/**
+ * 经 sfworker 展开短链（xhslink.com 等），返回跟随 HTTP 重定向后的最终 URL。
+ * 小红书短链不含 note id / xsec_token，展开后才拿得到。
+ */
+export async function expandShortUrl(url: string): Promise<string> {
+  const res = await fetch(`${SFWORKER_URL}/expand-url`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url }),
+  });
+  const text = await res.text().catch(() => '');
+  let parsed: any = null;
+  try { parsed = text ? JSON.parse(text) : null; } catch { /* non-json */ }
+  if (!res.ok || !parsed?.success) {
+    const err = parsed?.error;
+    throw new Error((err && (err.message || err)) || `短链展开失败 (HTTP ${res.status})`);
+  }
+  return String(parsed?.data?.finalUrl || url);
+}
+
 /** sfworker /fetch-webpage 的返回：reader=已渲染提取的干净正文；raw=原始 HTML 待前端解析。 */
 type WorkerFetchResult =
   | { mode: 'reader'; title: string; content: string; finalUrl?: string }

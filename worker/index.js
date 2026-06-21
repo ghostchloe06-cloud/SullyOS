@@ -1531,6 +1531,42 @@ export default {
       }
     }
 
+    // ========== 短链展开 (/expand-url) ==========
+    // 跟随 HTTP 重定向返回最终 URL。小红书短链 xhslink.com 不含 note id/xsec_token，
+    // 前端展开后才能提取，再走小红书 Lite 抓详情。见 utils/webpageExtractor.ts expandShortUrl。
+    if (url.pathname === '/expand-url') {
+      if (request.method !== 'POST') {
+        return jsonResponse({ error: 'Method not allowed. Use POST.' }, { status: 405, origin });
+      }
+      let b = {};
+      try { b = await request.json(); } catch (e) { /* allow empty */ }
+      const raw = (b && typeof b.url === 'string') ? b.url.trim() : '';
+      if (!raw) return jsonResponse({ error: 'Missing url' }, { status: 400, origin });
+      let target;
+      try { target = new URL(raw); } catch { return jsonResponse({ error: 'Invalid URL' }, { status: 400, origin }); }
+      if (isUnsafeFetchTarget(target)) {
+        return jsonResponse({ error: '只允许展开公网 http(s) 链接' }, { status: 400, origin });
+      }
+      const c = new AbortController();
+      const t = setTimeout(() => c.abort(), 8000);
+      try {
+        const res = await fetch(target.toString(), {
+          method: 'GET',
+          redirect: 'follow',
+          headers: { 'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1' },
+          signal: c.signal,
+        });
+        const finalUrl = res.url || target.toString();
+        console.log('expand-url', target.toString(), '→', finalUrl);
+        return jsonResponse({ success: true, data: { finalUrl } }, { origin });
+      } catch (e) {
+        const aborted = e && e.name === 'AbortError';
+        return jsonResponse({ error: aborted ? '展开超时' : `展开失败: ${String((e && e.message) || e)}` }, { status: aborted ? 504 : 502, origin });
+      } finally {
+        clearTimeout(t);
+      }
+    }
+
     // ========== 网页分享代理 (/fetch-webpage) ==========
     // 前端把用户粘贴的链接发来，worker 抓回正文（绕过浏览器 CORS），存成 webpage_card 让角色"看见"。
     // 见 utils/webpageExtractor.ts。两段式：

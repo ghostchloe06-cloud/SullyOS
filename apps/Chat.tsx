@@ -9,7 +9,7 @@ import { generateDailyScheduleForChar, isScheduleFeatureOn } from '../utils/sche
 import { formatMessageWithTime, normalizeMessageContent } from '../utils/messageFormat';
 import { getRoomLabel } from '../utils/memoryPalace/types';
 import { XhsMcpClient, extractNotesFromMcpData, normalizeNote } from '../utils/xhsMcpClient';
-import { extractWebpageContent, detectFirstUrl, isXhsUrl } from '../utils/webpageExtractor';
+import { extractWebpageContent, detectFirstUrl, isXhsUrl, expandShortUrl } from '../utils/webpageExtractor';
 import { isDevDebugAvailable } from '../utils/devDebug';
 import { isMcdConfigured } from '../utils/mcdMcpClient';
 import { isMcdActivatedInMessages, MCD_ACTIVATE_TRIGGER, MCD_DEACTIVATE_TRIGGER } from '../utils/mcdToolBridge';
@@ -849,62 +849,76 @@ const Chat: React.FC = () => {
                 .replace(/\d+/g, ' ')
                 .replace(/[\s,，。.!！?？、:：;；#·\-—…"'""''（）()]/g, '')
                 .trim();
-            const xhsUrlMatch = text.match(/xiaohongshu\.com\/(?:discovery\/item|explore)\/([a-f0-9]{24})/);
-            if (xhsUrlMatch) {
-                const noteId = xhsUrlMatch[1];
-                const xsecToken = text.match(/xsec_token=([^&\s]+)/)?.[1];
-                // 文案标题形如「【标题 | 小红书 - 你的生活兴趣社区】」，剥掉 "| 小红书…" 后缀。
+            const xhsFullMatch = text.match(/xiaohongshu\.com\/(?:discovery\/item|explore)\/([a-f0-9]{24})/);
+            const xhsShortMatch = text.match(/xhslink\.com\/[A-Za-z0-9/]+/i);
+            if (xhsFullMatch || xhsShortMatch) {
+                let noteId = xhsFullMatch?.[1] || '';
+                let xsecToken = text.match(/xsec_token=([^&\s]+)/)?.[1];
+                // 短链（xhslink.com）不含 id/token —— 先经 sfworker 展开成真实链接再提取。
+                if (!noteId && xhsShortMatch) {
+                    try {
+                        const finalUrl = await expandShortUrl(xhsShortMatch[0]);
+                        noteId = finalUrl.match(/(?:discovery\/item|explore|item)\/([a-f0-9]{24})/)?.[1] || '';
+                        xsecToken = xsecToken || finalUrl.match(/xsec_token=([^&\s]+)/)?.[1];
+                        if (isDevDebugAvailable()) console.log('[卡片调试] 小红书短链展开 →', finalUrl, '| noteId =', noteId);
+                    } catch (e) {
+                        console.warn('xhslink 短链展开失败:', e);
+                    }
+                }
+                // 文案标题形如「【标题 | 小红书 …】」，剥掉 "| 小红书…" 后缀（短链文案常无此块）。
                 const titleFromText = (text.match(/【(.+?)】/)?.[1] || '')
                     .replace(/\s*[|｜]\s*小红书.*$/, '').trim();
 
-                // 基础卡数据全部来自分享文案，零后端依赖。
-                let note: any = {
-                    noteId, title: titleFromText || '', desc: '', author: '',
-                    authorId: '', likes: 0, xsecToken,
-                };
+                // 拿不到 noteId（短链展开失败/被挡）就不建空卡，保留原文给用户。
+                if (noteId) {
+                    // 基础卡数据来自分享文案，零后端依赖。
+                    let note: any = {
+                        noteId, title: titleFromText || '', desc: '', author: '',
+                        authorId: '', likes: 0, xsecToken,
+                    };
 
-                // 有小红书 MCP 才抓详情补全（正文/封面/作者/赞数）。
-                const mcpUrl = realtimeConfig?.xhsMcpConfig?.serverUrl;
-                if (mcpUrl && realtimeConfig?.xhsMcpConfig?.enabled) {
-                    try {
-                        // 详情必须带 xsec_token，token 就在用户粘贴的链接里——之前重拼 URL 把它丢了导致抓空。
-                        const noteUrl = `https://www.xiaohongshu.com/explore/${noteId}${xsecToken ? `?xsec_token=${xsecToken}&xsec_source=pc_share` : ''}`;
-                        const result = await XhsMcpClient.getNoteDetail(mcpUrl, noteUrl, xsecToken);
-                        if (isDevDebugAvailable()) console.log('[卡片调试] 小红书抓取 result =', result);
-                        if (result.success && result.data) {
-                            // bridge(Lite) 返回 { data: { note, comments } }；MCP 可能直接是 note —— 逐层解包。
-                            const noteObj = (result.data as any)?.data?.note || (result.data as any)?.note || result.data;
-                            const fetched = normalizeNote(noteObj);
-                            // 抓到的字段补全基础卡；id/标题/token 保底，标题优先文案标题（更完整可读）。
-                            note = { ...note, ...fetched, noteId: fetched.noteId || note.noteId, title: titleFromText || fetched.title || note.title, xsecToken: fetched.xsecToken || xsecToken };
+                    // 有小红书 MCP/Lite 才抓详情补全（正文/封面/作者/赞数）。
+                    const mcpUrl = realtimeConfig?.xhsMcpConfig?.serverUrl;
+                    if (mcpUrl && realtimeConfig?.xhsMcpConfig?.enabled) {
+                        try {
+                            const noteUrl = `https://www.xiaohongshu.com/explore/${noteId}${xsecToken ? `?xsec_token=${xsecToken}&xsec_source=pc_share` : ''}`;
+                            const result = await XhsMcpClient.getNoteDetail(mcpUrl, noteUrl, xsecToken);
+                            if (isDevDebugAvailable()) console.log('[卡片调试] 小红书抓取 result =', result);
+                            if (result.success && result.data) {
+                                // bridge(Lite) 返回 { data: { note, comments } }；MCP 可能直接是 note —— 逐层解包。
+                                const noteObj = (result.data as any)?.data?.note || (result.data as any)?.note || result.data;
+                                const fetched = normalizeNote(noteObj);
+                                // 抓到的字段补全基础卡；id/标题/token 保底，标题优先文案标题（更完整可读）。
+                                note = { ...note, ...fetched, noteId: fetched.noteId || note.noteId, title: titleFromText || fetched.title || note.title, xsecToken: fetched.xsecToken || xsecToken };
+                            }
+                        } catch (e) {
+                            console.warn('XHS link fetch via MCP failed (已用文案兜底):', e);
                         }
-                    } catch (e) {
-                        console.warn('XHS link fetch via MCP failed (已用文案兜底):', e);
                     }
-                }
 
-                await DB.saveMessage({
-                    charId: char.id,
-                    role: 'user',
-                    type: 'xhs_card',
-                    content: note.title || '小红书笔记',
-                    metadata: { xhsNote: note }
-                });
-                // F12 调试（仅开发分支）：打印卡片存了啥 + 角色实际会读到的文本。
-                if (isDevDebugAvailable()) {
-                    console.log('[卡片调试] 小红书卡片·metadata =', note);
-                    console.log('[卡片调试] 小红书卡片·角色将读到 =\n' + normalizeMessageContent(
-                        { type: 'xhs_card', role: 'user', content: note.title || '小红书笔记', metadata: { xhsNote: note } } as any,
-                        char.name, userProfile.name,
-                    ));
+                    await DB.saveMessage({
+                        charId: char.id,
+                        role: 'user',
+                        type: 'xhs_card',
+                        content: note.title || '小红书笔记',
+                        metadata: { xhsNote: note }
+                    });
+                    // F12 调试（仅开发分支）：打印卡片存了啥 + 角色实际会读到的文本。
+                    if (isDevDebugAvailable()) {
+                        console.log('[卡片调试] 小红书卡片·metadata =', note);
+                        console.log('[卡片调试] 小红书卡片·角色将读到 =\n' + normalizeMessageContent(
+                            { type: 'xhs_card', role: 'user', content: note.title || '小红书笔记', metadata: { xhsNote: note } } as any,
+                            char.name, userProfile.name,
+                        ));
+                    }
+                    cardCreated = true;
                 }
-                cardCreated = true;
             }
 
             // 通用网页分享：检测到普通 http(s) 链接 → 抓取正文存成 webpage_card，
             // 让角色"看见"网页内容。跳过 XHS 链接（上面已有专门的 MCP 卡片路径）。
             const sharedUrl = detectFirstUrl(text);
-            if (sharedUrl && !isXhsUrl(sharedUrl) && !xhsUrlMatch) {
+            if (sharedUrl && !isXhsUrl(sharedUrl) && !(xhsFullMatch || xhsShortMatch)) {
                 try {
                     addToast('正在读取网页内容…', 'info');
                     const webpage = await extractWebpageContent(sharedUrl);
