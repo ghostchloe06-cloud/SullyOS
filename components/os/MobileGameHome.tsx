@@ -319,10 +319,11 @@ const MobileGameHome: React.FC = () => {
 
                     {/* 角色：有彼方 chibi → 小贴纸；否则头像电影感融合（参考日常表/攻略本）*/}
                     {chibi?.img && (chibi.isFallback ? (
-                        <div className="absolute right-0 top-0 bottom-0 w-[58%] pointer-events-none"
+                        <div className="absolute right-0 top-0 bottom-0 w-[54%] pointer-events-none"
                             style={{
-                                WebkitMaskImage: 'linear-gradient(102deg, transparent 6%, #000 50%)',
-                                maskImage: 'linear-gradient(102deg, transparent 6%, #000 50%)',
+                                opacity: 0.5,
+                                WebkitMaskImage: 'linear-gradient(100deg, transparent 30%, #000 82%)',
+                                maskImage: 'linear-gradient(100deg, transparent 30%, #000 82%)',
                             }}>
                             <img src={chibi.img} className="w-full h-full object-cover" alt="" loading="lazy" style={{ objectPosition: 'center 22%' }} />
                         </div>
