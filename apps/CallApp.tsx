@@ -673,7 +673,7 @@ const CallApp: React.FC = () => {
     }
     const systemPrompt = selectedChar
       ? buildCallPrompt(userName, selectedChar.name, ContextBuilder.buildCoreContext(selectedChar, userProfile, true), voiceLang || undefined)
-      : buildCallPrompt(userName, selectedChar?.name, undefined, voiceLang || undefined);
+      : buildCallPrompt(userName, undefined, undefined, voiceLang || undefined);
     const messages = await buildHistoryMessages(input, skipDbId);
     const chatData = await safeFetchJson(`${baseUrl}/chat/completions`, {
       method: 'POST',
