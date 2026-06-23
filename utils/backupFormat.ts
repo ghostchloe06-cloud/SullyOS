@@ -107,6 +107,7 @@ export async function writeV2Backup(
         let buf: string[] = [];
         let bufLen = 0;
         let parts = 0;
+        let writtenCount = 0; // 实际写进分片的条数：可能 < arr.length（下面会跳过序列化成 undefined 的空洞）
         const flush = () => {
             if (buf.length === 0) return;
             zip.file(shardFileName(field, parts), '[' + buf.join(',') + ']');
@@ -134,13 +135,16 @@ export async function writeV2Backup(
             if (s.length >= limits.maxLen && buf.length > 0) flush();
             buf.push(s);
             bufLen += s.length;
+            writtenCount++;
             if (bufLen >= limits.maxLen || buf.length >= limits.maxItems) {
                 flush();
                 if (onYield) await onYield();
             }
         }
         flush();
-        manifestStores[field] = { parts, count: arr.length };
+        // count 用「实际写入条数」而非 arr.length：上面跳过了序列化成 undefined 的空洞，若仍按
+        // arr.length 记，导入端「拼出条数 === count」自洽校验会对一个本来合法的备份误判损坏 abort。
+        manifestStores[field] = { parts, count: writtenCount };
     };
 
     // 一遍扫 backupData：数组字段分片（写完释放），其余非数组字段进 metadata。

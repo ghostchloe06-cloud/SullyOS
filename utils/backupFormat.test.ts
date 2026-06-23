@@ -106,6 +106,17 @@ describe('backupFormat v2 往返', () => {
         expect(manifest.stores.messages.parts).toBeGreaterThanOrEqual(2);
     });
 
+    it('数组含 undefined 空洞：count 记实际写入数，不让被跳过的空洞触发条数误判 abort（G1）', async () => {
+        const zip = new FakeZip();
+        // JSON.stringify(undefined) === undefined，导出时该元素被跳过
+        const arr = [{ id: 1 }, undefined, { id: 3 }];
+        const manifest = await writeV2Backup(zip, { messages: arr }, {});
+        // count 必须是「实际写入的 2 条」而非 arr.length(3)，否则导入端条数自洽校验会误判损坏
+        expect(manifest.stores.messages.count).toBe(2);
+        const data = await assembleV2Backup(zip, manifest); // 旧写法（count=3）会在这里抛 count-mismatch
+        expect(data.messages).toEqual([{ id: 1 }, { id: 3 }]);
+    });
+
     it('单条超硬上限：干净报错中止，不退回 RangeError', async () => {
         const zip = new FakeZip();
         const limits: ShardLimits = { maxLen: 100, maxItems: 10, hardMaxLen: 500 };
