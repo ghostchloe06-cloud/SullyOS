@@ -220,7 +220,8 @@
       }
       /* 软键盘弹出时（iosStandalone 在 body 上挂 .ios-keyboard-open），收掉底部给 home 条留的 safe 间隙，
          让聊天输入栏直接贴住键盘：① 外壳容器不再把底边钉在 safe 上方，铺到可视区底；② 输入栏收掉自己的 pb-safe 白条。
-         键盘收起后 class 移除，两者各自回到 safe 让位。app 高度跟随可视区由 utils/iosStandalone.ts 处理。 */
+         键盘收起后 class 移除，两者各自回到 safe 让位。app 高度跟随可视区由 utils/iosStandalone.ts 处理。
+         （外壳 bottom 用 !important 盖过 PhoneShell 给它设的 inline style。） */
       .sully-chat-inputbar {
         transition: padding-bottom 0.18s ease-out;
       }

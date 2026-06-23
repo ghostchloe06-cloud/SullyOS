@@ -167,7 +167,7 @@ export const installIOSStandaloneWorkaround = () => {
     const handleTouchMove = (event: TouchEvent) => {
         if (!document.body.classList.contains('ios-keyboard-open')) return;
         const target = event.target as Element | null;
-        if (target?.closest?.('.overflow-y-auto')) return;
+        if (target?.closest('.overflow-y-auto')) return;
         event.preventDefault();
     };
 
