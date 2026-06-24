@@ -177,7 +177,7 @@ const GroupMessageItem = React.memo(({
 // --- Main Component ---
 
 const GroupChat: React.FC = () => {
-    const { closeApp, groups, createGroup, deleteGroup, characters, updateCharacter, apiConfig, addToast, userProfile, virtualTime } = useOS();
+    const { closeApp, groups, createGroup, updateGroup, deleteGroup, characters, updateCharacter, apiConfig, addToast, userProfile, virtualTime } = useOS();
     const [view, setView] = useState<'list' | 'chat'>('list');
     const [activeGroup, setActiveGroup] = useState<GroupProfile | null>(null);
     const [messages, setMessages] = useState<Message[]>([]);
@@ -422,13 +422,13 @@ const GroupChat: React.FC = () => {
 
     const handleUpdateGroupInfo = async () => {
         if (!activeGroup) return;
-        const updatedGroup = {
-            ...activeGroup,
+        const updates = {
             name: tempGroupName || activeGroup.name,
             privateContextCap: tempPrivateContextCap,
         };
-        await DB.saveGroup(updatedGroup);
-        setActiveGroup(updatedGroup);
+        // 走 context 的 updateGroup：同步内存 groups + DB，避免退出后读回旧值
+        await updateGroup(activeGroup.id, updates);
+        setActiveGroup({ ...activeGroup, ...updates });
         setModalType('none');
         addToast('群信息已更新', 'success');
     };
@@ -438,9 +438,10 @@ const GroupChat: React.FC = () => {
         if (!file || !activeGroup) return;
         try {
             const base64 = await processImage(file);
-            const updatedGroup = { ...activeGroup, avatar: base64 };
-            await DB.saveGroup(updatedGroup);
-            setActiveGroup(updatedGroup);
+            // 走 context 的 updateGroup：同步内存 groups + DB，
+            // 否则只改了本地 activeGroup，退出回列表/再次进群会读回旧头像（恢复默认）
+            await updateGroup(activeGroup.id, { avatar: base64 });
+            setActiveGroup({ ...activeGroup, avatar: base64 });
             addToast('群头像已修改', 'success');
         } catch (err: any) {
             addToast('图片处理失败', 'error');

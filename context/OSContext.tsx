@@ -248,6 +248,7 @@ interface OSContextType {
   // Groups
   groups: GroupProfile[];
   createGroup: (name: string, members: string[]) => void;
+  updateGroup: (id: string, updates: Partial<GroupProfile>) => Promise<void>;
   deleteGroup: (id: string) => void;
 
   // User Profile
@@ -2196,6 +2197,18 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
       setGroups(prev => [...prev, newGroup]);
   };
 
+  const updateGroup = async (id: string, updates: Partial<GroupProfile>) => {
+      // 先更新内存中的 groups（列表渲染、再次进群都读这里），再持久化到 DB。
+      // 不更新 context 会导致改了群头像/群名退出后又读回旧值（恢复默认）。
+      let target: GroupProfile | undefined;
+      setGroups(prev => {
+          const updated = prev.map(g => g.id === id ? { ...g, ...updates } : g);
+          target = updated.find(g => g.id === id);
+          return updated;
+      });
+      if (target) await DB.saveGroup(target);
+  };
+
   const deleteGroup = async (id: string) => {
       await DB.deleteGroup(id);
       setGroups(prev => prev.filter(g => g.id !== id));
@@ -3533,6 +3546,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
     deleteSong,
     groups,
     createGroup,
+    updateGroup,
     deleteGroup,
     userProfile,
     updateUserProfile,
