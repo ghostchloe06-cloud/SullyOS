@@ -71,8 +71,15 @@ export const AuthorLetterPopup: React.FC<AuthorLetterPopupProps> = ({ onClose })
                                 ))}
                             </ul>
 
-                            {/* 结尾安抚 */}
-                            <p className="rounded-2xl bg-slate-50 border border-slate-100 px-4 py-4 text-[12.5px] font-semibold leading-[1.85] text-center text-slate-700">
+                            {/* 结尾安抚 —— 极淡暖色，从灰调里轻轻跳出来 */}
+                            <p
+                                className="rounded-2xl px-4 py-4 text-[12.5px] font-semibold leading-[1.85] text-center"
+                                style={{
+                                    background: 'linear-gradient(135deg, #fdf7ee 0%, #fbf1e4 100%)',
+                                    border: '1px solid #f1e2cd',
+                                    color: '#6b5640',
+                                }}
+                            >
                                 这不是目前需要担心的东西，也不是目前就得抓紧配好的东西，项目在继续正常地、健康地运行，同时也有很多朋友在帮助它，非常感谢大家。
                             </p>
 
@@ -86,7 +93,7 @@ export const AuthorLetterPopup: React.FC<AuthorLetterPopupProps> = ({ onClose })
                 <div className="px-7 pb-7 pt-4 shrink-0">
                     <button
                         onClick={handleDismiss}
-                        className="w-full py-3.5 rounded-2xl bg-slate-900 text-white font-bold text-sm active:scale-[0.98] transition-transform"
+                        className="w-full py-3.5 rounded-2xl bg-primary text-white font-bold text-sm active:scale-[0.98] transition-transform shadow-lg shadow-primary/25"
                     >
                         我明白了
                     </button>
