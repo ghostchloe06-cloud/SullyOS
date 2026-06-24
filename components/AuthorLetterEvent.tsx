@@ -40,7 +40,7 @@ export const AuthorLetterPopup: React.FC<AuthorLetterPopupProps> = ({ onClose })
         <div className="fixed inset-0 z-[9998] flex items-center justify-center p-4 sm:p-5 animate-fade-in">
             <div className="absolute inset-0 bg-black/50 backdrop-blur-md" />
 
-            <div className="relative w-full max-w-sm bg-white rounded-[1.75rem] shadow-2xl border border-black/[0.06] overflow-hidden animate-slide-up flex flex-col max-h-[88vh]">
+            <div className="relative w-full max-w-sm bg-white rounded-[1.75rem] shadow-2xl border border-black/[0.06] overflow-hidden animate-slide-up flex flex-col h-[min(88vh,680px)]">
                 {/* ─── 信头 ─── */}
                 <div className="px-7 pt-7 pb-4 text-center shrink-0">
                     <h2 className="text-[17px] font-semibold text-slate-800 tracking-[0.08em]">致用户的一封信</h2>
@@ -53,7 +53,7 @@ export const AuthorLetterPopup: React.FC<AuthorLetterPopupProps> = ({ onClose })
                     <div className="pointer-events-none absolute top-0 inset-x-0 h-5 z-10 bg-gradient-to-b from-white to-transparent" />
                     <div className="pointer-events-none absolute bottom-0 inset-x-0 h-6 z-10 bg-gradient-to-t from-white to-transparent" />
 
-                    <div className="h-full overflow-y-auto no-scrollbar px-7 py-5">
+                    <div className="absolute inset-0 overflow-y-auto no-scrollbar px-7 py-5">
                         <div className="space-y-3.5 text-[13px] leading-[1.9] text-slate-600">
                             <p>这几天看到一些讨论和对社区的评价，也看到很多人对项目未来的担心。作为 SullyOS 的作者，我一直处于一种焦虑的状态中很长时间了，这份压力来源并不明确，但是已经给我造成明显伤害了。所以，近期关于社区的放开与否，以及管理与调整，我可能需要重新规划一下。</p>
                             <p>对于未来的发展方向我还没考虑清楚。社区会怎样变化我也无法预测。今天想了很多可能，或许社区会被解散，我会神隐，但是这个项目会继续开放，我始终希望能够保证：SullyOS 不会因为我个人的情绪、状态或者去留而突然消失。</p>
