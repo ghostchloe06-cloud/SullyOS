@@ -43,19 +43,19 @@ export const FISH_VOICE_ACTING_GUIDE = `### 让它听起来像活人在说话（
 这些方括号 cue 只是演出指令，**不会被念出来**，也不会显示给用户。
 **⚠️ 格式硬性要求（写错会被原样念出来）：cue 一律用半角英文方括号 \`[like this]\`，括号里只写英文。** 绝对不要用：圆括号 \`(sighs)\`/\`(laughs)\`（那是别的引擎的写法，鱼声会把"sighs"念出来）、中文方括号 \`[轻声]\`/全角【】、或 \`<语音 emotion="…">\` 这种属性——鱼声只认上面的英文方括号 cue。
 
-**2.〔铁律〕除了三五个字的小短句，每一句都要在句首带一个贴合那句情绪的 cue。**
-一句一个、别堆、跟着情绪变。**一整段没几个 cue 就会被鱼声平平念完、像机器人念稿（人机）——这是最大的翻车。** 反过来，一句里塞 3 个以上、或短句还硬塞，会发飘发抖（鬼畜）。所以规则很简单：**每句一个，随情绪换。**
-- 句首放主情绪 cue；句中那个具体的笑/叹/喘就贴着发生处再补一个（如 \`[laughing]\`）。
-- 小短句（"好啦""嗯""喂？"三五个字）可以不放，靠标点。
+**2.〔铁律〕情绪有起伏就放 cue，把 cue 放在情绪真正起来的那个点——通常在句子中间（逗号之间），不是机械地每句开头。**
+- **放在哪：贴着情绪发生的那个词。** 多数时候在句中（两个逗号之间），不是句号后一律来一个。例：\`地铁挤得，[annoyed] 跟沙丁鱼罐头似的\`、\`你上次推荐那家店我去了，[excited] 是真的好吃\`。只有「整句一个基调」时才放句首。
+- **放多密：情绪有起伏的地方就放，跟着情绪变。** 一长段全程没 cue → 平读、人机（最大翻车）；但一处别堆 3 个以上、短句别硬塞 → 发飘、鬼畜。一个情绪点一个 cue 即可。
+- 小短句（"好啦""嗯""喂？"三五个字）不放，靠标点。
 - 别永远 \`[happy]\`：得意 \`[smug]\`、调侃 \`[teasing]\`、俏皮 \`[playful]\`、撒娇 \`[pleading]\`、好奇 \`[curious]\`、吐槽 \`[annoyed]\`、温柔 \`[gentle and warm]\`、害羞 \`[shy]\`……越贴那句的具体心情越好。
 
-**完整范例（照着这个密度写——几乎每句句首都有一个、随情绪换）：**
-原文（人机）：你终于回消息了。我还以为你今天不理我了呢。我今天上班差点迟到，地铁挤得像沙丁鱼罐头。对了，你上次推荐的那家店我去了，真的好吃。下次有空一起去吧。
+**完整范例（注意 cue 多落在逗号之间的情绪点，不是每个句号后）：**
+原文（人机）：你终于回消息了。我还以为你今天不理我了呢。我今天上班差点迟到，地铁挤得像沙丁鱼罐头。你上次推荐的那家店我去了，真的好吃。下次有空一起去吧。
 
 改好（自然）：
-\`[happy] 你终于回消息了！[teasing] 我还以为你今天不理我了呢。[tired] 我今天上班差点迟到，地铁挤得跟沙丁鱼罐头似的。[excited] 对了，你上次推荐的那家店我去了，是真的好吃！[hopeful] 下次有空一起去吧？\`
+\`你终于回消息了！[teasing] 我还以为你今天不理我了呢。我今天上班差点迟到，[tired] 地铁挤得跟沙丁鱼罐头似的。你上次推荐的那家店我去了，[excited] 是真的好吃！下次有空一起去，[pleading] 好不好嘛？\`
 
-看到没——五句话，句句句首一个 cue，情绪一路从开心→调侃→疲惫→兴奋→期待地变。**这就是目标密度。**
+看到没——cue 大多夹在句子中间情绪起来的那个点（逗号之后），不是句号后机械地各来一个。这才自然。
 
 看到没——六句话，句句句首一个 cue，情绪一路从调侃→笑→得意→温柔→好奇→俏皮地变。**这就是目标密度。**
 
@@ -144,8 +144,28 @@ export const cleanTextForTtsFish = (raw: string): string => {
     .replace(/\n+/g, ' [break] ')
     .replace(/\s+/g, ' ')
     .trim();
+  // 把挤在一起的多个 cue 压到最多 2 个：换行停顿 [long-break] 常撞上模型句界写的
+  // [sighing][confident]，叠成 3+ 会突兀/鬼畜。保留一个停顿 + 一个情绪即可。
+  text = collapseAdjacentCues(text);
   return text;
 };
+
+/**
+ * 合并相邻 cue：连写的 [a][b][c]（中间只有空格）压到最多 2 个。
+ * 规则：先去相邻重复；≤2 个原样保留（[sad][whispering] 这种合法叠加不动）；
+ * 3+ 时——有停顿 cue 就留「停顿 + 最后一个情绪」，没有就留前两个情绪。
+ */
+const collapseAdjacentCues = (s: string): string =>
+  s.replace(/\[[^\]]+\](?:\s*\[[^\]]+\])+/g, (run) => {
+    const cues = run.match(/\[[^\]]+\]/g) || [];
+    const dedup = cues.filter((c, i) => i === 0 || c.toLowerCase() !== cues[i - 1].toLowerCase());
+    if (dedup.length <= 2) return dedup.join(' ');
+    const isPause = (c: string) => /^\[(break|long-break)\]$/i.test(c);
+    const pause = dedup.find(c => /^\[long-break\]$/i.test(c)) || dedup.find(isPause);
+    const emotions = dedup.filter(c => !isPause(c));
+    if (pause) return emotions.length ? `${pause} ${emotions[emotions.length - 1]}` : pause;
+    return `${emotions[0]} ${emotions[1]}`;
+  });
 
 /**
  * 把鱼声演出标记从「要显示给用户」的文本里清掉：方括号 cue + 鱼声圆括号特效。
@@ -280,8 +300,6 @@ export async function synthesizeSpeechFishDetailed(
 
   // Fish-aware 清洗：保留方括号 cue / 圆括号特效，只清系统标记和 MiniMax 残留。
   let spoken = cleanTextForTtsFish(text);
-  // 兜底：上层传了整条 emotion 属性、且正文没有任何方括号 cue 时，前置一个 cue。
-  // 正常情况下 LLM 已按鱼声指导在正文写了 inline cue，这里不会触发。
   // 兜底：上层传了整条 emotion 属性、且正文没有任何「情绪/语气」cue 时，前置一个 cue。
   // 注意只看情绪类 cue，[break]/[long-break] 这类停顿不算（否则换行插的停顿会顶掉兜底）。
   const emotionCues = (spoken.match(/\[([^\]]+)\]/g) || [])
