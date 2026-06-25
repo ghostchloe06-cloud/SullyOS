@@ -96,6 +96,13 @@ export default defineConfig({
           return region === 'overseas' ? 'https://api.minimax.io' : 'https://api.minimaxi.com';
         },
       },
+      // 鱼声 Fish Audio TTS：转发到 https://api.fish.audio/v1/tts（返回二进制音频）
+      '/api/fishaudio/tts': {
+        target: 'https://api.fish.audio',
+        changeOrigin: true,
+        secure: true,
+        rewrite: () => '/v1/tts',
+      },
     }
   },
   build: {

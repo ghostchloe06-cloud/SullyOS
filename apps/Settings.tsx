@@ -80,6 +80,10 @@ const Settings: React.FC = () => {
     apiConfig.minimaxRegion === 'overseas' ? 'overseas' : 'domestic'
   );
   const [localAceStepKey, setLocalAceStepKey] = useState(apiConfig.aceStepApiKey || '');
+  const [localTtsProvider, setLocalTtsProvider] = useState<'minimax' | 'fishaudio'>(
+    apiConfig.ttsProvider === 'fishaudio' ? 'fishaudio' : 'minimax'
+  );
+  const [localFishKey, setLocalFishKey] = useState(apiConfig.fishAudioApiKey || '');
   const [showAceStepGuide, setShowAceStepGuide] = useState(false);
   const [otherStatusMsg, setOtherStatusMsg] = useState('');
   // 高级设置（流式/温度）默认折叠 — 大多数用户不需要碰
@@ -369,6 +373,8 @@ const Settings: React.FC = () => {
       setLocalMiniMaxGroupId(apiConfig.minimaxGroupId || '');
       setLocalMiniMaxRegion(apiConfig.minimaxRegion === 'overseas' ? 'overseas' : 'domestic');
       setLocalAceStepKey(apiConfig.aceStepApiKey || '');
+      setLocalTtsProvider(apiConfig.ttsProvider === 'fishaudio' ? 'fishaudio' : 'minimax');
+      setLocalFishKey(apiConfig.fishAudioApiKey || '');
   }, [apiConfig]);
 
   const loadPreset = (preset: typeof apiPresets[0]) => {
@@ -417,38 +423,73 @@ const Settings: React.FC = () => {
       minimaxGroupId: localMiniMaxGroupId,
       minimaxRegion: localMiniMaxRegion,
       aceStepApiKey: localAceStepKey,
+      ttsProvider: localTtsProvider,
+      fishAudioApiKey: localFishKey,
     });
     setOtherStatusMsg('已保存');
     setTimeout(() => setOtherStatusMsg(''), 2000);
+  };
+
+  // 选「谁来做语音生成」立即落库——不需要再点下面的保存。
+  // 连同当前「其他 API」草稿一起提交（与保存按钮同一份 payload）：一是即时生效，
+  // 二是避免 [apiConfig] 同步 effect 把刚填、还没保存的 Key 草稿冲掉。
+  const selectTtsProvider = (provider: 'minimax' | 'fishaudio') => {
+    setLocalTtsProvider(provider);
+    updateApiConfig({
+      minimaxApiKey: localMiniMaxKey,
+      minimaxGroupId: localMiniMaxGroupId,
+      minimaxRegion: localMiniMaxRegion,
+      aceStepApiKey: localAceStepKey,
+      fishAudioApiKey: localFishKey,
+      ttsProvider: provider,
+    });
+    addToast(provider === 'fishaudio' ? '语音生成已切到鱼声 Fish' : '语音生成已切到 MiniMax', 'success');
   };
 
   const fetchModels = async () => {
     if (!localUrl) { setStatusMsg('请先填写 URL'); return; }
     setIsLoadingModels(true);
     setStatusMsg('正在连接...');
-    try {
-        const baseUrl = localUrl.replace(/\/+$/, '');
-        const response = await fetch(`${baseUrl}/models`, {
-            method: 'GET',
-            headers: { 'Authorization': `Bearer ${localKey}`, 'Content-Type': 'application/json' }
-        });
-        if (!response.ok) throw new Error(`Status ${response.status}`);
-        const data = await safeResponseJson(response);
-        // Support various API response formats
-        const list = data.data || data.models || [];
-        if (Array.isArray(list)) {
-            const models = list.map((m: any) => m.id || m);
-            setAvailableModels(models);
-            if (models.length > 0 && !models.includes(localModel)) setLocalModel(models[0]);
-            setStatusMsg(`获取到 ${models.length} 个模型`);
-            setShowModelModal(true); // Open selector immediately
-        } else { setStatusMsg('格式不兼容'); }
-    } catch (error: any) {
-        console.error(error);
-        setStatusMsg('连接失败');
-    } finally {
-        setIsLoadingModels(false);
+    const baseUrl = localUrl.replace(/\/+$/, '');
+    // 不同服务商鉴权头不一样：多数 OpenAI 兼容用 `Authorization: Bearer`，但有些（如 Pioneer）
+    // 用 `X-API-Key`。浏览器跨域时，请求头要在对方 CORS 预检的 Access-Control-Allow-Headers
+    // 白名单里才放行——发了对方不认的头（比如对方只允许 x-api-key 却发了 authorization）会被
+    // 预检直接挡掉，fetch 抛 TypeError「Failed to fetch」。所以这里两种鉴权头各试一次。
+    // GET 不带 body，别加 Content-Type，省掉一个非简单头、少一道预检门槛。
+    const authVariants: Record<string, string>[] = [
+        { 'Authorization': `Bearer ${localKey}` },
+        { 'X-API-Key': localKey },
+    ];
+    let lastError: any = null;
+    for (const headers of authVariants) {
+        try {
+            const response = await fetch(`${baseUrl}/models`, { method: 'GET', headers });
+            if (!response.ok) { lastError = new Error(`Status ${response.status}`); continue; }
+            const data = await safeResponseJson(response);
+            // Support various API response formats
+            const list = data.data || data.models || [];
+            if (Array.isArray(list) && list.length > 0) {
+                const models = list.map((m: any) => m.id || m);
+                setAvailableModels(models);
+                if (!models.includes(localModel)) setLocalModel(models[0]);
+                setStatusMsg(`获取到 ${models.length} 个模型`);
+                setShowModelModal(true); // Open selector immediately
+                setIsLoadingModels(false);
+                return;
+            }
+            lastError = new Error('空列表');
+        } catch (error: any) {
+            lastError = error;
+        }
     }
+    // 两种鉴权头都没拿到列表。最常见是浏览器跨域（CORS）被挡：服务端 curl/SDK 能拉到，但
+    // 浏览器 fetch 受同源策略限制，对方没放行本站来源就会「Failed to fetch」。不用 console.error
+    // （会被全局拦截器记成吓人的 Application 错误），给条能照做的提示并打开弹窗让用户手动填。
+    const isNetworkError = lastError?.name === 'TypeError' || /failed to fetch|load failed/i.test(lastError?.message || '');
+    console.warn('[fetchModels] 拉取模型列表失败：', lastError?.message || lastError);
+    setStatusMsg(isNetworkError ? '拉取失败（多为浏览器跨域 CORS），可手动填写' : `获取失败：${lastError?.message || '未知错误'}`);
+    setShowModelModal(true);
+    setIsLoadingModels(false);
   };
 
   const handleExport = async (mode: 'text_only' | 'media_only' | 'full') => {
@@ -1187,6 +1228,7 @@ const Settings: React.FC = () => {
                         </span>
                         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-4 h-4 text-slate-400 flex-shrink-0"><path fillRule="evenodd" d="M5.22 8.22a.75.75 0 0 1 1.06 0L10 11.94l3.72-3.72a.75.75 0 1 1 1.06 1.06l-4.25 4.25a.75.75 0 0 1-1.06 0L5.22 9.28a.75.75 0 0 1 0-1.06Z" clipRule="evenodd" /></svg>
                     </button>
+                    <p className="text-[11px] text-slate-400 mt-1 pl-1">「刷新模型列表」失败多为浏览器跨域（CORS）所致——服务端能拉到、浏览器拉不到。这时点上方直接手动填模型名 / 训练作业 ID 即可。</p>
                 </div>
                 
                 <button onClick={handleSaveApi} className="w-full py-3 rounded-2xl font-bold text-white shadow-lg shadow-primary/20 bg-primary active:scale-95 transition-all mt-2">
@@ -1279,6 +1321,10 @@ const Settings: React.FC = () => {
             </p>
 
             <div className="space-y-4">
+                <p className="text-[11px] text-slate-400 -mt-1 pl-1 leading-relaxed">
+                    🎙️ 语音生成支持 <span className="font-semibold text-slate-500">MiniMax</span> 和 <span className="font-semibold text-slate-500">鱼声 Fish</span> 两家——下面两边都可以填，最后在底部「当前语音引擎」里二选一。
+                </p>
+
                 <div className="group">
                     <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block pl-1">MiniMax 服务器</label>
                     <div className="flex bg-white/50 border border-slate-200/60 rounded-xl p-1 gap-1">
@@ -1314,6 +1360,44 @@ const Settings: React.FC = () => {
                     <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block pl-1">MiniMax Group ID (可选)</label>
                     <input type="text" value={localMiniMaxGroupId} onChange={(e) => setLocalMiniMaxGroupId(e.target.value)} placeholder="group_id（部分账号/模型需要）" className="w-full bg-white/50 border border-slate-200/60 rounded-xl px-4 py-2.5 text-sm font-mono focus:bg-white transition-all" />
                     <p className="text-[11px] text-slate-400 mt-1 pl-1">如控制台给了 group_id，请填这里；会透传到 TTS 请求体和代理日志。</p>
+                </div>
+
+                {/* 鱼声 Fish Audio —— 与 MiniMax 对等的另一套语音系统，中性样式、不做视觉偏向 */}
+                <div className="group">
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block pl-1">鱼声 Fish Audio Key</label>
+                    <input type="password" name="fish-api-key" autoComplete="new-password" spellCheck={false} value={localFishKey} onChange={(e) => setLocalFishKey(e.target.value)} placeholder="Fish Audio API Key（fish.audio 控制台签发）" className="w-full bg-white/50 border border-slate-200/60 rounded-xl px-4 py-2.5 text-sm font-mono focus:bg-white transition-all" />
+                    <p className="text-[11px] text-slate-400 mt-1 pl-1">在 <a href="https://fish.audio/zh-CN/developers/" target="_blank" rel="noopener noreferrer" className="text-primary hover:underline font-semibold">fish.audio 开发者页</a> 拿 Key（<span className="text-amber-600 font-medium">需梯子</span>）；默认模型 s2.1-pro。角色音色在「角色 → 语音」里填 reference_id。</p>
+                </div>
+
+                {/* 底部：当前语音引擎二选一 —— radio 样式（不是 tab 切换，配置都在上面，这里只挑用哪家） */}
+                <div className="group rounded-2xl border border-slate-200/70 bg-slate-50/60 p-3">
+                    <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-0.5 block">当前语音引擎（二选一）</label>
+                    <p className="text-[11px] text-slate-400 mb-2.5">聊天语音条 / 约会 / 电话用哪一家。上面两边的 Key 都会保留，这里只切换当前生效的。</p>
+                    <div className="space-y-2">
+                        {([
+                            ['minimax', 'MiniMax', '国内可直连，默认推荐'],
+                            ['fishaudio', '鱼声 Fish', '需科学上网（梯子 / 魔法），否则一直合成失败'],
+                        ] as const).map(([key, name, desc]) => {
+                            const active = localTtsProvider === key;
+                            return (
+                                <button
+                                    key={key}
+                                    type="button"
+                                    onClick={() => selectTtsProvider(key)}
+                                    className={`w-full flex items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition-all ${active ? 'border-primary bg-primary/5 shadow-sm' : 'border-slate-200 bg-white/70 active:bg-white'}`}
+                                >
+                                    <span className={`shrink-0 w-4 h-4 rounded-full border-2 flex items-center justify-center ${active ? 'border-primary' : 'border-slate-300'}`}>
+                                        {active && <span className="w-2 h-2 rounded-full bg-primary" />}
+                                    </span>
+                                    <span className="flex-1 min-w-0">
+                                        <span className={`text-sm font-semibold ${active ? 'text-primary' : 'text-slate-700'}`}>{name}</span>
+                                        <span className="block text-[11px] text-slate-400 mt-0.5">{desc}</span>
+                                    </span>
+                                    {active && <span className="text-[10px] font-bold text-primary shrink-0">使用中</span>}
+                                </button>
+                            );
+                        })}
+                    </div>
                 </div>
 
                 <div className="group">

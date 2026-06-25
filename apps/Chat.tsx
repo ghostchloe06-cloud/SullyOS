@@ -30,8 +30,11 @@ import Modal from '../components/os/Modal';
 import ProactiveSettingsModal from '../components/chat/ProactiveSettingsModal';
 import ThinkingChainSettingsModal from '../components/chat/ThinkingChainSettingsModal';
 import { useChatAI } from '../hooks/useChatAI';
-import { synthesizeSpeechDetailed, cleanTextForTts, parseVoiceOutput } from '../utils/minimaxTts';
+import { cleanTextForTts, parseVoiceOutput } from '../utils/minimaxTts';
+import { synthesizeSpeechDetailed, characterHasVoice } from '../utils/ttsRouter';
 import { resolveMiniMaxApiKey } from '../utils/minimaxApiKey';
+import { resolveFishAudioApiKey, stripFishMarkupForDisplay, cleanTextForTtsFish } from '../utils/fishAudioTts';
+import { resolveTtsProvider } from '../utils/ttsProvider';
 import { isInstantConfigReady, loadInstantConfig } from '../utils/instantPushClient';
 
 const VOICE_LANG_LABELS: Record<string, string> = { en: 'English', ja: '日本語', ko: '한국어', fr: 'Français', es: 'Español' };
@@ -214,11 +217,11 @@ const Chat: React.FC = () => {
     // a character can produce many <语音> messages and we don't want to spam toasts.
     const minimaxWarnedRef = useRef(false);
 
-    /** Whether this character can synthesize real voice (MiniMax key + a voice profile). */
+    /** Whether this character can synthesize real voice under the active TTS provider (key + a voice profile). */
     const isMinimaxReady = useCallback(() => {
-        const vp = char.voiceProfile;
-        const hasVoiceProfile = !!(vp?.voiceId || (vp?.timberWeights && vp.timberWeights.length > 0));
-        return hasVoiceProfile && !!resolveMiniMaxApiKey(apiConfig);
+        if (!characterHasVoice(char, apiConfig)) return false;
+        if (resolveTtsProvider(apiConfig) === 'fishaudio') return !!resolveFishAudioApiKey(apiConfig);
+        return !!resolveMiniMaxApiKey(apiConfig);
     }, [char, apiConfig]);
 
     const persistVoice = async (msgId: number, url: string, blob: Blob | null, originalText: string, spokenText: string | undefined, lang: string | undefined) => {
@@ -289,8 +292,13 @@ const Chat: React.FC = () => {
 
         // Parse the structured voice output: spoken text (sanitized) + per-message emotion.
         const parsedVoice = parseVoiceOutput(msg.content);
-        const voiceTagContent = parsedVoice.hasVoiceTag ? parsedVoice.speech : '';
+        // 鱼声用原生 inline cue（[happy]/[whispering]…），要拿未剥离的 rawSpeech 送 API；
+        // MiniMax 用清洗过的 speech。
+        const isFishTts = resolveTtsProvider(apiConfig) === 'fishaudio';
+        const voiceTagContent = parsedVoice.hasVoiceTag ? (isFishTts ? parsedVoice.rawSpeech : parsedVoice.speech) : '';
         const voiceEmotion = parsedVoice.emotion;
+        // F12 调试：打印 LLM 这条消息的带标签原文，方便核对语音标签写法是否正确。
+        console.log('[voice] LLM 原文(带标签):', { provider: isFishTts ? 'fishaudio' : 'minimax', content: msg.content, voiceTagContent, emotion: voiceEmotion });
 
         // Auto-TTS: only generate voice when AI explicitly used <语音> tag
         if (autoTriggered && !parsedVoice.hasVoiceTag) return;
@@ -302,7 +310,10 @@ const Chat: React.FC = () => {
         if (!isMinimaxReady()) {
             if (!autoTriggered && !minimaxWarnedRef.current) {
                 minimaxWarnedRef.current = true;
-                addToast('该角色未配置 MiniMax 语音，无法播放真实语音，可点「转文字」查看内容', 'info');
+                const tip = resolveTtsProvider(apiConfig) === 'fishaudio'
+                    ? '该角色未配置鱼声音色或缺少 Fish API Key，无法播放真实语音，可点「转文字」查看内容'
+                    : '该角色未配置 MiniMax 语音，无法播放真实语音，可点「转文字」查看内容';
+                addToast(tip, 'info');
             }
             return;
         }
@@ -353,9 +364,16 @@ const Chat: React.FC = () => {
                     spokenText = langAText;
                     originalText = langBText || '';
                 } else {
-                    originalText = cleanTextForTts(msg.content);
-                    if (!originalText || originalText.length < 2) return;
-                    spokenText = originalText;
+                    // 鱼声：保留 inline cue 送 API，显示侧剥掉；MiniMax：照旧。
+                    if (isFishTts) {
+                        spokenText = cleanTextForTtsFish(msg.content);
+                        if (!spokenText || spokenText.length < 2) return;
+                        originalText = stripFishMarkupForDisplay(spokenText) || spokenText;
+                    } else {
+                        originalText = cleanTextForTts(msg.content);
+                        if (!originalText || originalText.length < 2) return;
+                        spokenText = originalText;
+                    }
                     if (voiceLang) {
                         const langLabel = VOICE_LANG_LABELS[voiceLang] || voiceLang;
                         try {
@@ -384,7 +402,9 @@ const Chat: React.FC = () => {
                 emotion: voiceEmotion,
             });
             if (blobUrl.startsWith('blob:')) voiceBlobUrlsRef.current.add(blobUrl);
-            const storedSpokenText = voiceTagContent ? spokenText : (voiceLang ? spokenText : undefined);
+            // 鱼声的 spokenText 里有 inline cue（[whispering] 等），转文字面板要剥掉再存，别让用户看到标记。
+            const displaySpoken = isFishTts ? stripFishMarkupForDisplay(spokenText) : spokenText;
+            const storedSpokenText = voiceTagContent ? displaySpoken : (voiceLang ? displaySpoken : undefined);
             const storedLang = voiceLang || undefined;
             setVoiceDataMap(prev => ({ ...prev, [msg.id]: { url: blobUrl, originalText, spokenText: storedSpokenText, lang: storedLang } }));
             // Persist so the voice bar survives leaving and re-entering the chat.
@@ -443,8 +463,7 @@ const Chat: React.FC = () => {
         // Only trigger when AI just finished typing (wasTyping → !isTyping)
         if (!wasTyping || isTyping) return;
         if (!char.chatVoiceEnabled) return;
-        const voiceProfile = char.voiceProfile;
-        if (!voiceProfile?.voiceId && (!voiceProfile?.timberWeights || voiceProfile.timberWeights.length === 0)) return;
+        if (!characterHasVoice(char, apiConfig)) return;
         // Scan recent assistant messages for unprocessed <语音> tags
         for (let i = messages.length - 1; i >= 0; i--) {
             const msg = messages[i];
@@ -2487,7 +2506,7 @@ const Chat: React.FC = () => {
                 onToggleChatVoice={() => updateCharacter(char.id, { chatVoiceEnabled: !char.chatVoiceEnabled })}
                 chatVoiceLang={char.chatVoiceLang || ''}
                 onSetChatVoiceLang={(lang: string) => updateCharacter(char.id, { chatVoiceLang: lang })}
-                voiceAvailable={!!(char.voiceProfile?.voiceId || char.voiceProfile?.timberWeights?.length)}
+                voiceAvailable={characterHasVoice(char, apiConfig)}
                 onGenerateVoice={selectedMessage ? () => handleManualTts(selectedMessage) : undefined}
                 voiceDownloadable={!!(selectedMessage?.id && voiceDataMap[selectedMessage.id])}
                 onDownloadVoice={selectedMessage ? () => handleDownloadVoice(selectedMessage) : undefined}

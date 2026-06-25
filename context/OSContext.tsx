@@ -22,6 +22,7 @@ import { buildChatRequestPayload } from '../utils/chatRequestPayload';
 import { extractHtmlBlocks } from '../utils/htmlPrompt';
 import { loadMusicPlaybackSnapshot } from './MusicContext';
 import { setMinimaxRegion } from '../utils/minimaxEndpoint';
+import { setTtsProvider } from '../utils/ttsProvider';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import { Capacitor } from '@capacitor/core';
 import { formatBytes } from '../utils/format';
@@ -1404,6 +1405,10 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
   useEffect(() => {
     setMinimaxRegion(apiConfig.minimaxRegion);
   }, [apiConfig.minimaxRegion]);
+  // 同步 TTS 服务商选择，让拿不到 apiConfig 的地方（如 chatPrompts 语音格式指导）读到最新值。
+  useEffect(() => {
+    setTtsProvider(apiConfig.ttsProvider);
+  }, [apiConfig.ttsProvider]);
   const userProfileRef = useRef(userProfile);
   userProfileRef.current = userProfile;
   const groupsRef = useRef(groups);

@@ -5,6 +5,7 @@ import React, { useRef, useState } from 'react';
 import { Message, ChatTheme } from '../../types';
 import { tryParseLifeSimResetCard } from '../../utils/lifeSimChatCard';
 import { VALID_INTERJECTION_TAGS, cleanVoiceMarkupForDisplay } from '../../utils/minimaxTts';
+import { stripFishCuesForDisplay } from '../../utils/fishAudioTts';
 import McdCard from './McdCard';
 import LuckinCard from './LuckinCard';
 import LuckinCheckoutCard from './LuckinCheckoutCard';
@@ -2467,7 +2468,7 @@ const MessageItem = React.memo(({
     };
 
     // Robust content cleanup: strip legacy markers, separators, bilingual tags, stray formatting
-    const stripJunk = (s: string) => s
+    const stripJunk = (s: string) => stripFishCuesForDisplay(s
         .replace(/%%TRANS%%[\s\S]*/gi, '')           // legacy translation marker
         .replace(/%%BILINGUAL%%/gi, '\n')            // raw bilingual marker → newline
         .replace(/<\/?翻译>|<\/?原文>|<\/?译文>/g, '')  // stray bilingual XML tags
@@ -2491,9 +2492,13 @@ const MessageItem = React.memo(({
         .replace(/[ \t]{2,}/g, ' ')
         .replace(/[ \t]+([，。！？、；：,.!?…])/g, '$1')
         .replace(/\n{3,}/g, '\n\n')                  // collapse excess newlines
-        .trim();
+        .trim());   // ⚠️ 末尾再洗一遍鱼声情绪 cue（[excited]/[pause]/(laughs) 等），避免漏到气泡/翻译里
 
     const rawContent = m.content;
+
+    // 语音文字（转文字面板 / 语音条预览）显示前：先洗 MiniMax 标记，再洗鱼声情绪 cue，
+    // 两家服务商的演出标记都不会漏给用户看。
+    const cleanVoiceText = (t?: string | null) => stripFishCuesForDisplay(cleanVoiceMarkupForDisplay(t ?? ''));
 
     // 引用快照原样存着 %%BILINGUAL%% 等原始标记（双语消息），预览前先清洗
     const replyPreview = m.replyTo ? stripJunk(m.replyTo.content) : '';
@@ -2513,7 +2518,7 @@ const MessageItem = React.memo(({
     // Spoken text inside the <语音> tag — lets the placeholder bar offer a 转文字 toggle
     // even when no audio was synthesized (e.g. character has no MiniMax voice configured),
     // so fake voice messages stay readable just like real ones.
-    const voiceTagText = hasVoiceTag ? cleanVoiceMarkupForDisplay(m.content.match(/<[语語]音[^>]*>([\s\S]*?)<\/[语語]音>/)?.[1]?.trim() || '') : '';
+    const voiceTagText = hasVoiceTag ? cleanVoiceText(m.content.match(/<[语語]音[^>]*>([\s\S]*?)<\/[语語]音>/)?.[1]?.trim() || '') : '';
     const hasVoiceContent = voiceData?.url || voiceLoading || hasVoiceTag;
     // Don't render empty bubbles (e.g. messages that were just "---"), unless voice data exists or pending
     if (!displayContent && !hasVoiceContent) return null;
@@ -2679,28 +2684,28 @@ const MessageItem = React.memo(({
                                         {/* When foreign lang voice: show spoken text first, then Chinese translation */}
                                         {voiceData.lang && voiceData.spokenText ? (
                                             <>
-                                                <div className="whitespace-pre-wrap">{cleanVoiceMarkupForDisplay(voiceData.spokenText)}</div>
-                                                {(cleanVoiceMarkupForDisplay(voiceData.originalText) || displayContent) && (
+                                                <div className="whitespace-pre-wrap">{cleanVoiceText(voiceData.spokenText)}</div>
+                                                {(cleanVoiceText(voiceData.originalText) || displayContent) && (
                                                     <div
                                                         style={{ opacity: 0.65 }}
                                                         className="whitespace-pre-wrap text-[10px] mt-1 pt-1 border-t border-current/10"
                                                     >
-                                                        {cleanVoiceMarkupForDisplay(voiceData.originalText) || displayContent}
+                                                        {cleanVoiceText(voiceData.originalText) || displayContent}
                                                     </div>
                                                 )}
                                             </>
                                         ) : (
                                             <>
                                                 {/* Default: show original text */}
-                                                {(cleanVoiceMarkupForDisplay(voiceData.originalText) || displayContent) && (
-                                                    <div className="whitespace-pre-wrap">{cleanVoiceMarkupForDisplay(voiceData.originalText) || displayContent}</div>
+                                                {(cleanVoiceText(voiceData.originalText) || displayContent) && (
+                                                    <div className="whitespace-pre-wrap">{cleanVoiceText(voiceData.originalText) || displayContent}</div>
                                                 )}
-                                                {cleanVoiceMarkupForDisplay(voiceData.spokenText) && (
+                                                {cleanVoiceText(voiceData.spokenText) && (
                                                     <div
-                                                        style={{ opacity: (cleanVoiceMarkupForDisplay(voiceData.originalText) || displayContent) ? 0.55 : 1 }}
-                                                        className={`whitespace-pre-wrap ${(cleanVoiceMarkupForDisplay(voiceData.originalText) || displayContent) ? 'text-[10px] mt-1 pt-1 border-t border-current/10' : ''}`}
+                                                        style={{ opacity: (cleanVoiceText(voiceData.originalText) || displayContent) ? 0.55 : 1 }}
+                                                        className={`whitespace-pre-wrap ${(cleanVoiceText(voiceData.originalText) || displayContent) ? 'text-[10px] mt-1 pt-1 border-t border-current/10' : ''}`}
                                                     >
-                                                        {cleanVoiceMarkupForDisplay(voiceData.spokenText)}
+                                                        {cleanVoiceText(voiceData.spokenText)}
                                                     </div>
                                                 )}
                                             </>

@@ -10,6 +10,13 @@ import { MusicCfg, loadMusicCfgStandalone } from '../context/MusicContext';
 import { RealtimeContextManager, NotionManager, FeishuManager, defaultRealtimeConfig } from './realtimeContext';
 import { isScheduleFeatureOn } from './scheduleGenerator';
 import { VOICE_ACTING_GUIDE } from './minimaxTts';
+import { FISH_VOICE_ACTING_GUIDE } from './fishAudioTts';
+import { getTtsProvider } from './ttsProvider';
+
+// 语音格式指导按当前 TTS 服务商二选一：用 MiniMax 才注入 MiniMax 那套（含 <#秒#> 停顿标记），
+// 用鱼声则注入鱼声版（去掉 MiniMax 专属标记，改用标点 / 省略号控制停顿）。
+const voiceActingGuide = (): string =>
+  getTtsProvider() === 'fishaudio' ? FISH_VOICE_ACTING_GUIDE : VOICE_ACTING_GUIDE;
 
 // 群活动注入专用：把一条群消息压成"适合塞进别人私聊背景"的短文本。
 // 关键：image 消息的 content 是 base64（群里发图走 processImage 压成 JPEG，单张几十 KB），
@@ -683,9 +690,10 @@ ${xhsEnabled ? `${[notionEnabled, feishuEnabled, notionNotesEnabled].filter(Bool
 - 不是每条消息都要发语音！像真人一样，有时候打字，有时候发语音，自然切换
 - 比较适合发语音的场景：撒娇、吐槽、语气很重的话、懒得打字的时候
 - 比较适合打字的场景：发链接、正经讨论、很短的回复如"嗯"、"好"
-- **【重要】语音和文字是两种不同的表达方式，不要复读！** 如果你同时发了文字和语音，语音内容不能是文字内容的简单翻译/复述。要么只发语音不发文字，要么文字写一部分内容、语音补充另一部分（比如文字写正经的，语音吐槽；或者文字说事情，语音撒娇）。像真人一样——你不会打完一段字然后再发一条语音把同样的话说一遍吧？
+- **【字幕对齐 · 重要】这是「中文字幕 + ${langLabel}配音」模式：标签外的中文就是这条语音的字幕，\`<语音>\` 里是它的${langLabel}版，两者是同一段话、内容一致。必须逐段对齐——中文用空行分成几段，${langLabel}翻译就分成对应的几段，断点位置一一对应。用户是对着中文在听${langLabel}的，分段不齐、停顿就对不上，听起来会很错位。**
+- 所以：先想好这条话分几段、每段在哪断；中文和${langLabel}用同样的分段写出来，别一边一大段、另一边拆成好几段。
 
-${VOICE_ACTING_GUIDE}`;
+${voiceActingGuide()}`;
             } else {
                 baseSystemPrompt += `\n\n### 🎤 语音消息功能
 
@@ -710,7 +718,7 @@ ${VOICE_ACTING_GUIDE}`;
 - 标签外的文字会正常显示为文本消息
 - **【重要】语音和文字是两种不同的表达方式，不要复读！** 如果你同时发了文字和语音，语音的内容不能是文字的重复或复述。要么单独发语音（不带文字），要么文字和语音表达不同的内容（比如文字聊正事，语音补一句吐槽/撒娇；或者文字发完一段话后，语音单独补充一个新的想法）。你不会打完字又发一条语音把同样的话再说一遍的——那很奇怪。
 
-${VOICE_ACTING_GUIDE}`;
+${voiceActingGuide()}`;
             }
         } else {
             // Voice is disabled — explicitly prohibit voice tags to prevent inertia from call/date history

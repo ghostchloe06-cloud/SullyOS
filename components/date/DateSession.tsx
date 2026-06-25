@@ -4,7 +4,10 @@ import Modal from '../../components/os/Modal';
 import { useOS } from '../../context/OSContext';
 import { DB } from '../../utils/db';
 import DateSettings from './DateSettings';
-import { synthesizeSpeech, cleanTextForTts, VALID_EMOTIONS } from '../../utils/minimaxTts';
+import { cleanTextForTts, VALID_EMOTIONS } from '../../utils/minimaxTts';
+import { synthesizeSpeech, characterHasVoice } from '../../utils/ttsRouter';
+import { resolveTtsProvider } from '../../utils/ttsProvider';
+import { cleanTextForTtsFish } from '../../utils/fishAudioTts';
 
 // 语音情绪标记 [v:xxx]：跟立绘情绪 [emotion] 分开的独立通道。立绘的 happy 是
 // 夸张的表情、语音的 happy 是音色情绪，两者强度/语义差异大，不能一概而论。
@@ -174,9 +177,10 @@ const DateSession: React.FC<DateSessionProps> = ({
     const VOICE_LANG_OPTIONS = [{v:'',l:'默认'},{v:'en',l:'EN'},{v:'ja',l:'JP'},{v:'ko',l:'KR'},{v:'fr',l:'FR'},{v:'es',l:'ES'}];
 
     const translateAndSpeak = async (text: string, emotion?: string): Promise<string | null> => {
-        if (!char.voiceProfile?.voiceId && (!char.voiceProfile?.timberWeights?.length)) return null;
+        if (!characterHasVoice(char, apiConfig)) return null;
         try {
-            let ttsText = cleanTextForTts(text);
+            // 鱼声保留 inline cue，用 Fish 专属清洗；MiniMax 走原来的清洗。
+            let ttsText = resolveTtsProvider(apiConfig) === 'fishaudio' ? cleanTextForTtsFish(text) : cleanTextForTts(text);
             if (!ttsText || ttsText.length < 2) return null;
             if (voiceLang) {
                 const langLabel = VOICE_LANG_LABELS[voiceLang] || voiceLang;

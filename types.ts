@@ -152,6 +152,10 @@ export interface VirtualTime {
 
 export type MinimaxRegion = 'domestic' | 'overseas';
 
+// 语音合成（TTS）服务商。'minimax'（默认）走 MiniMax T2A；'fishaudio' 走鱼声 Fish Audio。
+// 全局二选一：切换后所有语音场景（聊天语音条 / 约会 / 电话）统一用同一家。
+export type TtsProvider = 'minimax' | 'fishaudio';
+
 export interface APIConfig {
   baseUrl: string;
   apiKey: string;
@@ -161,6 +165,13 @@ export interface APIConfig {
   // 'overseas' → https://api.minimax.io  (海外站)
   // Missing / unknown falls back to domestic.
   minimaxRegion?: MinimaxRegion;
+  // 语音服务商二选一。缺省 → 'minimax'。
+  ttsProvider?: TtsProvider;
+  // 鱼声 Fish Audio API Key（https://fish.audio/）。仅 ttsProvider === 'fishaudio' 时使用。
+  fishAudioApiKey?: string;
+  // 鱼声默认模型（s2.1-pro / s2-pro / s1）。缺省 → 's2.1-pro'。
+  // 角色 voiceProfile.fishModel 优先于这个全局默认。
+  fishAudioModel?: string;
   // Replicate token (r8_xxx) for ACE-Step song generation in 写歌 App.
   aceStepApiKey?: string;
   model: string;
@@ -1698,6 +1709,11 @@ export interface CharacterProfile {
   voiceProfile?: {
       provider?: 'minimax' | 'custom';
       voiceId?: string;
+      // 鱼声 Fish Audio 音色：从 fish.audio 语音库复制的 reference_id。
+      // 与 MiniMax 的 voiceId 不通用，单独保存，切换 provider 时各取各的。
+      fishReferenceId?: string;
+      // 该角色单独指定的鱼声模型（覆盖全局 fishAudioModel）。
+      fishModel?: string;
       voiceName?: string;
       source?: 'system' | 'voice_cloning' | 'voice_generation' | 'custom';
       model?: string;

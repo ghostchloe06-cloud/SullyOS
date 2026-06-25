@@ -1150,6 +1150,42 @@ ${isInitialGeneration ? `
                                    />
                                </div>
 
+                               {/* 鱼声 Fish Audio 音色：仅当全局语音服务商切到鱼声时生效（设置 → 其他 API） */}
+                               <div className="rounded-2xl border border-sky-200/60 bg-sky-50/40 p-2.5 space-y-1.5">
+                                   <div className="text-[10px] font-bold text-sky-600 uppercase tracking-widest">鱼声 Fish 音色</div>
+                                   <input
+                                       value={formData.voiceProfile?.fishReferenceId || ''}
+                                       onChange={(e) => handleChange('voiceProfile', {
+                                           ...(formData.voiceProfile || {}),
+                                           fishReferenceId: e.target.value,
+                                       })}
+                                       className="w-full bg-white rounded-2xl px-3 py-2 text-xs border border-slate-200"
+                                       placeholder="粘贴 reference_id 或整条 fish.audio 链接"
+                                   />
+                                   <p className="text-[10px] text-slate-400">从 fish.audio 选好音色后，把那一页的链接（含 ?modelId=…）或 32 位 id 直接贴进来都行，会自动识别。设置里语音选「鱼声 Fish」后该角色就用它合成；与上面的 MiniMax voice_id 各存各的。</p>
+                               </div>
+
+                               {/* 语速：MiniMax 与鱼声共用 voiceProfile.speed */}
+                               <div className="space-y-1 pt-1">
+                                   <div className="flex items-center justify-between">
+                                       <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">语速</label>
+                                       <span className="text-[11px] font-mono text-slate-500">{(formData.voiceProfile?.speed ?? 1).toFixed(2)}×</span>
+                                   </div>
+                                   <input
+                                       type="range"
+                                       min={0.5}
+                                       max={1.5}
+                                       step={0.05}
+                                       value={formData.voiceProfile?.speed ?? 1}
+                                       onChange={(e) => handleChange('voiceProfile', {
+                                           ...(formData.voiceProfile || {}),
+                                           speed: parseFloat(e.target.value),
+                                       })}
+                                       className="w-full accent-primary"
+                                   />
+                                   <p className="text-[10px] text-slate-400">越小越慢、越像娓娓道来。1.0 正常；觉得"赶"就拉到 0.85–0.95。MiniMax 与鱼声共用这个语速（鱼声没单独配时默认略慢 0.9）。</p>
+                               </div>
+
                                {(voiceOptions.system.length + voiceOptions.voice_cloning.length + voiceOptions.voice_generation.length) > 0 && (
                                    <div className="space-y-2 pt-1">
                                        {([

@@ -6,6 +6,8 @@ import { minimaxFetch } from '../utils/minimaxEndpoint';
 import { resolveMiniMaxApiKey } from '../utils/minimaxApiKey';
 import { hashTtsParams, getCachedTts, saveCachedTts } from '../utils/ttsCache';
 import { cleanTextForTts, insertSpeechBreaks, convertHexAudioToBlob, fetchRemoteAudioBlob, VALID_EMOTIONS, stripEmotionTags, VOICE_ACTING_GUIDE, cleanVoiceMarkupForDisplay } from '../utils/minimaxTts';
+import { FISH_VOICE_ACTING_GUIDE, synthesizeSpeechFishDetailed, resolveFishAudioApiKey, cleanTextForTtsFish, stripFishMarkupForDisplay } from '../utils/fishAudioTts';
+import { resolveTtsProvider, getTtsProvider } from '../utils/ttsProvider';
 import { startStt, isSttSupported, type SttSession } from '../utils/speechToText';
 import { ContextBuilder } from '../utils/context';
 import { injectMemoryPalace } from '../utils/memoryPalace/pipeline';
@@ -153,7 +155,9 @@ const SoundWaveGlyph = () => (
 );
 const renderAssistantLine = (text: string, accent = '#8b5cf6') => {
   // 朗读用的停顿标记 <#0.4#> 不显示出来
-  const trimmed = text.replace(/<#[\d.]+#>/g, '').trim();
+  let trimmed = text.replace(/<#[\d.]+#>/g, '').trim();
+  // 鱼声的 inline cue（[whispering]/[break] 等）是演出指令，不该显示给用户。
+  if (getTtsProvider() === 'fishaudio') trimmed = stripFishMarkupForDisplay(trimmed);
   // 按 中文舞台指示（…）、英文语气词标签 (sighs)、换行 切分，前两者作为特殊元素渲染
   const parts = trimmed.split(SOUND_TAG_SPLIT_RE).filter(Boolean);
   return parts.map((part, idx) => {
@@ -248,7 +252,7 @@ const buildCallPrompt = (userName: string, charName?: string, coreContext?: stri
 
 注意：不要写小说式中文旁白，如”（我靠在椅背上，目光看向远方）”——会被直接删掉，等于白写。
 
-${VOICE_ACTING_GUIDE}
+${getTtsProvider() === 'fishaudio' ? FISH_VOICE_ACTING_GUIDE : VOICE_ACTING_GUIDE}
 
 ### 底线
 
@@ -399,6 +403,30 @@ const CallApp: React.FC = () => {
       ...(emotion ? { emotion } : {}),
     };
   };
+  // ── TTS 服务商分发：电话语音也支持 MiniMax ↔ 鱼声二选一 ──
+  const isFishTts = resolveTtsProvider(apiConfig) === 'fishaudio';
+  // 当前服务商下，这个角色能否合成语音（决定要不要走 TTS / 给"语音未配置"提示）。
+  const canSpeakVoice = (): boolean => {
+    if (!isSpeakerOn) return false;
+    if (isFishTts) {
+      return !!resolveFishAudioApiKey(apiConfig) && !!selectedChar?.voiceProfile?.fishReferenceId;
+    }
+    const voiceId = resolveVoiceId();
+    const hasTimber = (selectedChar?.voiceProfile?.timberWeights?.length || 0) > 1;
+    return !!resolveMiniMaxApiKey(apiConfig) && (!!voiceId || hasTimber);
+  };
+  // 鱼声合成：直接把（带 inline cue 的）文本交给鱼声合成器，由 cleanTextForTtsFish 做
+  // 鱼声专属清洗——保留 [happy]/[whispering]/[break] 等 cue，只清系统标记 / <#秒#> 残留。
+  // 绝不能先走 MiniMax 的 cleanTextForTts，那会把方括号 cue 全剥掉。
+  const synthesizeFishCallUrl = async (rawText: string, emotion?: string): Promise<string> => {
+    if (!selectedChar) throw new Error('未选择角色');
+    if (!cleanTextForTtsFish(rawText).trim()) throw new Error('可朗读文本为空');
+    const { url } = await synthesizeSpeechFishDetailed(rawText, selectedChar, apiConfig, {
+      languageBoost: voiceLang || undefined,
+      emotion,
+    });
+    return url;
+  };
   const clearKeyboardSettleTimers = () => {
     keyboardSettleTimersRef.current.forEach(id => window.clearTimeout(id));
     keyboardSettleTimersRef.current = [];
@@ -541,8 +569,19 @@ const CallApp: React.FC = () => {
         const voiceId = resolveVoiceId();
         const hasTimberWeights = (selectedChar?.voiceProfile?.timberWeights?.length || 0) > 1;
         let greetingAudioPlayed = false;
-        if (isSpeakerOn && minimaxApiKey && (voiceId || hasTimberWeights)) {
+        if (canSpeakVoice()) {
           try {
+            if (isFishTts) {
+              const greetingEmotion = extractVoiceTag(greetingText).emotion || greetingLeadEmotion;
+              const fishUrl = await synthesizeFishCallUrl(greetingText, greetingEmotion);
+              if (fishUrl) {
+                trackBlobUrl(fishUrl);
+                setAudioUrl(fishUrl);
+                setBubbles(prev => prev.map(b => b.id === greetingBubble.id ? { ...b, audioUrl: fishUrl } : b));
+                setTimeout(() => playAudio(fishUrl), 0);
+                greetingAudioPlayed = true;
+              }
+            } else {
             const groupId = resolveGroupId();
             const greetingEmotion = extractVoiceTag(greetingText).emotion || greetingLeadEmotion;
             const speechText = insertSpeechBreaks(cleanTextForTts(greetingText));
@@ -588,6 +627,7 @@ const CallApp: React.FC = () => {
               setBubbles(prev => prev.map(b => b.id === greetingBubble.id ? { ...b, audioUrl: greetingAudioUrl } : b));
               setTimeout(() => playAudio(greetingAudioUrl), 0);
               greetingAudioPlayed = true;
+            }
             }
           } catch { /* 语音合成失败不影响文字开场白 */ }
         }
@@ -804,12 +844,28 @@ const CallApp: React.FC = () => {
       }));
     }
     const hasTimberWeights2 = (selectedChar?.voiceProfile?.timberWeights?.length || 0) > 1;
-    if (!isSpeakerOn || !minimaxApiKey || (!voiceId && !hasTimberWeights2)) {
+    if (!canSpeakVoice()) {
       setCallState('listening');
-      if (isSpeakerOn && !voiceId && !hasTimberWeights2) addToast('语音未配置，先用文字聊吧', 'info');
+      if (isSpeakerOn) addToast('语音未配置，先用文字聊吧', 'info');
       return;
     }
     try {
+      if (isFishTts) {
+        const turnEmotion = extractVoiceTag(assistantText).emotion || turnLeadEmotion;
+        const fishUrl = await synthesizeFishCallUrl(assistantText, turnEmotion);
+        if (!fishUrl) throw new Error('未获得可播放音频');
+        trackBlobUrl(fishUrl);
+        setAudioUrl(fishUrl);
+        setTimeout(() => playAudio(fishUrl), 0);
+        setTraceId('');
+        setBubbles(prev => prev.map(b => (b.id === assistantBubbleId ? { ...b, audioUrl: fishUrl } : b)));
+        if (assistantDbId) {
+          const target = bubbles.find(b => b.id === assistantBubbleId);
+          await DB.updateMessage(assistantDbId, target?.text || assistantText);
+        }
+        setCallState('listening');
+        return;
+      }
       const groupId = resolveGroupId();
       const turnEmotion = extractVoiceTag(assistantText).emotion || turnLeadEmotion;
       const speechText = insertSpeechBreaks(cleanTextForTts(assistantText));
@@ -1011,12 +1067,22 @@ const CallApp: React.FC = () => {
       // Synthesize voice for the rerolled text (same logic as handleTurn)
       const minimaxApiKey = resolveMiniMaxApiKey(apiConfig);
       const voiceId = resolveVoiceId();
-      const hasTimberWeights = (selectedChar?.voiceProfile?.timberWeights?.length || 0) > 1;
-      if (isSpeakerOn && minimaxApiKey && (voiceId || hasTimberWeights)) {
+      if (canSpeakVoice()) {
         try {
           setCallState('speaking');
-          const groupId = resolveGroupId();
           const rerollEmotion = extractVoiceTag(rerolled).emotion || rerollLeadEmotion;
+          if (isFishTts) {
+            const fishUrl = await synthesizeFishCallUrl(rerolled, rerollEmotion);
+            if (fishUrl) {
+              trackBlobUrl(fishUrl);
+              setAudioUrl(fishUrl);
+              setBubbles(prev => prev.map(b => b.id === bubble.id ? { ...b, audioUrl: fishUrl } : b));
+              setTimeout(() => playAudio(fishUrl), 0);
+            }
+            setCallState('listening');
+            return;
+          }
+          const groupId = resolveGroupId();
           const speechText = insertSpeechBreaks(cleanTextForTts(rerolled));
           if (speechText.trim()) {
             const model = resolveModel();

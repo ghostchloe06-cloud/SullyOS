@@ -135,8 +135,15 @@ export const cleanTextForTts = (raw: string): string => {
 export interface ParsedVoiceOutput {
   /** Text OUTSIDE the <语音> tag — what shows in the chat bubble. */
   display: string;
-  /** TTS-ready spoken text (sanitized: only whitelisted sound tags kept). */
+  /** TTS-ready spoken text (sanitized: only whitelisted MiniMax sound tags kept). */
   speech: string;
+  /**
+   * Raw <语音> inner content, whitespace-collapsed only — square-bracket cues and
+   * parens are PRESERVED. Fish Audio needs this so its native inline cues
+   * ([happy]/[whispering]/[break]…) survive to the API; cleanTextForTtsFish does
+   * the provider-appropriate cleaning downstream. Empty when no <语音> tag.
+   */
+  rawSpeech: string;
   /** Validated MiniMax emotion from the tag's emotion="…" attribute, or undefined. */
   emotion?: string;
   /** Whether a <语音> tag was present at all. */
@@ -153,14 +160,16 @@ const VOICE_TAG_RE = /<[语語]音(?:\s+emotion\s*=\s*["']?([a-zA-Z]+)["']?)?\s*
  * malformed attribute can never reach the API.
  */
 export const parseVoiceOutput = (raw: string): ParsedVoiceOutput => {
-  if (!raw) return { display: '', speech: '', hasVoiceTag: false };
+  if (!raw) return { display: '', speech: '', rawSpeech: '', hasVoiceTag: false };
   const m = raw.match(VOICE_TAG_RE);
-  if (!m) return { display: raw.trim(), speech: '', hasVoiceTag: false };
+  if (!m) return { display: raw.trim(), speech: '', rawSpeech: '', hasVoiceTag: false };
   const rawEmotion = (m[1] || '').trim().toLowerCase();
   const emotion = VALID_EMOTIONS.has(rawEmotion) ? rawEmotion : undefined;
   const speech = stripParensPreservingTags(m[2]).replace(/\s+/g, ' ').trim();
+  // 不做 MiniMax 的括号/情绪标剥离，留给 cleanTextForTtsFish 按鱼声规则处理。
+  const rawSpeech = m[2].replace(/\s+/g, ' ').trim();
   const display = raw.replace(/<[语語]音[^>]*>[\s\S]*?<\/[语語]音>/g, '').trim();
-  return { display, speech, emotion, hasVoiceTag: true };
+  return { display, speech, rawSpeech, emotion, hasVoiceTag: true };
 };
 
 /** 为 TTS 文本插入 MiniMax 原生停顿标签 <#秒数#>，让语音有自然停顿
