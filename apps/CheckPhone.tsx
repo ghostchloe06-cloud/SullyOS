@@ -277,6 +277,17 @@ const CheckPhone: React.FC = () => {
     const [aiInput, setAiInput] = useState('');
     const [aiSending, setAiSending] = useState(false);
     const [aiArchiveOpen, setAiArchiveOpen] = useState(false); // 展开已折叠的早期原文
+    // 长按编辑/删除：动作菜单 + 编辑弹窗
+    const [aiMenu, setAiMenu] = useState<{ kind: 'session' | 'card'; id: string } | null>(null);
+    const [aiEdit, setAiEdit] = useState<{ kind: 'session' | 'card'; id: string; title?: string; name?: string; emoji?: string; persona?: string; scenario?: string } | null>(null);
+    const lpTimer = useRef<any>(null);
+    const lpFired = useRef(false);
+    const longPress = (onLong: () => void) => ({
+        onPointerDown: () => { lpFired.current = false; lpTimer.current = setTimeout(() => { lpFired.current = true; onLong(); }, 480); },
+        onPointerUp: () => clearTimeout(lpTimer.current),
+        onPointerLeave: () => clearTimeout(lpTimer.current),
+        onContextMenu: (e: React.MouseEvent) => { e.preventDefault(); lpFired.current = true; onLong(); },
+    });
 
     // 人格模拟：演出脚本在全局 store 后台生成，生成期间用户可离开查手机/切到别的 OS App
     const sim = usePersonaSim();
@@ -1088,6 +1099,42 @@ B) 偶尔（当对面那段明显出彩 / 掉链子 / 崩人设 / 太八股 / �
             },
         }));
         if (selectedAiSessionId === id) { setSelectedAiSessionId(null); setActiveAppId('aiagent'); }
+    };
+
+    const handleDeleteAiCard = (id: string) => {
+        if (!targetChar) return;
+        updateCharacter(targetChar.id, (cur) => ({
+            phoneState: {
+                ...cur.phoneState, records: cur.phoneState?.records || [],
+                aiAgent: {
+                    sessions: cur.phoneState?.aiAgent?.sessions || [],
+                    cards: (cur.phoneState?.aiAgent?.cards || []).filter(c => c.id !== id),
+                },
+            },
+        }));
+    };
+
+    // 保存长按编辑（会话改标题 / 卡片改名设场景）
+    const handleSaveAiEdit = () => {
+        if (!targetChar || !aiEdit) return;
+        if (aiEdit.kind === 'session') {
+            patchAiSession(aiEdit.id, (s) => ({ ...s, title: (aiEdit.title || s.title).trim() || s.title }));
+        } else {
+            updateCharacter(targetChar.id, (cur) => ({
+                phoneState: {
+                    ...cur.phoneState, records: cur.phoneState?.records || [],
+                    aiAgent: {
+                        sessions: cur.phoneState?.aiAgent?.sessions || [],
+                        cards: (cur.phoneState?.aiAgent?.cards || []).map(c => c.id === aiEdit.id ? {
+                            ...c, name: (aiEdit.name || c.name).trim() || c.name, emoji: aiEdit.emoji || c.emoji,
+                            persona: aiEdit.persona ?? c.persona, scenario: aiEdit.scenario ?? c.scenario,
+                        } : c),
+                    },
+                },
+            }));
+        }
+        setAiEdit(null);
+        addToast('已保存', 'success');
     };
 
     // ============================================================
@@ -1937,7 +1984,8 @@ B) 偶尔（当对面那段明显出彩 / 掉链子 / 崩人设 / 太八股 / �
                     {aiService === 'tavern' && aiCards.length > 0 && (
                         <div className="flex gap-2.5 overflow-x-auto no-scrollbar pb-1 -mx-1 px-1">
                             {aiCards.map(c => (
-                                <div key={c.id} className="shrink-0 w-36 rounded-2xl p-3 border border-white/[0.07] bg-white/[0.035]">
+                                <div key={c.id} {...longPress(() => setAiMenu({ kind: 'card', id: c.id }))}
+                                    className="shrink-0 w-36 rounded-2xl p-3 border border-white/[0.07] bg-white/[0.035] cursor-pointer active:scale-[0.98] transition select-none">
                                     <div className="flex items-center justify-between">
                                         <div className="text-2xl">{c.emoji}</div>
                                         <span className="text-[8px] px-1.5 py-0.5 rounded-full bg-rose-400/20 text-rose-200/90">{c.kind === 'world' ? '世界卡' : '角色卡'}</span>
@@ -1957,7 +2005,8 @@ B) 偶尔（当对面那段明显出彩 / 掉链子 / 崩人设 / 太八股 / �
                         const last = lines[lines.length - 1];
                         const vt = getVendorTheme(s.serviceName, s.service);
                         return (
-                            <button key={s.id} onClick={() => { setSelectedAiSessionId(s.id); setActiveAppId('ai_session'); }}
+                            <button key={s.id} {...longPress(() => setAiMenu({ kind: 'session', id: s.id }))}
+                                onClick={() => { if (lpFired.current) { lpFired.current = false; return; } setSelectedAiSessionId(s.id); setActiveAppId('ai_session'); }}
                                 className="group relative w-full text-left flex gap-3 rounded-2xl p-3.5 bg-white/[0.035] border border-white/[0.06] animate-fade-in active:scale-[0.99] transition">
                                 <div className="w-11 h-11 rounded-2xl flex items-center justify-center shrink-0"
                                     style={{ background: aiService === 'assistant' ? `${vt.accent}1f` : `${svc.accent}1f`, color: svc.accent }}>
@@ -2843,6 +2892,56 @@ B) 偶尔（当对面那段明显出彩 / 掉链子 / 崩人设 / 太八股 / �
                     </div>
                 </div>
             )}
+
+            {/* 智能体 · 长按动作菜单（会话/卡片：编辑 / 删除） */}
+            {aiMenu && (() => {
+                const isSession = aiMenu.kind === 'session';
+                const sObj = isSession ? aiSessions.find(s => s.id === aiMenu.id) : null;
+                const cObj = !isSession ? aiCards.find(c => c.id === aiMenu.id) : null;
+                if (isSession ? !sObj : !cObj) return null;
+                const name = isSession ? (sObj!.title || '会话') : (cObj!.name || '卡片');
+                return (
+                    <div className="fixed inset-0 z-[120] flex items-end justify-center animate-fade-in" onClick={() => setAiMenu(null)}>
+                        <div className="absolute inset-0 bg-black/50" />
+                        <div className="relative w-full max-w-sm m-3 mb-6 space-y-2" onClick={e => e.stopPropagation()}>
+                            <div className="rounded-2xl overflow-hidden bg-[#1c1d22] border border-white/10">
+                                <div className="px-4 py-2.5 text-[12px] text-white/50 border-b border-white/10 truncate">{isSession ? '会话' : (cObj!.kind === 'world' ? '世界卡' : '角色卡')}：{name}</div>
+                                <button onClick={() => { setAiEdit(isSession ? { kind: 'session', id: aiMenu.id, title: sObj!.title } : { kind: 'card', id: aiMenu.id, name: cObj!.name, emoji: cObj!.emoji, persona: cObj!.persona, scenario: cObj!.scenario }); setAiMenu(null); }}
+                                    className="w-full px-4 py-3.5 text-left text-[14px] text-white active:bg-white/5 transition flex items-center gap-3"><PencilSimple size={17} /> 编辑</button>
+                                <button onClick={() => { (isSession ? handleDeleteAiSession : handleDeleteAiCard)(aiMenu.id); setAiMenu(null); }}
+                                    className="w-full px-4 py-3.5 text-left text-[14px] text-rose-400 active:bg-white/5 transition flex items-center gap-3 border-t border-white/10"><Trash size={17} /> 删除</button>
+                            </div>
+                            <button onClick={() => setAiMenu(null)} className="w-full rounded-2xl bg-[#1c1d22] border border-white/10 py-3.5 text-[14px] font-semibold text-white/80">取消</button>
+                        </div>
+                    </div>
+                );
+            })()}
+
+            {/* 智能体 · 编辑弹窗 */}
+            <Modal isOpen={!!aiEdit} title={aiEdit?.kind === 'session' ? '编辑会话' : '编辑角色卡'} onClose={() => setAiEdit(null)}
+                footer={<button onClick={handleSaveAiEdit} className="w-full py-3 bg-violet-500 text-white font-bold rounded-2xl">保存</button>}>
+                {aiEdit && (aiEdit.kind === 'session' ? (
+                    <div className="space-y-2">
+                        <label className="text-[10px] font-bold text-slate-400 uppercase block">标题</label>
+                        <input value={aiEdit.title || ''} onChange={e => setAiEdit({ ...aiEdit, title: e.target.value })} className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm" />
+                    </div>
+                ) : (
+                    <div className="space-y-3">
+                        <div className="flex gap-2">
+                            <input value={aiEdit.emoji || ''} onChange={e => setAiEdit({ ...aiEdit, emoji: e.target.value })} placeholder="🎭" className="w-16 px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm text-center" />
+                            <input value={aiEdit.name || ''} onChange={e => setAiEdit({ ...aiEdit, name: e.target.value })} placeholder="卡片名" className="flex-1 px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm" />
+                        </div>
+                        <div>
+                            <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">人设 / 设定</label>
+                            <textarea value={aiEdit.persona || ''} onChange={e => setAiEdit({ ...aiEdit, persona: e.target.value })} className="w-full h-20 bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs resize-none" />
+                        </div>
+                        <div>
+                            <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">场景</label>
+                            <textarea value={aiEdit.scenario || ''} onChange={e => setAiEdit({ ...aiEdit, scenario: e.target.value })} className="w-full h-16 bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs resize-none" />
+                        </div>
+                    </div>
+                ))}
+            </Modal>
 
             {/* Create App Modal */}
             <Modal isOpen={showCreateModal} title="安装自定义 App" onClose={() => setShowCreateModal(false)}
