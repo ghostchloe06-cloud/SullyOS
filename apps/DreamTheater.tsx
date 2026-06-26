@@ -10,7 +10,7 @@ import { isDevDebugAvailable } from '../utils/devDebug';
 import { useDreamSim, dreamSimStore } from '../utils/dreamSimStore';
 import { safeResponseJson } from '../utils/safeApi';
 import {
-    CaretLeft, Play, Pause, MoonStars, ArrowClockwise, X, Eye, Sparkle, Lock,
+    CaretLeft, MoonStars, ArrowClockwise, X, Eye, Sparkle, Lock,
 } from '@phosphor-icons/react';
 
 // ============================================================
@@ -182,6 +182,7 @@ ${recent || '（暂无最近对话）'}
 - 大量使用单字、断句、重复、留白。**沉默是梦的一部分**，要安排 silence 碎片（建议占总数的 1/5 左右，散布在各处）。
 - 情绪高于逻辑：让观众先感受到，再（也许永远不）理解。困惑可以接受，美高于解释，神秘高于确定。
 - **这些碎片会被一片片拼贴、累积在同一张画布上一起被看见（不是一句一屏的幻灯片）**。所以请像做拼贴／剪报那样思考：让相邻碎片互相并置、彼此碰撞出意味；多用不同的 kind 交错（line/word/silence/repeat/dialogue/stage/list/screenplay/diary/message/image 轮着来，别连用同一种）。
+- **拼贴诗的精髓在「一句之内」**：让一句话里的词像从不同地方剪下来的——把来自不同情境、不同温度的词并置在同一句里，读起来却恰好成立。例：「你的声音是潮湿的楼梯」「我把星期天叠进抽屉」。词与词之间要有轻微的错位与意外，而不是顺滑的大白话。（视觉上每个字会被渲染成不同字体/大小/角度，你只需把"异质并置"写进文字本身。）
 - 善用 emphasis（whisper 轻声 / loud 巨大 / fade 将熄）与 align（left/center/right）制造大小与左右散布的层次——这正是拼贴诗的视觉骨架。
 - image 碎片的灵魂是 caption（那句配文才是诗），务必写 caption；不要只丢一个没配文的空画面。
 
@@ -288,8 +289,57 @@ const Ambient: React.FC<{ kind: Ambient; accent: string }> = ({ kind, accent }) 
 };
 
 // ============================================================
-//  COLLAGE — 拼贴诗排版：碎片各自不同的对齐 / 角度 / 大小 / 浓淡，
-//  逐个浮现并「累积」在同一张可滚动画布上，靠并置与留白产生意义。
+//  CUT-UP — 拼贴诗的精髓：一句话里每个字/词都像从不同地方剪来——
+//  字体 / 字号 / 粗细 / 角度 / 基线 / 浓淡 / 偶尔的小纸片底色各不相同，
+//  却恰好拼成完整的一句。
+// ============================================================
+const CUT_FONTS = [
+    "'Shippori Mincho','Noto Serif SC',serif",
+    "'Noto Sans SC','PingFang SC',sans-serif",
+    "'ZCOOL KuaiLe','Noto Sans SC',cursive",
+    "'SF Mono','Roboto Mono',ui-monospace,monospace",
+    "'Songti SC','Shippori Mincho',serif",
+];
+// 切成可独立造型的小片：中文按字、西文按词、换行单列、标点/空格保留
+const cutTokens = (text: string): string[] =>
+    text.match(/[一-鿿]|[A-Za-z0-9'’]+|\n|[^\s]|[ \t]+/g) || [text];
+
+const Cut: React.FC<{ text: string; theme: DreamTheme; seed?: number; base?: number; intensity?: number }> =
+    ({ text, theme, seed = 0, base = 19, intensity = 1 }) => (
+        <span>
+            {cutTokens(text).map((t, k) => {
+                if (t === '\n') return <br key={k} />;
+                if (t.trim() === '') return <span key={k}>{t}</span>;
+                const r = (n: number) => rnd(seed * 17.3 + k * 2.71 + n);
+                const font = CUT_FONTS[Math.floor(r(1) * CUT_FONTS.length)];
+                const size = base + (r(2) - 0.5) * base * 0.42 * intensity;
+                const weight = [300, 400, 400, 600, 700][Math.floor(r(3) * 5)];
+                const rot = (r(4) - 0.5) * 11 * intensity;
+                const dy = (r(5) - 0.5) * base * 0.32 * intensity;
+                const tone = r(6);
+                const boxed = r(7) > 0.9;
+                return (
+                    <span key={k} style={{
+                        display: 'inline-block',
+                        fontFamily: font,
+                        fontSize: `${size}px`,
+                        fontWeight: weight as React.CSSProperties['fontWeight'],
+                        transform: `rotate(${rot}deg) translateY(${dy}px)`,
+                        color: tone > 0.85 ? theme.accent : tone < 0.16 ? 'rgba(255,255,255,0.45)' : 'rgba(255,255,255,0.92)',
+                        margin: '0 0.02em',
+                        padding: boxed ? '0.02em 0.18em' : undefined,
+                        background: boxed ? `${theme.accent}1f` : undefined,
+                        borderRadius: boxed ? 3 : undefined,
+                        lineHeight: 1.55,
+                    }}>{t}</span>
+                );
+            })}
+        </span>
+    );
+
+// ============================================================
+//  COLLAGE — 碎片各自不同的对齐 / 角度 / 大小 / 浓淡，逐个浮现并「累积」
+//  在同一张可滚动画布上，靠并置与留白产生意义。
 // ============================================================
 const emphOpacity = (e?: DreamFragment['emphasis']): number =>
     e === 'whisper' ? 0.52 : e === 'fade' ? 0.32 : e === 'loud' ? 1 : 0.85;
@@ -327,13 +377,11 @@ const CollageItem: React.FC<{ frag: DreamFragment; theme: DreamTheme; index: num
     let inner: React.ReactNode = null;
 
     if (frag.kind === 'line') {
-        const sz = frag.emphasis === 'loud' ? 26 : frag.emphasis === 'whisper' ? 15 : 19;
-        inner = <span className="font-light text-white leading-relaxed whitespace-pre-wrap"
-            style={{ fontFamily: ff, fontSize: sz, textShadow: `0 1px 20px ${tint}22` }}>{frag.text}</span>;
+        const sz = frag.emphasis === 'loud' ? 25 : frag.emphasis === 'whisper' ? 15 : 19;
+        inner = <Cut text={frag.text || ''} theme={theme} seed={i} base={sz} intensity={1} />;
     } else if (frag.kind === 'word') {
         const sz = frag.emphasis === 'whisper' ? 30 : frag.emphasis === 'loud' ? 50 : 40;
-        inner = <span className="font-extralight tracking-[0.12em] text-white leading-none"
-            style={{ fontFamily: ff, fontSize: sz, textShadow: `0 2px 30px ${tint}55` }}>{frag.text}</span>;
+        inner = <Cut text={frag.text || ''} theme={theme} seed={i} base={sz} intensity={1.2} />;
     } else if (frag.kind === 'repeat') {
         const word = frag.text || '…';
         const count = Math.max(2, Math.min(6, frag.count || 3));
@@ -346,7 +394,7 @@ const CollageItem: React.FC<{ frag: DreamFragment; theme: DreamTheme; index: num
     } else if (frag.kind === 'dialogue') {
         inner = <span className="inline-flex flex-col gap-1.5 items-start">
             {(frag.lines || []).map((l, k) => (
-                <span key={k} className="text-[15px] font-light text-white/80 leading-relaxed" style={{ fontFamily: ff }}>{l}</span>
+                <span key={k} className="leading-relaxed"><Cut text={l} theme={theme} seed={i * 10 + k} base={15} intensity={0.75} /></span>
             ))}
         </span>;
     } else if (frag.kind === 'stage') {
@@ -356,8 +404,8 @@ const CollageItem: React.FC<{ frag: DreamFragment; theme: DreamTheme; index: num
     } else if (frag.kind === 'list') {
         inner = <span className="inline-flex flex-col gap-2 items-start">
             {(frag.lines || []).map((l, k) => (
-                <span key={k} className="text-[15px] font-light text-white/80 leading-relaxed flex items-baseline gap-2" style={{ fontFamily: ff }}>
-                    <span style={{ color: tint }}>·</span>{l}
+                <span key={k} className="leading-relaxed flex items-baseline gap-2">
+                    <span style={{ color: tint }}>·</span><Cut text={l} theme={theme} seed={i * 10 + k} base={15} intensity={0.65} />
                 </span>
             ))}
         </span>;
@@ -385,7 +433,7 @@ const CollageItem: React.FC<{ frag: DreamFragment; theme: DreamTheme; index: num
         inner = <span className="inline-flex flex-col items-center gap-2">
             <span className="block rounded-xl overflow-hidden border border-white/[0.1]"
                 style={{ width: 112, height: 112, background: `linear-gradient(150deg, ${it}cc, #14121a)`, boxShadow: `0 8px 30px ${it}30` }} />
-            {frag.caption && <span className="text-[13.5px] text-white/[0.78] leading-relaxed text-center" style={{ fontFamily: ff, maxWidth: 220 }}>{frag.caption}</span>}
+            {frag.caption && <span className="leading-relaxed text-center" style={{ maxWidth: 220 }}><Cut text={frag.caption} theme={theme} seed={i + 99} base={14} intensity={0.8} /></span>}
         </span>;
     }
 
@@ -422,8 +470,7 @@ const DreamTheater: React.FC<{ char: CharacterProfile; onExit: () => void }> = (
 
     const [phase, setPhase] = useState<Phase>('idle');
     const [script, setScript] = useState<DreamScript | null>(null);
-    const [revealed, setRevealed] = useState(1);   // 已浮现的碎片数（拼贴累积）
-    const [autoplay, setAutoplay] = useState(true);
+    const [revealed, setRevealed] = useState(1);   // 已浮现的碎片数（拼贴累积，纯轻触推进）
     // 仅本地测试：强制指定原型（null = 让模型自动选）
     const [forcedArchetype, setForcedArchetype] = useState<DreamArchetype | null>(null);
     const devAvailable = isDevDebugAvailable();
@@ -465,7 +512,7 @@ const DreamTheater: React.FC<{ char: CharacterProfile; onExit: () => void }> = (
     useEffect(() => {
         if (dreamSim.status === 'ready' && dreamSim.charId === char.id && dreamSim.script) {
             savedRef.current = false; setBoxReveal(null);
-            setScript(dreamSim.script); setRevealed(1); setAutoplay(true); setPhase('play');
+            setScript(dreamSim.script); setRevealed(1); setPhase('play');
             dreamSimStore.reset();
         } else if (dreamSim.status === 'error' && dreamSim.charId === char.id) {
             setPhase('error'); dreamSimStore.reset();
@@ -536,27 +583,8 @@ const DreamTheater: React.FC<{ char: CharacterProfile; onExit: () => void }> = (
         setPhase('end');
     }, [script, persist]);
 
-    // ----- 逐个浮现（累积式拼贴）-----
-    useEffect(() => {
-        if (phase !== 'play' || isDeepSleep || !autoplay) return;
-        if (revealed >= frags.length) return;
-        const last = frags[revealed - 1];
-        const base: Record<DreamFragment['kind'], number> = {
-            silence: 1200, word: 2400, line: 2700, repeat: 2800, dialogue: 3000,
-            stage: 2500, list: 3200, screenplay: 3400, diary: 3600, message: 2900, image: 3200,
-        };
-        const delay = (base[last?.kind] || 2600) + (last?.pace === 3 ? 1800 : last?.pace === 2 ? 900 : 0);
-        const t = setTimeout(() => setRevealed(r => Math.min(frags.length, r + 1)), delay);
-        return () => clearTimeout(t);
-    }, [phase, isDeepSleep, autoplay, revealed, frags]);
-
-    // ----- 全部浮现后自动收束（也可随时点「醒来」；绝不卡死）-----
-    useEffect(() => {
-        if (phase === 'play' && !isDeepSleep && frags.length > 0 && revealed >= frags.length) {
-            const t = setTimeout(() => finishDream(), 3600);
-            return () => clearTimeout(t);
-        }
-    }, [phase, isDeepSleep, frags.length, revealed, finishDream]);
+    // 纯轻触推进：不再自动播放、也不自动收束——读完由用户点「醒来」或轻触收束，
+    // 让人可以在最后那页拼贴诗上停留多久都行。
 
     // ----- 新碎片浮现时平滑滚到底，让最新的进入视野 -----
     useEffect(() => {
@@ -571,13 +599,13 @@ const DreamTheater: React.FC<{ char: CharacterProfile; onExit: () => void }> = (
         else finishDream();
     };
 
-    const restart = () => { savedRef.current = true; setRevealed(1); setAutoplay(true); setPhase('play'); };
+    const restart = () => { savedRef.current = true; setRevealed(1); setPhase('play'); };
 
     // ----- replay a saved dream -----
     const replay = (s: DreamScript) => {
         savedRef.current = true; // 重看不再写库 / 不再叠 buff / 不再抽盲盒
         setBoxReveal(null);
-        setScript(s); setRevealed(1); setAutoplay(true); setPhase('play');
+        setScript(s); setRevealed(1); setPhase('play');
     };
 
     const dreamLogs = char.dreamLogs || [];
@@ -913,19 +941,15 @@ const DreamTheater: React.FC<{ char: CharacterProfile; onExit: () => void }> = (
                 </div>
             </div>
 
-            {/* 底部：进度 + 提示 + 醒来 / 暂停 */}
+            {/* 底部：进度 + 提示 + 醒来（纯轻触推进，无自动播放） */}
             <div className="shrink-0 z-30 px-6 pb-7 pt-2 bg-gradient-to-t from-black/40 to-transparent">
                 <div className="h-[2px] rounded-full bg-white/[0.06] overflow-hidden mb-3">
                     <div className="h-full rounded-full transition-all duration-700" style={{ width: `${(revealed / Math.max(1, frags.length)) * 100}%`, background: `${theme.accent}88` }} />
                 </div>
                 <div className="flex items-center justify-between">
                     <button onClick={(e) => { e.stopPropagation(); finishDream(); }} className="text-[11px] text-white/45 active:scale-95">醒来</button>
-                    <span className={`text-[10px] text-white/25 transition-opacity duration-1000 ${revealed > 1 ? 'opacity-0' : 'opacity-100'}`}>轻触，让梦继续浮现</span>
-                    <button onClick={(e) => { e.stopPropagation(); setAutoplay(a => !a); }}
-                        className="w-9 h-9 rounded-full flex items-center justify-center border border-white/[0.1] text-white/70 active:scale-90 transition"
-                        style={autoplay ? { background: theme.accent, color: '#15121c', borderColor: 'transparent' } : undefined}>
-                        {autoplay ? <Pause size={15} weight="fill" /> : <Play size={15} weight="fill" />}
-                    </button>
+                    <span className={`text-[10px] text-white/25 transition-opacity duration-1000 ${revealed > 2 ? 'opacity-0' : 'opacity-100'}`}>轻触，让梦一片片浮现</span>
+                    <span className="text-[10px] text-white/25 tabular-nums">{Math.min(revealed, frags.length)}/{frags.length}</span>
                 </div>
             </div>
         </Shell>
