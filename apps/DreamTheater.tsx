@@ -888,9 +888,9 @@ const DreamTheater: React.FC<{ char: CharacterProfile; onExit: () => void }> = (
                             const isSecret = a === 'deepsleep';   // 隐藏款 · 深眠 —— 要让人一眼看出「这格不一样」
                             const GOLD = '#ffe08a';
                             return (
-                                <div key={a} className="relative rounded-2xl border overflow-hidden flex flex-col"
+                                <div key={a} className={`relative rounded-2xl border overflow-hidden flex flex-col ${isSecret ? 'col-span-3 mx-auto' : ''}`}
                                     style={isSecret
-                                        ? { borderColor: owned ? `${GOLD}aa` : `${GOLD}55`, background: `linear-gradient(160deg, ${GOLD}1c, rgba(120,90,160,0.10) 60%, rgba(255,255,255,0.02))`, boxShadow: `0 0 22px ${GOLD}2e, inset 0 0 18px ${GOLD}14` }
+                                        ? { width: 'calc((100% - 1.5rem) / 3)', borderColor: owned ? `${GOLD}aa` : `${GOLD}55`, background: `linear-gradient(160deg, ${GOLD}1c, rgba(120,90,160,0.10) 60%, rgba(255,255,255,0.02))`, boxShadow: `0 0 22px ${GOLD}2e, inset 0 0 18px ${GOLD}14` }
                                         : owned
                                             ? { borderColor: `${t.accent}40`, background: `linear-gradient(160deg, ${t.accent}14, rgba(255,255,255,0.02))` }
                                             : { borderColor: 'rgba(255,255,255,0.07)', background: 'rgba(255,255,255,0.02)' }}>
@@ -915,10 +915,9 @@ const DreamTheater: React.FC<{ char: CharacterProfile; onExit: () => void }> = (
                                         </>
                                     ) : isSecret ? (
                                         // 未解锁的隐藏款：金色问号 + 神秘提示，明显区别于普通锁
-                                        <div className="aspect-square flex flex-col items-center justify-center gap-1.5"
+                                        <div className="aspect-square flex flex-col items-center justify-center gap-2"
                                             style={{ background: `radial-gradient(circle at 50% 42%, ${GOLD}1f, transparent 70%)` }}>
-                                            <Sparkle size={20} weight="fill" style={{ color: GOLD }} />
-                                            <span className="text-[22px] font-light tracking-[0.15em]" style={{ color: `${GOLD}cc` }}>？！</span>
+                                            <Sparkle size={22} weight="fill" style={{ color: GOLD }} />
                                             <span className="text-[8px] tracking-wider" style={{ color: `${GOLD}aa` }}>某种很罕见的梦</span>
                                         </div>
                                     ) : (
