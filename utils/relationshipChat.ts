@@ -76,8 +76,6 @@ export function upsertContact(
             status: incoming.status || 'friend',
             lastInteraction: incoming.lastInteraction,
             createdAt: Date.now(),
-            isAgent: incoming.isAgent,
-            agentOf: incoming.agentOf,
         };
         return [...contacts, fresh];
     }
@@ -328,46 +326,43 @@ ${labeled()}
     };
 }
 
-interface RunAgentConversationParams {
+interface RunNpcConversationParams {
     /** 机主角色 */
     host: CharacterProfile;
     user: UserProfile;
     api: MiniApiConfig;
-    /** 智能体模拟谁：'user' 或某个 npc 名字 */
-    agentOf: 'user' | string;
-    agentName: string;
+    /** 虚构联系人名字 */
+    npcName: string;
+    /** 虚构联系人身份/关系标签 */
+    identity?: string;
+    /** 机主对此人的备注 */
+    note?: string;
     rounds?: number;
     existingDetail?: string;
 }
 
 /**
- * P2 · AI 玩 AI：机主角色和「TA 脑内构建的某人智能体」对话。
- * 另一方不是真实角色，而是机主基于自己认知模拟出来的人格（user 用 userProfile + 印象反推）。
- * 单 LLM 分饰两角即可（智能体只是机主想象的产物），产出供用户偷窥的只读脚本。
+ * 与虚构 NPC 的对话：机主按人设脑补出这个不存在的人，单 LLM 分饰两角生成聊天脚本。
+ * 纯虚构产物——不镜像、不涉及任何真实角色。
  */
-export async function runAgentConversation(
-    p: RunAgentConversationParams,
+export async function runNpcConversation(
+    p: RunNpcConversationParams,
 ): Promise<{ detail: string }> {
     const rounds = Math.max(1, Math.min(8, p.rounds ?? 4));
     const ctxHost = ContextBuilder.buildCoreContext(p.host, p.user, true);
 
-    const agentProfile =
-        p.agentOf === 'user'
-            ? `「${p.agentName}」是你脑内对【用户本人】的模拟体。已知用户信息：姓名「${p.user.name}」，设定「${
-                  p.user.bio || '（未知）'
-              }」。请基于你对 TA 的全部印象与认知去演这个智能体——它会怎么说话、在意什么，由你的理解决定（可能和真实用户有偏差，这正是趣味所在）。`
-            : `「${p.agentName}」是你脑内构建的一个智能体，模拟你认知里的「${p.agentName}」。请基于你的人设与世界观去演它。`;
-
     const prompt = `${ctxHost}
 
-### [AI 玩 AI · 你在和自己构建的智能体对话（用户在偷窥）]
-你是「${p.host.name}」。你闲来无事，用 AISandbox 跑了一个智能体来陪你聊天。
-${agentProfile}
+### [人际关系 · 与虚构联系人的聊天]
+你是「${p.host.name}」。你正在用手机和「${p.npcName}」私聊。${
+        p.identity ? `对方身份：${p.identity}。` : ''
+    }${p.note ? `你对 TA 的备注：${p.note}。` : ''}
+「${p.npcName}」是按你的人设合理虚构出来的人（不是真实存在的角色），由你脑补出 TA 的性格与说话方式。
 
 ${p.existingDetail ? `已经聊了：\n"""\n${p.existingDetail}\n"""\n请接着往下聊。` : '现在开始这段对话。'}
 
-任务：生成你（${p.host.name}）和这个智能体（${p.agentName}）接下来的 ${rounds} 轮你来我往的对话。
-格式：每行一句，"我: ..." 代表你（${p.host.name}），"对方: ..." 代表智能体（${p.agentName}）。
+任务：生成你（${p.host.name}）和「${p.npcName}」接下来 ${rounds} 个来回的对话，信息量要够。
+格式：每行一句，"我: ..." 代表你（${p.host.name}），"对方: ..." 代表「${p.npcName}」。
 只输出对话行，不要解释、不要旁白、不要重复已有内容。`;
 
     let out = '';

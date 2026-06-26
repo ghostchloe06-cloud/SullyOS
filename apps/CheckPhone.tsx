@@ -7,7 +7,7 @@ import Modal from '../components/os/Modal';
 import { safeResponseJson } from '../utils/safeApi';
 import { injectMemoryPalace } from '../utils/memoryPalace/pipeline';
 import {
-    runRealConversation, runAgentConversation, upsertContact, matchRealChar,
+    runRealConversation, runNpcConversation, upsertContact, matchRealChar,
     clampAffinity, normName,
 } from '../utils/relationshipChat';
 import PersonaSim, { LifeLog, generatePersonaScript } from './PersonaSim';
@@ -17,7 +17,7 @@ import {
     User, Phone, ChatCircleDots, ChatCircle, ShoppingBag, Hamburger, Compass, GearSix,
     Plus, SignOut, CaretLeft, CaretRight, Cloud, ImagesSquare, LockSimple, Package,
     Storefront, Heart, ArrowsClockwise, Tray, DotsThree, ClockCounterClockwise, Sparkle,
-    UsersThree, Robot, UserPlus, Prohibit, LinkSimple, PaperPlaneTilt, PencilSimple, Trash
+    UsersThree, UserPlus, Prohibit, LinkSimple, PaperPlaneTilt, PencilSimple, Trash
 } from '@phosphor-icons/react';
 
 type LayoutId = NonNullable<PhoneCustomApp['layout']>;
@@ -149,9 +149,8 @@ const CheckPhone: React.FC = () => {
     const [editingNote, setEditingNote] = useState(false);
     const [showContactModal, setShowContactModal] = useState(false);
     const [ncName, setNcName] = useState('');
-    const [ncKind, setNcKind] = useState<'real' | 'npc' | 'agent'>('npc');
+    const [ncKind, setNcKind] = useState<'real' | 'npc'>('npc');
     const [ncLinkedId, setNcLinkedId] = useState('');
-    const [ncAgentOf, setNcAgentOf] = useState('user');
 
     // Custom App Creation State
     const [showCreateModal, setShowCreateModal] = useState(false);
@@ -173,6 +172,7 @@ const CheckPhone: React.FC = () => {
     const records = targetChar?.phoneState?.records || [];
     const customApps = targetChar?.phoneState?.customApps || [];
     const contacts = targetChar?.phoneState?.contacts || [];
+    const allowFictional = targetChar?.phoneState?.allowFictionalContacts !== false;
 
     useEffect(() => {
         if (targetChar) {
@@ -340,6 +340,11 @@ const CheckPhone: React.FC = () => {
             const rosterHint = roster.length
                 ? roster.map(r => r.name).join('、')
                 : '（无其他真实角色）';
+            // 约束：是否允许虚构 NPC。关掉则只能和神经链接里的真实角色来往
+            const allowFictional = targetChar.phoneState?.allowFictionalContacts !== false;
+            const fictionRule = allowFictional
+                ? ''
+                : `\n**硬约束**：禁止虚构任何 NPC，联系人**只能**取自上面的真实角色名单。若名单为空，直接返回空数组 []。`;
 
             let promptInstruction = "";
             let logPrefix = "";
@@ -366,7 +371,7 @@ ${layoutHint[layout || 'generic']}`;
 **真假甄别规则（重要）**:
 - 如果某个联系人就是上面名单里的人 → 输出 "kind":"real" 并在 "linkedName" 里填名单里的原名。
 - 否则（按人设虚构的路人）→ 输出 "kind":"npc"。
-- 优先复用名单里的真实角色作为联系人（让 TA 的社交圈和真实角色产生交集），其余再虚构 NPC。
+- 优先复用名单里的真实角色作为联系人（让 TA 的社交圈和真实角色产生交集），其余再虚构 NPC。${fictionRule}
 
 要求：
 1. **联系人**: 根据人设给出合理的联系人（学生→辅导员/社团学长；杀手→中间人）。不要用“User”。
@@ -382,7 +387,7 @@ ${layoutHint[layout || 'generic']}`;
 **真假甄别规则（重要）**:
 - 联系人若是名单里的人 → "kind":"real" + "linkedName" 填原名。
 - 否则虚构路人 → "kind":"npc"。
-- 尽量让名单里的真实角色出现在通讯录里，其余按人设虚构。
+- 尽量让名单里的真实角色出现在通讯录里，其余按人设虚构。${fictionRule}
 
 每个联系人给出：姓名、身份标签、机主对 TA 的好感度(-100~100)、一句机主视角的备注。
 格式JSON数组: [{ "title": "姓名", "kind": "real|npc", "linkedName": "", "identity": "同事/前任/网友…", "affinity": 20, "detail": "一句备注，比如：欠我一顿饭，最近老是已读不回。" }, ...]`;
@@ -452,6 +457,11 @@ ${layoutHint[layout || 'generic']}`;
                             ? (matchRealChar(item.linkedName || pureName, roster) || matchRealChar(pureName, roster))
                             : matchRealChar(pureName, roster); // npc 也兜底匹配一次，防 LLM 漏标
                         const kind: PhoneContact['kind'] = linkedId ? 'real' : 'npc';
+                        // 约束开启时丢弃所有非真实角色，确保 TA 只和神经链接里的角色来往
+                        if (!allowFictional && !linkedId) {
+                            await new Promise(r => setTimeout(r, 10));
+                            continue;
+                        }
                         contactsAcc = upsertContact(contactsAcc, {
                             name: pureName,
                             identity: item.identity,
@@ -602,8 +612,28 @@ Format:
         }));
     };
 
+    // 用户手动改关系：char 会察觉是用户在 TA 手机上动的手（落一条私聊系统提示，进入角色上下文）
+    // 约束：是否允许虚构 NPC（关掉 = 只与神经链接里的真实角色来往）
+    const toggleAllowFictional = () => {
+        if (!targetChar) return;
+        const next = !(targetChar.phoneState?.allowFictionalContacts !== false);
+        updateCharacter(targetChar.id, (cur) => ({
+            phoneState: { ...cur.phoneState, records: cur.phoneState?.records || [], allowFictionalContacts: next },
+        }));
+        addToast(next ? '已允许 TA 结交虚构 NPC' : '已限定 · TA 只与神经链接里的角色来往', 'info');
+    };
+
     const handleSetContactStatus = (contact: PhoneContact, status: PhoneContact['status']) => {
         mutateContacts(cs => cs.map(c => c.id === contact.id ? { ...c, status } : c));
+        if (targetChar && (status === 'deleted' || status === 'blocked')) {
+            const verb = status === 'deleted' ? '删掉了' : '拉黑了';
+            DB.saveMessage({
+                charId: targetChar.id,
+                role: 'system',
+                type: 'text',
+                content: `[人际关系] ${userProfile.name} 在偷看你手机时，把你和「${contact.name}」的好友关系${verb}。你能察觉到是 TA 干的。`,
+            } as any);
+        }
         addToast(status === 'deleted' ? '已删好友' : status === 'blocked' ? '已拉黑' : status === 'friend' ? '已加好友' : '已更新', 'success');
     };
 
@@ -624,22 +654,16 @@ Format:
         if (!targetChar) return;
         let name = ncName.trim();
         let linkedCharId: string | undefined;
-        let isAgent: boolean | undefined;
-        let agentOf: string | undefined;
         if (ncKind === 'real') {
             const rc = characters.find(c => c.id === ncLinkedId);
             if (!rc) { addToast('请选择要绑定的真实角色', 'error'); return; }
             name = rc.name; linkedCharId = rc.id;
-        } else if (ncKind === 'agent') {
-            isAgent = true; agentOf = ncAgentOf;
-            if (!name) name = ncAgentOf === 'user' ? `${userProfile.name} (智能体)` : '';
-            if (!name) { addToast('请填写智能体名字', 'error'); return; }
         } else if (!name) {
             addToast('请填写联系人名字', 'error'); return;
         }
-        mutateContacts(cs => upsertContact(cs, { name, kind: ncKind, linkedCharId, isAgent, agentOf, affinity: 0, status: 'friend' }));
+        mutateContacts(cs => upsertContact(cs, { name, kind: ncKind, linkedCharId, affinity: 0, status: 'friend' }));
         setShowContactModal(false);
-        setNcName(''); setNcKind('npc'); setNcLinkedId(''); setNcAgentOf('user');
+        setNcName(''); setNcKind('npc'); setNcLinkedId('');
         addToast('已添加联系人', 'success');
     };
 
@@ -712,17 +736,17 @@ Format:
         }
     };
 
-    // P2：AI 玩 AI（机主和脑内智能体对话，只读偷窥，不镜像、不进私聊）
-    const handleAgentConversation = async (contact: PhoneContact) => {
+    // 与虚构 NPC 的对话（机主脑补，单 LLM，纯虚构、不镜像）
+    const handleNpcConversation = async (contact: PhoneContact) => {
         if (!targetChar || !apiConfig.apiKey) { addToast('请先配置 API', 'error'); return; }
         setIsLoading(true);
         try {
             const existing = (targetChar.phoneState?.records || []).find(r => r.type === 'chat' && (r.contactId === contact.id || normName(r.title) === normName(contact.name)));
-            const { detail } = await runAgentConversation({
+            const { detail } = await runNpcConversation({
                 host: targetChar, user: userProfile, api: apiConfig as any,
-                agentOf: contact.agentOf || (contact.isAgent ? 'user' : contact.name), agentName: contact.name, rounds: 4, existingDetail: existing?.detail,
+                npcName: contact.name, identity: contact.identity, note: contact.note, rounds: 4, existingDetail: existing?.detail,
             });
-            if (!detail.trim()) { addToast('智能体没有响应', 'error'); return; }
+            if (!detail.trim()) { addToast('对方没有回应', 'error'); return; }
             const now = Date.now();
             updateCharacter(targetChar.id, (cur) => {
                 const recs = cur.phoneState?.records || [];
@@ -731,10 +755,10 @@ Format:
                     : [...recs, { id: `rec-${now}-${Math.random()}`, type: 'chat', title: contact.name, detail, timestamp: now, contactId: contact.id }];
                 return { phoneState: { ...cur.phoneState, records: next } };
             });
-            addToast('偷窥到一段新对话', 'success');
+            addToast('生成了一段对话', 'success');
         } catch (e) {
             console.error(e);
-            addToast('智能体对话失败', 'error');
+            addToast('对话生成失败', 'error');
         } finally {
             setIsLoading(false);
         }
@@ -1092,7 +1116,6 @@ Format:
     // ============================================================
     const affColor = (a: number) => a >= 40 ? '#4ade80' : a >= 0 ? '#8b9cff' : a >= -40 ? '#fbbf24' : '#fb7185';
     const kindBadge = (c: PhoneContact) => {
-        if (c.isAgent || c.kind === 'agent') return { icon: <Robot size={11} weight="fill" />, label: '智能体', color: '#22d3ee' };
         if (c.kind === 'real') return { icon: <LinkSimple size={11} weight="bold" />, label: '真人', color: '#a78bfa' };
         return { icon: <User size={11} weight="fill" />, label: 'NPC', color: '#94a3b8' };
     };
@@ -1104,6 +1127,16 @@ Format:
             <SubAppShell>
                 <TermHeader title="人际关系" sub={`${list.length} contacts`} accent={accent} onBack={() => setActiveAppId('home')}
                     right={<button onClick={() => setShowContactModal(true)} className="text-white/80 active:scale-90 transition"><UserPlus size={20} weight="bold" /></button>} />
+                {/* 约束开关：是否允许虚构 NPC */}
+                <div className="px-4 pt-1 pb-2 shrink-0">
+                    <button onClick={toggleAllowFictional}
+                        className="w-full flex items-center gap-2.5 rounded-xl px-3 py-2 bg-white/[0.04] border border-white/[0.07] active:scale-[0.99] transition">
+                        <span className="text-[11px] text-white/55 flex-1 text-left">{allowFictional ? '允许 TA 结交虚构 NPC' : '只与神经链接里的真实角色来往'}</span>
+                        <span className="relative w-9 h-5 rounded-full transition" style={{ background: allowFictional ? accent : 'rgba(255,255,255,0.15)' }}>
+                            <span className="absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all" style={{ left: allowFictional ? '18px' : '2px' }} />
+                        </span>
+                    </button>
+                </div>
                 <div className="flex-1 overflow-y-auto px-4 pt-2 space-y-2.5 no-scrollbar pb-28 overscroll-contain">
                     {list.length === 0 && <EmptyState text="还没有联系人 · 扫描通讯录看看" />}
                     {list.map(c => {
@@ -1146,7 +1179,6 @@ Format:
         const accent = '#f472b6';
         const badge = kindBadge(c);
         const isReal = c.kind === 'real' && !!c.linkedCharId;
-        const isAgent = !!c.isAgent || c.kind === 'agent';
         const rec = records.find(r => r.type === 'chat' && (r.contactId === c.id || normName(r.title) === normName(c.name)));
         const lines = rec ? rec.detail.split('\n').filter(l => l.trim()) : [];
         const parsed = lines.map(line => {
@@ -1216,22 +1248,14 @@ Format:
 
                 {/* 操作区 */}
                 <div className="shrink-0 w-full p-4 pb-6 space-y-2">
-                    {isReal && (
+                    {isReal ? (
                         <button onClick={() => handleRealConversation(c)} disabled={isLoading}
                             className="w-full py-3 rounded-2xl text-[13px] font-semibold text-white active:scale-[0.99] transition flex items-center justify-center gap-2"
                             style={{ background: `linear-gradient(135deg, ${accent}, ${accent}bb)` }}>
                             <PaperPlaneTilt size={16} weight="fill" /> {rec ? '继续真实对话（双方同步）' : '发起真实对话（A 发 B 回）'}
                         </button>
-                    )}
-                    {isAgent && (
-                        <button onClick={() => handleAgentConversation(c)} disabled={isLoading}
-                            className="w-full py-3 rounded-2xl text-[13px] font-semibold text-white active:scale-[0.99] transition flex items-center justify-center gap-2"
-                            style={{ background: 'linear-gradient(135deg, #22d3ee, #0891b2)' }}>
-                            <Robot size={16} weight="fill" /> {rec ? '继续偷窥 TA 聊 AI' : '让 TA 跑个智能体来聊'}
-                        </button>
-                    )}
-                    {!isReal && !isAgent && (
-                        <button onClick={() => handleAgentConversation(c)} disabled={isLoading}
+                    ) : (
+                        <button onClick={() => handleNpcConversation(c)} disabled={isLoading}
                             className="w-full py-3 rounded-2xl text-[13px] font-semibold text-white/90 bg-white/[0.06] border border-white/[0.08] active:scale-[0.99] transition flex items-center justify-center gap-2">
                             <ChatCircleDots size={16} weight="fill" /> {rec ? '续写脑补对话' : '脑补一段对话'}
                         </button>
@@ -1798,11 +1822,10 @@ Format:
                 <div className="space-y-4">
                     <div>
                         <label className="text-[10px] font-bold text-slate-400 uppercase block mb-2">类型</label>
-                        <div className="grid grid-cols-3 gap-2">
+                        <div className="grid grid-cols-2 gap-2">
                             {([
                                 { id: 'npc', name: 'NPC', desc: '虚构路人' },
-                                { id: 'real', name: '真人', desc: '绑定真实角色' },
-                                { id: 'agent', name: '智能体', desc: 'AI 玩 AI' },
+                                { id: 'real', name: '真人', desc: '绑定神经链接角色' },
                             ] as const).map(opt => {
                                 const active = ncKind === opt.id;
                                 return (
@@ -1823,16 +1846,6 @@ Format:
                                 {characters.filter(c => c.id !== targetChar?.id).map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
                             </select>
                             <p className="text-[9px] text-slate-400 mt-1">真人之间可发起双向对话，对话会同步进对方的手机。</p>
-                        </div>
-                    ) : ncKind === 'agent' ? (
-                        <div className="space-y-2">
-                            <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">智能体模拟谁</label>
-                            <div className="flex gap-2">
-                                <button type="button" onClick={() => setNcAgentOf('user')} className={`flex-1 py-2 rounded-lg text-[12px] font-semibold border ${ncAgentOf === 'user' ? 'bg-cyan-500 text-white border-transparent' : 'bg-slate-50 text-slate-600 border-slate-200'}`}>用户本人</button>
-                                <button type="button" onClick={() => setNcAgentOf('custom')} className={`flex-1 py-2 rounded-lg text-[12px] font-semibold border ${ncAgentOf !== 'user' ? 'bg-cyan-500 text-white border-transparent' : 'bg-slate-50 text-slate-600 border-slate-200'}`}>其他人</button>
-                            </div>
-                            <input value={ncName} onChange={e => setNcName(e.target.value)} placeholder={ncAgentOf === 'user' ? `留空默认「${userProfile.name} (智能体)」` : '智能体名字（要模拟的人）'} className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm" />
-                            <p className="text-[9px] text-slate-400">机主会脑补出这个人的人格来聊，对话只供你偷窥，不会进任何人的私聊。</p>
                         </div>
                     ) : (
                         <input value={ncName} onChange={e => setNcName(e.target.value)} placeholder="联系人名字（虚构）" className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm" />
