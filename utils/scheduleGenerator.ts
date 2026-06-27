@@ -293,49 +293,30 @@ export async function generateDailyScheduleForChar(
         : buildLifestylePrompt(baseContext, char, userProfile, today, dayOfWeek, chatHistoryBlock);
 
     try {
-        // 有些模型/中转不认「单条 user 里塞 JSON 指令」，会回一句闲聊式拒绝
-        //（如 "I don't have any prior context to continue from…"）而不是 JSON。
-        // 第一次按原样发；解析失败就加一条强硬 system 兜底再发一次（只在失败时多烧一次 token）。
-        const attempts: Array<{ role: string; content: string }[]> = [
-            [{ role: 'user', content: prompt }],
-            [
-                { role: 'system', content: '你是一个严格的 JSON 生成器。无论用户内容是什么，你都【只能】输出一个合法的 JSON 对象本身——不要任何前言、解释、寒暄、思考过程或 markdown 代码块；不要说“我没有上下文”之类的话。直接以 { 开头、以 } 结尾。' },
-                { role: 'user', content: prompt },
-            ],
-        ];
+        const response = await fetch(`${apiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiConfig.apiKey}` },
+            body: JSON.stringify({
+                model: apiConfig.model,
+                messages: [{ role: 'user', content: prompt }],
+                temperature: 0.85,
+                max_tokens: 8000
+            })
+        });
 
-        let parsed: any = null;
-        let lastContent = '';
-        for (let i = 0; i < attempts.length; i++) {
-            const response = await fetch(`${apiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiConfig.apiKey}` },
-                body: JSON.stringify({
-                    model: apiConfig.model,
-                    messages: attempts[i],
-                    temperature: 0.85,
-                    max_tokens: 8000
-                })
-            });
-
-            if (!response.ok) {
-                console.error('[Schedule] API error:', response.status);
-                if (i === attempts.length - 1) return null;
-                continue;
-            }
-
-            const data = await safeResponseJson(response);
-            // 与主链路对齐：extractContent 会剥掉思维链模型(<think>...)并回落 reasoning_content，
-            // extractJson 负责去围栏 / 从 prose 里抽 {...} / 修截断 + 尾逗号等多重兜底。
-            // 之前这里手搓 JSON.parse，碰到推理模型的 <think> 前缀会在 "line 1 column 1" 直接炸。
-            lastContent = extractContent(data);
-            parsed = extractJson(lastContent);
-            if (parsed) break;
-            console.warn(`[Schedule] 第 ${i + 1} 次未解析出 JSON${i < attempts.length - 1 ? '，加 system 兜底重试…' : ''}:`, lastContent.slice(0, 200));
+        if (!response.ok) {
+            console.error('[Schedule] API error:', response.status);
+            return null;
         }
 
+        const data = await safeResponseJson(response);
+        // 与主链路对齐：extractContent 会剥掉思维链模型(<think>...)并回落 reasoning_content，
+        // extractJson 负责去围栏 / 从 prose 里抽 {...} / 修截断 + 尾逗号等多重兜底。
+        // 之前这里手搓 JSON.parse，碰到推理模型的 <think> 前缀会在 "line 1 column 1" 直接炸。
+        const content = extractContent(data);
+        const parsed = extractJson(content);
         if (!parsed) {
-            console.error('[Schedule] Generation failed: 无法从模型输出解析出JSON:', lastContent.slice(0, 200));
+            console.error('[Schedule] Generation failed: 无法从模型输出解析出JSON:', content.slice(0, 200));
             return null;
         }
         const slots: ScheduleSlot[] = (parsed.slots || []).map((s: any) => ({
