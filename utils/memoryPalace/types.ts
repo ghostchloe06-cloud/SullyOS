@@ -75,6 +75,25 @@ export interface MemoryNode {
     sourceId?: string | null;   // 消化衍生记忆的源记忆 ID，null = 非衍生记忆
     origin?: 'extraction' | 'digestion' | 'system'; // 记忆来源：extraction=聊天提取, digestion=认知消化衍生, system=系统生成
 
+    /**
+     * 从 CSY-OS 迁移时保留的原始语义元数据。正文与向量会转换成 SullyOS 原生结构，
+     * 这些字段留作审计与未来重新解释，避免一次迁移后丢失 CSY 特有信息。
+     */
+    legacyCsy?: {
+        originalId: string;
+        title: string;
+        originalContent: string;
+        emotionalJourney?: string;
+        source?: 'auto' | 'manual' | 'import';
+        sourceMessageIds?: number[];
+        deprecated?: boolean;
+        deprecatedReason?: string;
+        hormoneSnapshot?: Record<string, number | undefined>;
+        salienceScore?: number;
+        updatedAt?: number;
+        modelId?: string;
+    };
+
     // ─── EventBox 绑定（新） ─────────────────
     eventBoxId?: string | null;  // 所属事件盒 ID，null/undefined = 独立记忆（"地上的球"）
     archived?: boolean;          // true = 已被压入 box summary，不再参与召回（可复活）

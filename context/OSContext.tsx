@@ -33,6 +33,7 @@ import { exportPostOfficeLocal } from '../utils/vrWorld/postOffice';
 import { exportWorldHomeLocal } from '../utils/worldHome/localBackup';
 import { exportLuckinLocal } from '../utils/luckinMcpClient';
 import { exportMcdLocal } from '../utils/mcdMcpClient';
+import { inspectCsyBackup, prepareCsyMigration, type CsyMigrationReport } from '../utils/csyMigration';
 
 const normalizeProactiveAiContent = (raw: string): string => {
   let cleaned = raw;
@@ -329,6 +330,8 @@ interface OSContextType {
   // System
   exportSystem: (mode: 'text_only' | 'media_only' | 'full') => Promise<Blob>;
   importSystem: (fileOrJson: File | string) => Promise<void>; // Accept File or String
+  previewCsySystem: (fileOrJson: File | string) => Promise<CsyMigrationReport>;
+  importCsySystem: (fileOrJson: File | string) => Promise<void>;
   resetSystem: () => Promise<void>;
   sysOperation: { status: 'idle' | 'processing', message: string, progress: number }; // Progress state
 
@@ -3070,7 +3073,29 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
       }
   };
 
-  const importSystem = async (fileOrJson: File | string): Promise<void> => {
+  const previewCsySystem = async (fileOrJson: File | string): Promise<CsyMigrationReport> => {
+      let raw: unknown;
+      if (typeof fileOrJson === 'string') {
+          raw = JSON.parse(fileOrJson);
+      } else if (!fileOrJson.name.toLowerCase().endsWith('.zip')) {
+          raw = JSON.parse(await fileOrJson.text());
+      } else {
+          const JSZip = await loadJSZip();
+          const zip = await JSZip.loadAsync(fileOrJson);
+          if (zip.file('manifest.json')) {
+              throw new Error('这是一份 SullyOS 分片备份，不是 CSY-OS 的 data.json 备份。');
+          }
+          const dataFile = zip.file('data.json');
+          if (!dataFile) throw new Error('CSY-OS 备份损坏：缺少 data.json。');
+          raw = JSON.parse(await dataFile.async('string'));
+      }
+      return inspectCsyBackup(raw);
+  };
+
+  const importSystem = async (
+      fileOrJson: File | string,
+      options: { source?: 'sully' | 'csy' } = {},
+  ): Promise<void> => {
       const sourceName = typeof fileOrJson === 'string' ? 'json' : fileOrJson.name;
       const sourceSize = typeof fileOrJson === 'string'
           ? (typeof Blob !== 'undefined' ? new Blob([fileOrJson]).size : fileOrJson.length)
@@ -3138,6 +3163,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
       showImportProgress('parsing', '正在解析备份文件...', 1, { current: '解析备份文件', sourceSize });
       try {
           let data: FullBackupData;
+          let csyReport: CsyMigrationReport | undefined;
           let zip: JSZipLike | null = null;
 
           if (typeof fileOrJson === 'string') {
@@ -3186,6 +3212,16 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
                       jsonStr = '';
                   }
               }
+          }
+
+          if (options.source === 'csy') {
+              if (zip?.file('manifest.json')) {
+                  throw new Error('选择的文件是 SullyOS 备份，不需要走 CSY-OS 迁移入口。');
+              }
+              showImportProgress('converting', '正在转换 CSY-OS 数据...', 32, { current: '转换向量记忆与角色配置' });
+              const prepared = prepareCsyMigration(data);
+              data = prepared.data;
+              csyReport = prepared.report;
           }
 
           const hadAssetStoreBackup = data.assets !== undefined;
@@ -3470,7 +3506,12 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           
           setSysOperation({ status: 'idle', message: '', progress: 100 });
           clearImportInProgress();
-          addToast('恢复成功，系统即将重启...', 'success');
+          addToast(
+              csyReport
+                  ? `CSY-OS 迁移完成：${csyReport.vectorMemories} 条记忆，${csyReport.reusableVectors} 条向量已复用。系统即将重启...`
+                  : '恢复成功，系统即将重启...',
+              'success',
+          );
           setTimeout(() => window.location.reload(), 1500);
 
       } catch (e: any) {
@@ -3489,6 +3530,9 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           throw new Error(`恢复失败: ${msg}`);
       }
   };
+
+  const importCsySystem = (fileOrJson: File | string): Promise<void> =>
+      importSystem(fileOrJson, { source: 'csy' });
 
   const resetSystem = async () => { try { await DB.deleteDB(); localStorage.clear(); window.location.reload(); } catch (e) { console.error(e); addToast('重置失败，请手动清除浏览器数据', 'error'); } };
   const openApp = (appId: AppID) => setActiveApp(appId);
@@ -3604,6 +3648,8 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
     listCloudBackups,
     exportSystem,
     importSystem,
+    previewCsySystem,
+    importCsySystem,
     resetSystem,
     sysOperation,
     systemLogs,

@@ -23,6 +23,7 @@ import { PushVapidSettingsModal } from '../components/settings/PushVapidSettings
 import VersionInfo from '../components/settings/VersionInfo';
 import { isPushVapidReady } from '../utils/pushVapid';
 import ApiCallLogModal from '../components/settings/ApiCallLogModal';
+import type { CsyMigrationReport } from '../utils/csyMigration';
 
 // hot_news（orz.ai）可选热榜平台。key 必须与 API 的 ?platform= 完全一致。
 const HOTNEWS_PLATFORM_OPTIONS: { key: string; label: string }[] = [
@@ -62,7 +63,7 @@ const DiagRow: React.FC<{ label: string; value: string; bad?: boolean }> = ({ la
 const Settings: React.FC = () => {
   const {
       apiConfig, updateApiConfig, closeApp, availableModels, setAvailableModels,
-      exportSystem, importSystem, addToast, showError, resetSystem,
+      exportSystem, importSystem, previewCsySystem, importCsySystem, addToast, showError, resetSystem,
       apiPresets, addApiPreset, removeApiPreset,
       sysOperation, // Get progress state
       realtimeConfig, updateRealtimeConfig, // 实时感知配置
@@ -104,6 +105,11 @@ const Settings: React.FC = () => {
   const [showModelModal, setShowModelModal] = useState(false);
   const [modelFilter, setModelFilter] = useState('');
   const [showExportModal, setShowExportModal] = useState(false); // Used for completion now
+  const [showCsyImportModal, setShowCsyImportModal] = useState(false);
+  const [showCsyHelpModal, setShowCsyHelpModal] = useState(false);
+  const [csyPreviewLoading, setCsyPreviewLoading] = useState(false);
+  const [csyPreview, setCsyPreview] = useState<CsyMigrationReport | null>(null);
+  const [pendingCsyFile, setPendingCsyFile] = useState<File | null>(null);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   const [showPresetModal, setShowPresetModal] = useState(false);
   const [showApiCallLog, setShowApiCallLog] = useState(false);
@@ -370,6 +376,7 @@ const Settings: React.FC = () => {
   const [testingApi, setTestingApi] = useState(false);
   const [testApiResult, setTestApiResult] = useState<string | null>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
+  const csyImportInputRef = useRef<HTMLInputElement>(null);
 
   // Auto-save draft configs locally to prevent loss during typing
   useEffect(() => {
@@ -601,6 +608,40 @@ const Settings: React.FC = () => {
       });
       
       if (importInputRef.current) importInputRef.current.value = '';
+  };
+
+  const handleCsyImportSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      setPendingCsyFile(file);
+      setCsyPreview(null);
+      setCsyPreviewLoading(true);
+      setShowCsyImportModal(true);
+      try {
+          setCsyPreview(await previewCsySystem(file));
+      } catch (err: any) {
+          setShowCsyImportModal(false);
+          setPendingCsyFile(null);
+          const details = err?.stack || err?.message || String(err || '未知错误');
+          showError('无法读取 CSY-OS 数据', details);
+          addToast('CSY-OS 迁移预检失败', 'error');
+      } finally {
+          setCsyPreviewLoading(false);
+          if (csyImportInputRef.current) csyImportInputRef.current.value = '';
+      }
+  };
+
+  const handleConfirmCsyImport = async () => {
+      if (!pendingCsyFile || !csyPreview) return;
+      const file = pendingCsyFile;
+      setShowCsyImportModal(false);
+      try {
+          await importCsySystem(file);
+      } catch (err: any) {
+          const details = err?.stack || err?.message || String(err || '未知错误');
+          showError('CSY-OS 迁移失败', details);
+          addToast('CSY-OS 迁移失败，原文件未被修改', 'error');
+      }
   };
 
   // Cloud Backup Handlers
@@ -994,6 +1035,19 @@ const Settings: React.FC = () => {
                     <span>导入备份 (.zip / .json)</span>
                 </div>
                 <input type="file" ref={importInputRef} className="hidden" accept=".json,.zip" onChange={handleImport} />
+            </div>
+
+            <div className="flex items-center justify-center gap-2 -mt-1 mb-4">
+                <button
+                    onClick={() => csyImportInputRef.current?.click()}
+                    className="px-3 py-2 rounded-lg border border-cyan-200 bg-cyan-50 text-[10px] font-semibold text-cyan-700 active:scale-95 transition-all"
+                >从 CSY-OS 迁移</button>
+                <button
+                    onClick={() => setShowCsyHelpModal(true)}
+                    aria-label="CSY-OS 迁移说明"
+                    className="w-7 h-7 rounded-full border border-slate-200 bg-white text-[12px] font-bold text-slate-400 active:scale-90 transition-all"
+                >?</button>
+                <input type="file" ref={csyImportInputRef} className="hidden" accept=".json,.zip" onChange={handleCsyImportSelect} />
             </div>
             
             <p className="text-[10px] text-slate-400 px-1 mb-4 leading-relaxed">
@@ -2293,6 +2347,96 @@ const Settings: React.FC = () => {
               <p className="text-sm font-bold text-slate-700">备份文件已生成！</p>
               <p className="text-xs text-slate-500">如果浏览器没有自动下载，请点击下方链接。</p>
               {downloadUrl && <a href={downloadUrl} download="Sully_Backup.zip" className="text-primary text-sm underline block py-2">点击手动下载 .zip</a>}
+          </div>
+      </Modal>
+
+      <Modal
+          isOpen={showCsyImportModal}
+          title="迁移 CSY-OS 数据"
+          onClose={() => { if (!csyPreviewLoading) setShowCsyImportModal(false); }}
+          footer={
+              <div className="flex gap-2 w-full">
+                  <button
+                      onClick={() => setShowCsyImportModal(false)}
+                      disabled={csyPreviewLoading}
+                      className="flex-1 py-3 bg-slate-100 text-slate-600 font-bold rounded-2xl disabled:opacity-50"
+                  >取消</button>
+                  <button
+                      onClick={handleConfirmCsyImport}
+                      disabled={csyPreviewLoading || !csyPreview}
+                      className="flex-[1.5] py-3 bg-cyan-600 text-white font-bold rounded-2xl disabled:opacity-50"
+                  >确认迁移</button>
+              </div>
+          }
+      >
+          {csyPreviewLoading ? (
+              <div className="py-8 text-center text-sm text-slate-500">正在校验备份与统计向量记忆...</div>
+          ) : csyPreview ? (
+              <div className="space-y-4">
+                  <div className="grid grid-cols-3 gap-2">
+                      {[
+                          ['角色', csyPreview.characters],
+                          ['聊天', csyPreview.messages],
+                          ['记忆', csyPreview.vectorMemories],
+                      ].map(([label, value]) => (
+                          <div key={String(label)} className="rounded-2xl bg-cyan-50 p-3 text-center">
+                              <div className="text-lg font-bold text-cyan-700">{value}</div>
+                              <div className="text-[10px] text-cyan-600/70">{label}</div>
+                          </div>
+                      ))}
+                  </div>
+                  <div className="rounded-2xl bg-slate-50 p-3 text-[11px] leading-relaxed text-slate-600">
+                      <div>可直接复用向量：<b className="text-emerald-600">{csyPreview.reusableVectors}</b></div>
+                      <div>需要重新向量化：<b className="text-amber-600">{csyPreview.rebuildRequired}</b></div>
+                      {csyPreview.embeddingModels.length > 0 && (
+                          <div className="mt-1 break-all text-[10px] text-slate-400">模型：{csyPreview.embeddingModels.join('、')}</div>
+                      )}
+                  </div>
+                  {csyPreview.warnings.length > 0 && (
+                      <div className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-[10px] leading-relaxed text-amber-800">
+                          {csyPreview.warnings.map((warning, index) => <div key={index}>• {warning}</div>)}
+                      </div>
+                  )}
+                  <div className="rounded-2xl border border-rose-200 bg-rose-50 p-3 text-[11px] leading-relaxed text-rose-700">
+                      此迁移会用 CSY-OS 数据替换本机现有角色、聊天及对应应用数据。若本机已有 SullyOS 数据，请先完成一次完整备份。
+                  </div>
+              </div>
+          ) : null}
+      </Modal>
+
+      <Modal
+          isOpen={showCsyHelpModal}
+          title="CSY-OS 迁移说明"
+          onClose={() => setShowCsyHelpModal(false)}
+          footer={
+              <button
+                  onClick={() => setShowCsyHelpModal(false)}
+                  className="w-full py-3 bg-slate-100 text-slate-600 font-bold rounded-2xl"
+              >我知道了</button>
+          }
+      >
+          <div className="space-y-3 text-[11px] leading-relaxed text-slate-600">
+              <section className="rounded-2xl bg-cyan-50 p-3">
+                  <div className="font-bold text-cyan-800 mb-1">哪些内容会迁移？</div>
+                  <p>角色、聊天、世界书、相册等兼容数据会正常恢复；CSY 本地向量记忆会转换为 SullyOS 记忆宫殿。相同模型与维度的向量直接复用，否则保留记忆正文，等待重新向量化。</p>
+              </section>
+
+              <section className="rounded-2xl bg-emerald-50 p-3">
+                  <div className="font-bold text-emerald-800 mb-1">CSY 特有信息会丢吗？</div>
+                  <p>不会。原始标题、正文、情绪旅程、激素快照、来源消息、失效原因和模型信息会保存在每条记忆的 <code className="font-mono">legacyCsy</code> 中。失效记忆也会保留，但默认不参与召回。</p>
+              </section>
+
+              <section className="rounded-2xl bg-violet-50 p-3">
+                  <div className="font-bold text-violet-800 mb-1">迁移后怎么再次导出？</div>
+                  <p>回到本页，点击上方的「整合导出」或「纯文字备份」。两者都会带上记忆节点、向量以及全部 <code className="font-mono">legacyCsy</code> 信息。以后恢复这份 SullyOS 备份时，使用普通「导入备份」即可。</p>
+                  <p className="mt-1 font-semibold text-rose-600">不要只导出「媒体与美化素材」：它不包含记忆宫殿。</p>
+              </section>
+
+              <section className="rounded-2xl border border-amber-200 bg-amber-50 p-3 text-amber-800">
+                  <div className="font-bold mb-1">迁移前请注意</div>
+                  <p>迁移会替换本机现有角色、聊天和对应应用数据；已有 SullyOS 数据请先完整备份。CSY 文件里本来没有的后端记忆、定时消息、信件或语音音频，迁移器无法凭空恢复。</p>
+                  <p className="mt-1">主 API、副 API 与 Embedding 配置会映射；CSY 后端 token 不会迁移。</p>
+              </section>
           </div>
       </Modal>
 
