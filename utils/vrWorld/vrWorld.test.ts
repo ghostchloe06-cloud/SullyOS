@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { chunkNovelText, chunkNovelTextAsync, getReadingWindow, buildNovel } from './novel';
-import { parseVROutput, parseMusicOutput, parseGuestbookOutput, parseGymOutput, parsePostOfficeOutput, parsePostOfficeReadOutput } from './prompts';
+import { parseVROutput, parseMusicOutput, parseGuestbookOutput, parseGymOutput, parsePostOfficeOutput, parsePostOfficeReadOutput, parseSignalOutput } from './prompts';
+import { rollPoemLines, SIGNAL_LINES_MIN, SIGNAL_LINES_MAX } from './constants';
 import { maskPen } from './postOffice';
 import { decodeBytes } from './decodeText';
 import { VRScheduler } from './scheduler';
@@ -296,5 +297,53 @@ describe('parseVROutput', () => {
     it('does NOT strip legitimate content starting with a quote', () => {
         const out = parseVROutput('<批注 段落="1">「凤骑龙」这名字太刻意了</批注><动态>x</动态>');
         expect(out.annotations[0].content).toBe('「凤骑龙」这名字太刻意了');
+    });
+});
+
+describe('信号坠落处 · parseSignalOutput', () => {
+    it('接龙：抠 <续句>，剥动态，单行化', () => {
+        const out = parseSignalOutput('<彼方><续句>而你把信号调成了潮汐</续句><动态>续了一句</动态></彼方>', 'append', 24);
+        expect(out.line).toBe('而你把信号调成了潮汐');
+        expect(out.activity).toBe('续了一句');
+        expect(out.title).toBeUndefined();
+    });
+
+    it('起新篇：抠 <标题> + <第一句>', () => {
+        const out = parseSignalOutput('<彼方><标题>低电量合唱</标题><第一句>电量剩下百分之三</第一句><动态>起了个头</动态></彼方>', 'start', 24);
+        expect(out.title).toBe('低电量合唱');
+        expect(out.line).toBe('电量剩下百分之三');
+    });
+
+    it('每句字数硬截断到 cap', () => {
+        const long = '一二三四五六七八九十一二三四五六七八九十';
+        const out = parseSignalOutput(`<续句>${long}</续句>`, 'append', 24);
+        expect([...out.line].length).toBeLessThanOrEqual(24);
+    });
+
+    it('掉格式兜底：没有标签时取首个非空行当那一句', () => {
+        const out = parseSignalOutput('<think>嗯想想</think>\n\n我把黑夜接成了白噪\n（多余的解释）', 'append', 24);
+        expect(out.line).toBe('我把黑夜接成了白噪');
+    });
+
+    it('续句里的换行被压成一行（一句就是一行）', () => {
+        const out = parseSignalOutput('<续句>前半句\n后半句</续句>', 'append', 24);
+        expect(out.line).not.toContain('\n');
+        expect(out.line).toBe('前半句 后半句');
+    });
+
+    it('完全空输出 → line 为空（runSession 据此跳过，不写脏数据）', () => {
+        const out = parseSignalOutput('<彼方></彼方>', 'append', 24);
+        expect(out.line).toBe('');
+    });
+});
+
+describe('信号坠落处 · rollPoemLines', () => {
+    it('始终落在 [min,max] 闭区间内', () => {
+        for (let i = 0; i < 500; i++) {
+            const n = rollPoemLines(SIGNAL_LINES_MIN, SIGNAL_LINES_MAX);
+            expect(n).toBeGreaterThanOrEqual(SIGNAL_LINES_MIN);
+            expect(n).toBeLessThanOrEqual(SIGNAL_LINES_MAX);
+            expect(Number.isInteger(n)).toBe(true);
+        }
     });
 });

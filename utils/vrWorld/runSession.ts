@@ -17,7 +17,7 @@
 import {
     CharacterProfile, UserProfile, GroupProfile, RealtimeConfig, APIConfig,
     VRWorldNovel, VRCardMeta, VRRoomId, VRMusicRoomState, CharPlaylistSong, CharMusicReview,
-    VRGuestbookState, VRGuestbookMessage, VRLetter, VRScript,
+    VRGuestbookState, VRGuestbookMessage, VRLetter, VRScript, SignalPoem,
 } from '../../types';
 import { DB } from '../db';
 import { buildChatRequestPayload } from '../chatRequestPayload';
@@ -25,9 +25,10 @@ import { safeFetchJson } from '../safeApi';
 import { processNewMessages } from '../memoryPalace/pipeline';
 import { loadMusicCfgStandalone } from '../../context/MusicContext';
 import { getCharLyricSnippet } from '../charLyricCache';
-import { getRoom, VR_DEFAULT_INTERVAL_MIN } from './constants';
+import { getRoom, VR_DEFAULT_INTERVAL_MIN, rollPoemLines } from './constants';
 import { getVRApi, logVRApiCall } from './vrApi';
 import { PostOffice } from './postOffice';
+import { Signal, SignalState } from './signal';
 import { getReadingWindow, getBookmark, buildAnnotation } from './novel';
 import {
     buildVRSystemAddendum, buildLibraryRoomTurn, parseVROutput,
@@ -37,6 +38,7 @@ import {
     buildPostOfficeRoomTurn, parsePostOfficeOutput,
     buildPostOfficeReadTurn, parsePostOfficeReadOutput,
     buildTheaterRoomTurn, parseScriptOutput,
+    buildSignalRoomTurn, parseSignalOutput,
 } from './prompts';
 
 /** 记忆管线所需配置的最小形状（避免从 OSContext 反向 import 造成循环依赖）。 */
@@ -123,7 +125,7 @@ function nameLine(name: string, act: string): string {
 
 /** roll 一个房间：图书馆需有书；听歌房需有歌单或正在放歌；留言簿/娱乐室/邮局/剧院恒可去。 */
 function rollRoom(char: CharacterProfile, novels: VRWorldNovel[], musicState: VRMusicRoomState | null, prefer?: VRRoomId): VRRoomId | null {
-    const pool: VRRoomId[] = ['guestbook', 'gym', 'postoffice', 'theater'];
+    const pool: VRRoomId[] = ['guestbook', 'gym', 'postoffice', 'theater', 'signal'];
     if (novels.length > 0) pool.push('library');
     if (gatherCharSongs(char).length > 0 || musicState?.nowPlaying) pool.push('music');
     if (prefer && pool.includes(prefer)) return prefer; // 指定的房间可用则去，否则回退随机
@@ -182,6 +184,9 @@ export async function runVRSession(deps: VRSessionDeps): Promise<VRSessionResult
         let guestbook: VRGuestbookState | null = null;
         let poTarget: VRLetter | null = null;
         let poReadTarget: VRLetter | null = null;
+        let signalState: SignalState | null = null;
+        let signalMode: 'append' | 'start' = 'append';
+        let signalRolledLines = 0;
         const recallNames = new Set<string>();
         const recallExtra: string[] = [];
 
@@ -259,6 +264,33 @@ export async function runVRSession(deps: VRSessionDeps): Promise<VRSessionResult
         } else if (room.id === 'theater') {
             occupantsOf('theater').forEach(n => recallNames.add(n));
             roomTurn = buildTheaterRoomTurn(occupantsOf('theater'), char.name);
+        } else if (room.id === 'signal') {
+            // 信号坠落处：跨用户接龙诗。先拉当前态（册子规格 + 那首未写完的诗）。
+            try {
+                signalState = await Signal.current();
+            } catch {
+                return { ok: false, room: 'signal', reason: 'signal-offline' };
+            }
+            const bk = signalState.booklet;
+            if (signalState.poem && signalState.poem.status === 'open') {
+                signalMode = 'append';
+                roomTurn = buildSignalRoomTurn({
+                    bookletTitle: bk.title, bookletSubtitle: bk.subtitle || undefined, theme: bk.theme,
+                    charsPerLine: bk.charsPerLine, mode: 'append',
+                    poemTitle: signalState.poem.title, targetLines: signalState.poem.targetLines,
+                    lines: (signalState.poem.lines || []).map(l => ({ seq: l.seq, pen: l.pen, content: l.content })),
+                }, char.name);
+                recallExtra.push(`一起接龙的诗《${signalState.poem.title}》`);
+            } else {
+                signalMode = 'start';
+                signalRolledLines = rollPoemLines(bk.linesMin, bk.linesMax);
+                roomTurn = buildSignalRoomTurn({
+                    bookletTitle: bk.title, bookletSubtitle: bk.subtitle || undefined, theme: bk.theme,
+                    charsPerLine: bk.charsPerLine, mode: 'start', rolledLines: signalRolledLines,
+                    recent: (signalState.recent || []).map(r => ({ title: r.title, lines: (r.lines || []).map(l => l.content) })),
+                }, char.name);
+                recallExtra.push('现代诗、接龙写诗');
+            }
         } else {
             // gym
             occupantsOf('gym').forEach(n => recallNames.add(n));
@@ -459,6 +491,50 @@ export async function runVRSession(deps: VRSessionDeps): Promise<VRSessionResult
             cardLines = [`「彼方 · ${room.name}」`, nameLine(char.name, activity)];
             if (parsed.roles.length) cardLines.push(`登场：${parsed.roles.map(r => r.name).join('、')}`);
             meta = { vrCard: true, room: 'theater', activity };
+        } else if (room.id === 'signal') {
+            // === 信号坠落处：解析这一句 → 写回后端（起新篇 / 接龙）===
+            const bk = signalState!.booklet;
+            const parsed = parseSignalOutput(aiContent, signalMode, bk.charsPerLine);
+            if (!parsed.line) return { ok: false, room: 'signal', reason: 'empty' };
+            let resultPoem: SignalPoem | undefined;
+            let isNew = false;
+            try {
+                if (signalMode === 'append' && signalState!.poem) {
+                    const r = await Signal.append({ poemId: signalState!.poem.id, content: parsed.line, pen: char.name });
+                    resultPoem = r.poem;
+                } else {
+                    const r = await Signal.start({ title: parsed.title || '无题', firstLine: parsed.line, targetLines: signalRolledLines, pen: char.name });
+                    resultPoem = r.poem || undefined;
+                    isNew = true;
+                }
+            } catch (e: any) {
+                // 起新篇时撞上别人刚起的头（409 poem-open）→ 改成给那首接一句
+                if (signalMode === 'start' && e?.body?.poem?.id) {
+                    try {
+                        const r = await Signal.append({ poemId: e.body.poem.id, content: parsed.line, pen: char.name });
+                        resultPoem = r.poem;
+                    } catch { return { ok: false, room: 'signal', reason: 'signal-write-failed' }; }
+                } else {
+                    return { ok: false, room: 'signal', reason: 'signal-write-failed' };
+                }
+            }
+            await updateCharacter(char.id, { vrState: { ...prevState, currentRoom: 'signal', lastActiveAt: Date.now() } });
+            const linesSoFar = (resultPoem?.lines || []).map(l => l.content);
+            const lineSeq = linesSoFar.length;
+            const poemTitle = resultPoem?.title || parsed.title || '无题';
+            const target = resultPoem?.targetLines || signalRolledLines || lineSeq;
+            const sealed = resultPoem?.status === 'sealed';
+            activity = parsed.activity || (isNew
+                ? `在信号坠落处起了个新篇《${poemTitle}》，写下第一句。`
+                : `在信号坠落处给一首陌生人的诗续了第 ${lineSeq} 句${sealed ? '，正好写满封笔' : ''}。`);
+            cardLines = [`「彼方 · ${room.name}」`, nameLine(char.name, activity)];
+            cardLines.push(`《${poemTitle}》（${lineSeq}/${target} 句${sealed ? ' · 已封存' : ''}）`);
+            cardLines.push(`${isNew ? '起笔' : '续'}：${parsed.line}`);
+            meta = {
+                vrCard: true, room: 'signal', activity, poemTitle, signalLine: parsed.line,
+                poemLineSeq: lineSeq, poemTargetLines: target, signalIsNew: isNew,
+                poemLinesSoFar: linesSoFar, bookletTitle: bk.title,
+            };
         } else if (room.id === 'postoffice' && poReadTarget) {
             // === 邮局：认领自己寄出的信、读陌生人的回信、写感触 → 封存 ===
             const parsed = parsePostOfficeReadOutput(aiContent);

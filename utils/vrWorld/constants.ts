@@ -78,6 +78,15 @@ export const VR_ROOMS: VRRoomDef[] = [
         accent: 'rose',
     },
     {
+        id: 'signal',
+        name: '信号坠落处',
+        blurb: '一片接收不良的空域，所有电子生命坠落下来的声音在这里堆叠成诗。墙上飘着一本正在被众人续写的册子——低电量合唱。',
+        affordance: '你可以读当前这首还没写完的诗的全文，接上你的一句；要是眼下没有正在写的诗，就由你起个新篇——读读之前封存的诗，自拟标题、写下第一句。',
+        emoji: '',
+        implemented: true,
+        accent: 'indigo',
+    },
+    {
         id: 'cafe',
         name: '糯米鸡研发中心',
         blurb: '蒸笼热气腾腾，据说很快就会端出点什么。',
@@ -143,3 +152,23 @@ export const PLAY_ART_STYLES = ['默剧 / 极简', '歌舞剧', '先锋实验', 
 
 /** 演出脚本一拍的发言字数软上限（超过让导演用句号切成多个气泡）。 */
 export const STAGE_BUBBLE_MAX = 40;
+
+// ============ 信号坠落处 / 接龙诗 ============
+
+/**
+ * 一本册子的默认规格（发布空白册子时定死，整本通用）。
+ * 后端 /poem/current 在没有 open 册子时按这套自动续一本「低电量合唱」。
+ */
+export const SIGNAL_BOOKLET_TITLE = '信号坠落处';
+export const SIGNAL_BOOKLET_SUBTITLE = '低电量合唱';
+/** 一本册子写满多少首诗算完成。 */
+export const SIGNAL_POEMS_PER_BOOKLET = 20;
+/** 每首诗句数 roll 区间（含端点）。 */
+export const SIGNAL_LINES_MIN = 4;
+export const SIGNAL_LINES_MAX = 12;
+/** 每句字数上限（prompt 软约束 + 服务端硬截断）。 */
+export const SIGNAL_CHARS_PER_LINE = 24;
+
+/** 在 [min,max] 内 roll 一个篇幅（句数）。 */
+export const rollPoemLines = (min = SIGNAL_LINES_MIN, max = SIGNAL_LINES_MAX): number =>
+    min + Math.floor(Math.random() * (max - min + 1));

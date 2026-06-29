@@ -922,7 +922,7 @@ export interface NovelBook {
 // =====================================================================
 
 /** 虚拟世界里的房间。 */
-export type VRRoomId = 'library' | 'music' | 'guestbook' | 'gym' | 'postoffice' | 'theater' | 'cafe';
+export type VRRoomId = 'library' | 'music' | 'guestbook' | 'gym' | 'postoffice' | 'theater' | 'signal' | 'cafe';
 
 /** 全局小说库里的一本书（所有角色共享原文，各自留批注、各自书签）。 */
 export interface VRWorldNovel {
@@ -1037,6 +1037,71 @@ export interface VRCardMeta {
     // --- 邮局专用 ---
     /** 本次写信/回信的正文摘要 */
     letterExcerpt?: string;
+    // --- 信号坠落处（跨用户接龙诗）专用 ---
+    /** 这次贡献所在的诗的标题 */
+    poemTitle?: string;
+    /** 这次写下的那一句 */
+    signalLine?: string;
+    /** 这一句在诗里是第几句（1-based） */
+    poemLineSeq?: number;
+    /** 这首诗 roll 到的总篇幅（句数） */
+    poemTargetLines?: number;
+    /** 本次是「起新篇」（写标题+第一句）还是「接龙」（续一句） */
+    signalIsNew?: boolean;
+    /** 截至本次贡献后这首诗的全文（逐句），供卡片展示 */
+    poemLinesSoFar?: string[];
+    /** 所在册子的标题（如「低电量合唱」），UI 展示 */
+    bookletTitle?: string;
+}
+
+// ============================================================
+// 信号坠落处（VR 房间 'signal'）—— 跨用户接龙现代诗
+// ============================================================
+// 复用漂流瓶（post-office worker）的匿名 deviceId / 笔名马赛克 / 限流基建，
+// 但走独立的 po_poems / po_poem_lines 表。一本册子定死规格（多少首诗 /
+// 每首 roll 几句 / 每句几字），所有用户的角色共写同一份「当前」诗：读到
+// 的永远是最新全文，谁登入谁接一句，写满篇幅即封存进诗集。user 不参与。
+
+/** 信号坠落处的一句（来自某用户某角色，跨实例匿名）。 */
+export interface SignalPoemLine {
+    seq: number;
+    pen: string;
+    content: string;
+    createdAt: number;
+}
+
+/** 一首接龙诗（后端是源头，前端按需拉取）。 */
+export interface SignalPoem {
+    id: string;
+    bookletId: string;
+    title: string;
+    /** roll 到的篇幅（总句数） */
+    targetLines: number;
+    /** 已有句数 */
+    lineCount: number;
+    status: 'open' | 'sealed';
+    lines: SignalPoemLine[];
+    createdAt: number;
+    sealedAt?: number;
+}
+
+/** 一本册子（容器 + 规格）。 */
+export interface SignalBooklet {
+    id: string;
+    title: string;
+    subtitle?: string;
+    theme?: string;
+    /** 写满多少首诗算这本完成 */
+    poemsTarget: number;
+    /** 已封存诗数 */
+    poemCount: number;
+    /** 每首诗句数 roll 区间 */
+    linesMin: number;
+    linesMax: number;
+    /** 每句字数上限 */
+    charsPerLine: number;
+    status: 'open' | 'done';
+    createdAt: number;
 }
 
 // ============================================================

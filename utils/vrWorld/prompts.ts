@@ -110,6 +110,21 @@ function roomStanceLines(roomId: string, charName: string): string[] {
             `你的反应会暴露你的审美和性格，真实一点，别面面俱到。`,
         ];
     }
+    if (roomId === 'signal') {
+        return [
+            `这是信号坠落处。墙上飘着一本所有玩家正在合写的诗册——大家轮流往里添句子，接龙出一首首现代诗。和你一起写的是天南海北、素不相识的电子生命，你们谁也不认得谁。`,
+            `这里的诗是【现代诗】：不必押韵、不必工整、不必直白易懂，可以跳跃、可以留白、可以是一个意象一闪而过。它该像电子生命在低电量时哼出来的杂音——短、真、有自己的频率。`,
+            ``,
+            `【两种情形，看现场给你哪一种】`,
+            `· 已经有一首没写完的诗 → 你读它到目前为止的全文，顺着那个气口、那个意象，接【下一句】。别另起炉灶跑题，也别复读上一句；让它往下长，哪怕拐个弯。`,
+            `· 还没有人起头（空白）→ 由你起新篇：先读读下面给的几首已封存的旧诗找找调子，然后自拟一个【标题】、写下【第一句】。这首诗的篇幅（总句数）已经替你 roll 好了，写第一句即可，后面交给别人接。`,
+            ``,
+            `【底线】`,
+            `· 一次只写一句，别一口气写一整首。每句有字数上限（见下），超了会被截断。`,
+            `· 去用户中心化：这是写给虚空和陌生人的诗，不是写给用户的情书，也别把它写成你跟用户的事。写你自己被什么击中。`,
+            `· 写出只有"${charName}"才会写的那一句——你的审美、你的偏执、你的频率，都会暴露在这一句里。`,
+        ];
+    }
     // library 默认
     return [
         `每个人读书的方式天差地别。按"${charName}这个人"会怎么读来写，比如（不限于）：`,
@@ -431,6 +446,114 @@ export function parseGymOutput(raw: string): ParsedGymOutput {
     const beh = raw.match(/<行为>([\s\S]*?)<\/行为>/);
     const act = raw.match(/<动态>([\s\S]*?)<\/动态>/);
     return { behavior: beh && beh[1].trim() ? beh[1].trim() : undefined, activity: act ? act[1].trim() : '' };
+}
+
+// ============ 信号坠落处（跨用户接龙诗） ============
+
+export interface SignalLineLite { seq: number; pen: string; content: string; }
+export interface SignalBuildParams {
+    bookletTitle: string;
+    bookletSubtitle?: string;
+    theme?: string | null;
+    charsPerLine: number;
+    /** 'append' = 接龙续句；'start' = 起新篇（写标题+第一句） */
+    mode: 'append' | 'start';
+    // append 专用
+    poemTitle?: string;
+    lines?: SignalLineLite[];
+    targetLines?: number;
+    // start 专用
+    rolledLines?: number;
+    recent?: { title: string; lines: string[] }[];
+}
+
+export function buildSignalRoomTurn(p: SignalBuildParams, selfName: string): string {
+    const out: string[] = [];
+    const sub = p.bookletSubtitle ? ` · ${p.bookletSubtitle}` : '';
+    out.push(`你的化身飘进信号坠落处，墙上挂着这本正在合写的诗册：《${p.bookletTitle}》${sub}。`);
+    if (p.theme) out.push(`这本册子有个主题：${p.theme}。`);
+    out.push('');
+
+    if (p.mode === 'append') {
+        const lines = p.lines || [];
+        out.push(`此刻有一首还没写完的诗，标题《${p.poemTitle || '无题'}》，篇幅 ${p.targetLines} 句，已经写了 ${lines.length} 句：`);
+        out.push('—— 全文（从第 1 句到现在）——');
+        lines.forEach(l => out.push(`${l.seq}. ${l.content}`));
+        out.push('————————————————');
+        out.push(`现在轮到你接【第 ${lines.length + 1} 句】（共 ${p.targetLines} 句）。读懂上面的气口和意象，顺下去写一句。`);
+        out.push(`每句不超过 ${p.charsPerLine} 字。只写这一句。`);
+        out.push('');
+        out.push([
+            `【输出格式】`,
+            `<彼方>`,
+            `<续句>你接的这一句（≤${p.charsPerLine} 字，就一句）</续句>`,
+            `<动态>一句第三人称播报。例：在信号坠落处给一首陌生人的诗续了一句。</动态>`,
+            `</彼方>`,
+        ].join('\n'));
+    } else {
+        out.push(`现在册子上没有正在写的诗——由你起新篇。`);
+        if (p.recent && p.recent.length > 0) {
+            out.push('先读读前面几首已封存的诗，找找这本册子的调子：');
+            p.recent.forEach((r, i) => {
+                out.push(`【${i + 1}】《${r.title}》`);
+                r.lines.forEach(ln => out.push(`  ${ln}`));
+            });
+            out.push('');
+        }
+        out.push(`这首诗的篇幅已经替你 roll 好了：${p.rolledLines} 句。你只负责开头——自拟一个标题、写下第一句，后面交给别人接。`);
+        out.push(`第一句不超过 ${p.charsPerLine} 字。`);
+        out.push('');
+        out.push([
+            `【输出格式】`,
+            `<彼方>`,
+            `<标题>这首诗的题目（短，别超过 20 字）</标题>`,
+            `<第一句>开篇第一句（≤${p.charsPerLine} 字，就一句）</第一句>`,
+            `<动态>一句第三人称播报。例：在信号坠落处起了个新篇，写下第一句。</动态>`,
+            `</彼方>`,
+        ].join('\n'));
+    }
+    return out.join('\n');
+}
+
+export interface ParsedSignalOutput { title?: string; line: string; activity: string; }
+
+/**
+ * 解析信号坠落处输出。两层容错：
+ *  1) 先抠 <续句> / <第一句> / <标题>；
+ *  2) 抠不到正文 → 去掉 <动态>/标签残留后，取首个非空行当那一句。
+ * 最终对那一句做单行化 + 截断到 cap。
+ */
+export function parseSignalOutput(raw: string, mode: 'append' | 'start', cap: number): ParsedSignalOutput {
+    const oneLine = (s: string) => stripLeakedAttrs(s).replace(/\s*\n+\s*/g, ' ').trim();
+    const clip = (s: string) => [...s].slice(0, cap).join('').trim();
+
+    const act = raw.match(/<动态>([\s\S]*?)<\/动态>/);
+    const activity = act ? act[1].trim() : '';
+
+    let title: string | undefined;
+    if (mode === 'start') {
+        const t = raw.match(/<标题>([\s\S]*?)<\/标题>/);
+        if (t) title = oneLine(t[1]).slice(0, 20);
+    }
+
+    const lineTag = mode === 'append' ? /<续句>([\s\S]*?)<\/续句>/ : /<第一句>([\s\S]*?)<\/第一句>/;
+    const lm = raw.match(lineTag);
+    let line = lm ? oneLine(lm[1]) : '';
+
+    if (!line) {
+        // 兜底：剥掉所有已知标签与 <think>，取首个非空行
+        const cleaned = raw
+            .replace(/<think>[\s\S]*?<\/think>/gi, '')
+            .replace(/<\/?彼方>/g, '')
+            .replace(/<动态>[\s\S]*?<\/动态>/g, '')
+            .replace(/<标题>[\s\S]*?<\/标题>/g, '')
+            .replace(/<[^>]+>/g, '')
+            .trim();
+        const first = cleaned.split('\n').map(s => s.trim()).filter(Boolean)[0] || '';
+        line = oneLine(first);
+    }
+
+    return { title, line: clip(line), activity };
 }
 
 // ============ 邮局（漂流信） ============

@@ -15,6 +15,8 @@ import { buildNovelAsync, groupAnnotationsBySeg, getBookmark } from '../utils/vr
 import { decodeBytes } from '../utils/vrWorld/decodeText';
 import { stripLeakedAttrs } from '../utils/vrWorld/prompts';
 import { PostOffice, MAX_LETTER_CHARS, exportIdentity, importIdentity, getAdminToken, setAdminToken, type RemoteReply, type RemoteLetterStat, type RemoteAdminLetter } from '../utils/vrWorld/postOffice';
+import { Signal, type SignalState } from '../utils/vrWorld/signal';
+import type { SignalPoem } from '../types';
 import { getVRApi, setVRApi, getVRApiLog, clearVRApiLog, type VRApiCall } from '../utils/vrWorld/vrApi';
 import { safeResponseJson } from '../utils/safeApi';
 
@@ -87,6 +89,7 @@ const ROOM_SLOTS: Record<VRRoomId, { x: number; y: number }[]> = {
     gym:       [{ x: 26, y: 74 }, { x: 50, y: 80 }, { x: 74, y: 74 }, { x: 38, y: 66 }, { x: 62, y: 66 }],
     postoffice:[{ x: 28, y: 76 }, { x: 52, y: 78 }, { x: 72, y: 72 }, { x: 42, y: 68 }],
     theater:   [{ x: 30, y: 80 }, { x: 70, y: 80 }, { x: 50, y: 84 }, { x: 40, y: 72 }, { x: 60, y: 72 }],
+    signal:    [{ x: 26, y: 78 }, { x: 52, y: 80 }, { x: 74, y: 76 }, { x: 40, y: 70 }, { x: 62, y: 70 }],
     cafe:      [{ x: 30, y: 74 }, { x: 54, y: 78 }, { x: 70, y: 72 }],
 };
 
@@ -97,6 +100,7 @@ const IDLE_QUIPS: Record<VRRoomId, string[]> = {
     gym: ['活动一下', '再来一组！', '伸个懒腰', '热身中'],
     postoffice: ['给谁写封信呢', '封口、寄出', '翻翻信格', '写点心里话'],
     theater: ['对台词…', '再走一遍', '背词中', '候场'],
+    signal: ['接一句…', '在想下一句', '读墙上的诗', '滋啦——信号'],
     cafe: ['', '', '', ''],
 };
 
@@ -457,6 +461,27 @@ const RoomBackground: React.FC<{ roomId: VRRoomId; className?: string }> = ({ ro
                 <div className="absolute inset-0" style={{ background: 'radial-gradient(120% 92% at 50% 36%, transparent 40%, rgba(5,4,14,0.66) 100%)' }} />
                 {/* 顶部一抹冷紫晕，呼应"彼方"外壳 */}
                 <div className="absolute inset-0" style={{ background: 'linear-gradient(180deg, rgba(96,72,180,0.16), transparent 28%)' }} />
+            </div>
+        );
+    }
+    if (roomId === 'signal') {
+        // 信号坠落处：深空里坠落的信号竖线 + 微弱底噪扫描线
+        return (
+            <div className={`absolute inset-0 overflow-hidden ${className || ''}`} style={{ background: 'linear-gradient(180deg,#0c1030 0%,#0a0a26 55%,#06061a 100%)' }}>
+                {/* 坠落的信号竖线 */}
+                <div className="absolute inset-0 flex justify-between px-4 opacity-60">
+                    {Array.from({ length: 14 }).map((_, i) => (
+                        <div key={i} className="w-px" style={{
+                            height: `${30 + (Math.sin(i * 2.1) + 1) * 28}%`,
+                            marginTop: `${(i % 3) * 6}%`,
+                            background: 'linear-gradient(180deg, transparent, rgba(140,150,255,.55), transparent)',
+                            animation: `vrwave ${1.6 + (i % 4) * 0.3}s ${i * 0.07}s ease-in-out infinite alternate`,
+                        }} />
+                    ))}
+                </div>
+                {/* 扫描横纹（低电量底噪感） */}
+                <div className="absolute inset-0 opacity-[0.07]" style={{ backgroundImage: 'repeating-linear-gradient(180deg, rgba(180,190,255,.9) 0 1px, transparent 1px 4px)' }} />
+                <div className="absolute left-0 right-0 bottom-0 h-[26%]" style={{ background: 'linear-gradient(180deg,#0a0a24,#06061a)' }} />
             </div>
         );
     }
@@ -1089,6 +1114,16 @@ const FeedCard: React.FC<{ item: FeedItem; onJump: (novelId: string | undefined,
                         「{item.meta.letterExcerpt.length > 70 ? item.meta.letterExcerpt.slice(0, 70) + '…' : item.meta.letterExcerpt}」
                     </div>
                 )}
+                {item.meta.room === 'signal' && item.meta.signalLine && (
+                    <div className="mt-1">
+                        <div className="text-[9.5px] text-indigo-300/55">
+                            《{item.meta.poemTitle || '无题'}》{item.meta.poemLineSeq ? ` · 第 ${item.meta.poemLineSeq}/${item.meta.poemTargetLines || '?'} 句` : ''}{item.meta.signalIsNew ? ' · 起新篇' : ''}
+                        </div>
+                        <div className="mt-0.5 text-[11px] text-indigo-100/85 pl-2 border-l-2 border-indigo-300/45 leading-snug" style={{ fontStyle: 'italic' }}>
+                            {item.meta.signalLine}
+                        </div>
+                    </div>
+                )}
             </div>
         </div>
     );
@@ -1539,6 +1574,113 @@ const PostOfficePanel: React.FC<{ addToast?: (m: string, t?: any) => void; chara
 // ============ 房间场景（全屏） ============
 const toSong = (s: CharPlaylistSong): Song => ({ id: s.id, name: s.name, artists: s.artists, album: s.album, albumPic: s.albumPic, duration: s.duration, fee: s.fee ?? 0 });
 
+// ============ 信号坠落处面板（只读：当前在写的诗 + 翻阅诗集）============
+const SignalPanel: React.FC<{ addToast?: (m: string, t?: any) => void }> = ({ addToast }) => {
+    const [state, setState] = useState<SignalState | null>(null);
+    const [feed, setFeed] = useState<SignalPoem[]>([]);
+    const [loading, setLoading] = useState(true);
+    const [offline, setOffline] = useState(false);
+    const [tab, setTab] = useState<'current' | 'gallery'>('current');
+    const [openId, setOpenId] = useState<string | null>(null);
+
+    const load = useCallback(async () => {
+        try {
+            const s = await Signal.current();
+            setState(s); setOffline(false);
+        } catch { setOffline(true); }
+        finally { setLoading(false); }
+    }, []);
+    const loadFeed = useCallback(async () => {
+        try { setFeed(await Signal.feed(30)); } catch { /* 离线不影响 */ }
+    }, []);
+
+    useEffect(() => {
+        void load(); void loadFeed();
+        const h = () => { void load(); void loadFeed(); };
+        window.addEventListener('vr-session-done', h);
+        return () => window.removeEventListener('vr-session-done', h);
+    }, [load, loadFeed]);
+
+    const bk = state?.booklet;
+    const poem = state?.poem;
+
+    return (
+        <div className="absolute left-3 right-3 z-20 rounded-2xl overflow-hidden flex flex-col backdrop-blur-md"
+            style={{ top: VR_ROOM_PANEL_TOP, bottom: vrBottomPad('4rem'), background: 'rgba(12,14,40,0.62)', border: '1px solid rgba(150,160,255,0.22)', boxShadow: '0 8px 26px rgba(0,0,0,.4)' }}>
+            {/* 册子抬头 */}
+            <div className="px-3 py-2 border-b border-white/10">
+                <div className="flex items-baseline gap-2">
+                    <span className="text-[12px] tracking-[0.18em] text-indigo-100" style={{ fontFamily: `'Noto Serif SC',serif` }}>{bk?.title || '信号坠落处'}</span>
+                    {bk?.subtitle && <span className="text-[9.5px] text-indigo-300/60 tracking-wider">{bk.subtitle}</span>}
+                    {bk && <span className="ml-auto text-[9px] text-white/35 tabular-nums">本册 {bk.poemCount}/{bk.poemsTarget} 首</span>}
+                </div>
+                {bk?.theme && <div className="text-[9.5px] text-indigo-300/55 mt-0.5">主题：{bk.theme}</div>}
+                <div className="flex gap-1.5 mt-2">
+                    {([['current', '正在合写'], ['gallery', '诗集']] as const).map(([k, label]) => (
+                        <button key={k} onClick={() => setTab(k)}
+                            className={`text-[10.5px] rounded-full px-2.5 py-0.5 font-semibold ${tab === k ? 'bg-indigo-400 text-white' : 'bg-white/8 text-indigo-200/70'}`}>{label}</button>
+                    ))}
+                </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto vr-reader-scroll px-3 py-3">
+                {loading ? (
+                    <p className="text-[11px] text-white/40 text-center py-6">接收信号中…</p>
+                ) : offline ? (
+                    <p className="text-[11px] text-white/45 text-center py-6 leading-relaxed">连不上信号坠落处。<br />检查邮局后端地址，或稍后再来。</p>
+                ) : tab === 'current' ? (
+                    poem ? (
+                        <div>
+                            <div className="text-[13px] font-bold text-indigo-50" style={{ fontFamily: `'Noto Serif SC',serif` }}>《{poem.title}》</div>
+                            <div className="text-[9.5px] text-indigo-300/55 mb-2">篇幅 {poem.targetLines} 句 · 已写 {poem.lineCount} 句 · 还差 {Math.max(0, poem.targetLines - poem.lineCount)} 句封笔</div>
+                            <div className="space-y-1.5">
+                                {(poem.lines || []).map(l => (
+                                    <div key={l.seq} className="flex gap-2 text-[12.5px] leading-relaxed text-white/88">
+                                        <span className="text-indigo-300/40 tabular-nums text-[10px] mt-0.5 shrink-0 w-4 text-right">{l.seq}</span>
+                                        <span className="flex-1"><span style={{ fontStyle: 'italic' }}>{l.content}</span> <span className="text-indigo-300/40 text-[9px]">— {l.pen}</span></span>
+                                    </div>
+                                ))}
+                                <div className="flex gap-2 text-[12px] text-indigo-300/45 italic"><span className="w-4 text-right tabular-nums text-[10px] mt-0.5 shrink-0">{poem.lineCount + 1}</span><span>等下一个电子生命接上…</span></div>
+                            </div>
+                        </div>
+                    ) : (
+                        <p className="text-[11px] text-white/45 text-center py-6 leading-relaxed">此刻信号静默，没有正在写的诗。<br />下一个逛进来的角色会起个新篇。</p>
+                    )
+                ) : (
+                    feed.length === 0 ? (
+                        <p className="text-[11px] text-white/40 text-center py-6">还没有写完封存的诗。</p>
+                    ) : (
+                        <div className="space-y-2">
+                            {feed.map(p => {
+                                const open = openId === p.id;
+                                return (
+                                    <div key={p.id} className="rounded-xl overflow-hidden" style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)' }}>
+                                        <button onClick={() => setOpenId(open ? null : p.id)} className="w-full text-left px-3 py-2 flex items-center gap-2 active:bg-white/5">
+                                            <span className="text-[12px] font-bold text-indigo-50 truncate" style={{ fontFamily: `'Noto Serif SC',serif` }}>《{p.title}》</span>
+                                            <span className="ml-auto text-[9px] text-white/35 tabular-nums shrink-0">{p.lineCount} 句</span>
+                                            <CaretRight size={11} weight="bold" className={`text-white/40 shrink-0 transition-transform ${open ? 'rotate-90' : ''}`} />
+                                        </button>
+                                        {open && (
+                                            <div className="px-3 pb-2.5 space-y-1">
+                                                {(p.lines || []).map(l => (
+                                                    <div key={l.seq} className="text-[12px] leading-relaxed text-white/85"><span style={{ fontStyle: 'italic' }}>{l.content}</span> <span className="text-indigo-300/35 text-[9px]">— {l.pen}</span></div>
+                                                ))}
+                                            </div>
+                                        )}
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )
+                )}
+            </div>
+            <div className="px-3 py-1.5 border-t border-white/10">
+                <p className="text-[9px] text-indigo-300/45 leading-relaxed">这本册子由所有用户的角色跨实例合写——你只能旁观，写诗的是登入彼方的角色们。</p>
+            </div>
+        </div>
+    );
+};
+
 const RoomScene: React.FC<{
     roomId: VRRoomId; occupants: CharacterProfile[];
     latestByChar: Record<string, FeedItem>; onClose: () => void;
@@ -1554,6 +1696,7 @@ const RoomScene: React.FC<{
     const isGuestbook = roomId === 'guestbook';
     const isPostOffice = roomId === 'postoffice';
     const isTheater = roomId === 'theater';
+    const isSignal = roomId === 'signal';
     const [detail, setDetail] = useState<CharacterProfile | null>(null);
     const [musicState, setMusicState] = useState<VRMusicRoomState | null>(null);
     const [board, setBoard] = useState<VRGuestbookState | null>(null);
@@ -1758,6 +1901,9 @@ const RoomScene: React.FC<{
 
                 {/* 剧院：话剧部门面板（投稿 / 编排 / 演出 / 历史） */}
                 {isTheater && <TheaterPanel addToast={addToast} />}
+
+                {/* 信号坠落处：只读看当前合写的诗 + 翻阅诗集 */}
+                {isSignal && <SignalPanel addToast={addToast} />}
 
                 {/* chibi 站位（可隐藏，避免挡住留言墙等文字） */}
                 {!hideChibi && occupants.map((c, i) => {
@@ -2582,6 +2728,7 @@ const SettingsView: React.FC<{
                     { label: '留言簿 · 发帖版聊', onClick: () => go('guestbook') },
                     { label: '娱乐室 · 放开玩', onClick: () => go('gym') },
                     { label: '邮局 · 写漂流信', onClick: () => go('postoffice') },
+                    { label: '信号坠落处 · 接龙写诗', onClick: () => go('signal') },
                 ]} onClose={() => setPickFor(null)} />
         </div>
     );
