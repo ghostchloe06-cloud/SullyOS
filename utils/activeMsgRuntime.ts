@@ -1,5 +1,6 @@
 import { ActiveMsg2InboxMessage, APIConfig, RealtimeConfig, UserProfile } from '../types';
 import { DB } from './db';
+import { ChatPrompts } from './chatPrompts';
 import { ActiveMsgStore } from './activeMsgStore';
 import {
   applyAssistantPostProcessing,
@@ -134,7 +135,15 @@ const processInboxMessageWithPostProcessing = async (message: ActiveMsg2InboxMes
 
   const userProfile: UserProfile = (await DB.getUserProfile())
     ?? { name: 'User', avatar: '', bio: '' };
-  const emojis = await DB.getEmojis();
+  // 按角色可见性过滤表情包：后处理落库时靠 emojis.find(e => e.name === name) 反查 URL，
+  // 若传全量表情，名字冲突时会把 A 的 [[SEND_EMOJI: x]] 匹配到 B 名下的同名表情，导致
+  // A 发出绑定给 B 的表情包。本地聊天路径喂的是 aiVisibleEmojis（已过滤），主动消息路径
+  // 之前漏了这步，这里复用同一套过滤收口（与 activeMsgClient.buildCompletePrompt 对齐）。
+  const { emojis } = ChatPrompts.filterVisibleEmojis(
+    await DB.getEmojis(),
+    await DB.getEmojiCategories(),
+    message.charId,
+  );
   const contextMsgs = await DB.getRecentMessagesByCharId(message.charId, 200);
 
   const apiConfig = loadApiConfigFromLocalStorage();
