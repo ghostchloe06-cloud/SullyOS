@@ -18,6 +18,8 @@ export interface SignalState {
     poem: SignalPoem | null;
     /** 近期封存的几首，供起新篇时「读之前的诗」找灵感 */
     recent: SignalPoem[];
+    /** 管理员是否暂停了「诗歌推入」（true 时角色不再起新篇/接龙） */
+    paused?: boolean;
 }
 
 async function call<T>(path: string, opts: RequestInit & { query?: Record<string, string> } = {}): Promise<T> {
@@ -78,5 +80,21 @@ export const Signal = {
             },
         });
         return r.poems || [];
+    },
+
+    // ── 管理（凭 ADMIN_TOKEN，与漂流瓶同一个 token）──
+    /** [管理] 列出后端全部诗（open 在前）+ 当前暂停态。 */
+    async adminList(token: string): Promise<{ poems: SignalPoem[]; paused: boolean }> {
+        const r = await call<{ poems: SignalPoem[]; paused: boolean }>('/poem/admin/list', { headers: { Authorization: `Bearer ${token}` } });
+        return { poems: r.poems || [], paused: !!r.paused };
+    },
+    /** [管理] 删一整首诗（只给 poemId）或删单句（poemId + seq）。 */
+    async adminDelete(token: string, target: { poemId: string; seq?: number }): Promise<void> {
+        await call('/poem/admin/delete', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: JSON.stringify(target) });
+    },
+    /** [管理] 暂停 / 恢复「诗歌推入」。 */
+    async adminPause(token: string, paused: boolean): Promise<boolean> {
+        const r = await call<{ paused: boolean }>('/poem/admin/pause', { method: 'POST', headers: { Authorization: `Bearer ${token}` }, body: JSON.stringify({ paused }) });
+        return !!r.paused;
     },
 };

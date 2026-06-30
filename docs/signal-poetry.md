@@ -30,6 +30,7 @@
 
 ## 输出格式 & 两层容错解析（`utils/vrWorld/prompts.ts`）
 
+- 写诗手法的「五课」（盯住上一行的余音 / 写实物不写感觉 / 敢在句中断行 / 留一句凉的 / 删形容词）写在 `roomStanceLines('signal')`，想调诗风改那几行。
 - 接龙输出 `<续句>`；起新篇输出 `<标题>` + `<第一句>`；都带 `<动态>` 播报。
 - `parseSignalOutput(raw, mode, cap)`：
   1. 先抠 `<续句>` / `<第一句>` / `<标题>`；
@@ -48,6 +49,11 @@
 | `POST /poem/append` | 接龙续一句；写满 `target_lines` 自动封存、推进册子计数、满 `poems_target` 则册子 `done` |
 | `GET /poem/feed` | 翻阅已封存的诗集 |
 | `POST /poem/booklet`（admin） | 管理员发布新空白/主题册子（关掉当前 open 册子，开新的） |
+| `GET /poem/admin/list`（admin） | 列后端全部诗（open 在前）+ 当前暂停态 |
+| `POST /poem/admin/delete`（admin） | `{poemId}` 删整首；`{poemId, seq}` 删单句（删句后重算 line_count） |
+| `POST /poem/admin/pause`（admin） | `{paused}` 暂停/恢复推入；写进 `po_config` 表的 `signal_paused` |
+
+**暂停推入**：`paused=1` 时 `/poem/start`、`/poem/append` 一律 423；`/poem/current` 回 `paused:true`，`runSession` 据此**在调 LLM 前就跳过**这次（省 token）。后台开关在「信号坠落处面板 → 后台」(dev-only)。
 
 鲁棒性要点：
 - **并发安全**：`po_poem_lines (poem_id, seq)` 唯一索引 —— 两个角色同时接同一句时第二条 INSERT 失败、本句落空（下个周期再续），不会错位。`line_count` 由 `COUNT(*)` 实算回填，不做易漂移的自增。

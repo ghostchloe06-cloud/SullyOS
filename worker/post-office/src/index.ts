@@ -37,6 +37,9 @@
  *   POST  …/poem/append   { device, pen, poemId, content }                  接龙续一句（满篇幅自动封存）
  *   GET   …/poem/feed?limit=&booklet=&device=&mine=1                        翻阅已封存的诗集（mine=1 只看本机参与过的）
  *   POST  …/poem/booklet  { title,subtitle,theme,poemsTarget,linesMin,linesMax,charsPerLine } (+ token)  [管理] 发新册子
+ *   GET   …/poem/admin/list (+ token)                                       [管理] 列全部诗 + 当前暂停态
+ *   POST  …/poem/admin/delete { poemId } | { poemId, seq } (+ token)        [管理] 删整首 / 删单句
+ *   POST  …/poem/admin/pause  { paused: true|false } (+ token)              [管理] 暂停 / 恢复诗歌推入
  *
  * 表结构由 Worker 自动建（加性、不破坏老数据）。也可手动跑 schema.sql。
  */
@@ -124,6 +127,8 @@ async function ensureSchema(db: D1Database) {
     // 句：(poem_id, seq) 唯一 —— 并发追加抢同一 seq 时第二条 INSERT 失败，天然防错位。
     await db.exec(`CREATE TABLE IF NOT EXISTS po_poem_lines (id TEXT PRIMARY KEY, poem_id TEXT NOT NULL, booklet_id TEXT NOT NULL, seq INTEGER NOT NULL, device TEXT NOT NULL, pen TEXT NOT NULL, content TEXT NOT NULL, created_at INTEGER NOT NULL);`);
     await db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_po_poem_lines_seq ON po_poem_lines(poem_id, seq);`);
+    // 全局开关（如「暂停诗歌推入」）：key/value 单表
+    await db.exec(`CREATE TABLE IF NOT EXISTS po_config (key TEXT PRIMARY KEY, value TEXT NOT NULL);`);
     schemaReady = true;
 }
 
@@ -198,6 +203,22 @@ const bookletView = (b: BookletRow) => ({
     linesMin: b.lines_min, linesMax: b.lines_max, charsPerLine: b.chars_per_line,
     status: b.status, createdAt: b.created_at,
 });
+
+/** 读全局开关（默认 ''）。 */
+async function getFlag(db: D1Database, key: string): Promise<string> {
+    const r = await db.prepare(`SELECT value FROM po_config WHERE key = ?`).bind(key).first<{ value: string }>();
+    return r?.value ?? '';
+}
+async function setFlag(db: D1Database, key: string, value: string): Promise<void> {
+    await db.prepare(`INSERT INTO po_config (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value = ?`).bind(key, value, value).run();
+}
+const PAUSE_KEY = 'signal_paused';
+
+/** 删一整首诗（连同它的句）。 */
+async function deletePoem(db: D1Database, poemId: string): Promise<void> {
+    await db.prepare(`DELETE FROM po_poem_lines WHERE poem_id = ?`).bind(poemId).run();
+    await db.prepare(`DELETE FROM po_poems WHERE id = ?`).bind(poemId).run();
+}
 
 /** 重算并回写一首诗的句数；够篇幅就封存，并推进册子计数/完结。 */
 async function syncPoem(db: D1Database, poem: PoemRow): Promise<PoemRow> {
@@ -460,11 +481,13 @@ export default {
                 const recentRows = await env.DB.prepare(`SELECT * FROM po_poems WHERE status = 'sealed' ORDER BY sealed_at DESC LIMIT 3`).all<PoemRow>();
                 const recent = [];
                 for (const r of (recentRows.results || [])) recent.push(poemView(r, await loadLines(env.DB, r.id), myDev));
-                return json({ ok: true, booklet: bookletView(booklet), poem, recent });
+                const paused = (await getFlag(env.DB, PAUSE_KEY)) === '1';
+                return json({ ok: true, booklet: bookletView(booklet), poem, recent, paused });
             }
 
             // ── 起新篇：自拟标题 + 第一句 + 已 roll 的篇幅。仅当前无 open 诗时允许 ──
             if (req.method === 'POST' && ends('/poem/start')) {
+                if ((await getFlag(env.DB, PAUSE_KEY)) === '1') return json({ ok: false, error: 'paused' }, 423);
                 if (await tooMany('poem', num(env.PO_RATE_REPLIES, 60))) return json({ ok: false, error: 'rate limited' }, 429);
                 const body: any = await req.json().catch(() => ({}));
                 const device = String(body.device || '').slice(0, 80);
@@ -492,6 +515,7 @@ export default {
 
             // ── 接龙：给指定诗续一句。写满篇幅自动封存 ──
             if (req.method === 'POST' && ends('/poem/append')) {
+                if ((await getFlag(env.DB, PAUSE_KEY)) === '1') return json({ ok: false, error: 'paused' }, 423);
                 if (await tooMany('poem', num(env.PO_RATE_REPLIES, 60))) return json({ ok: false, error: 'rate limited' }, 429);
                 const body: any = await req.json().catch(() => ({}));
                 const device = String(body.device || '').slice(0, 80);
@@ -550,6 +574,53 @@ export default {
                     Math.max(1, parseInt(String(body.poemsTarget), 10) || SIG_POEMS), lmin, lmax,
                     Math.max(1, parseInt(String(body.charsPerLine), 10) || SIG_CPL), Date.now()).run();
                 return json({ ok: true, booklet: bookletView((await env.DB.prepare(`SELECT * FROM po_booklets WHERE id = ?`).bind(id).first<BookletRow>())!) });
+            }
+
+            // ── [管理] 列出全部诗（open 在前，再按时间倒序）+ 当前暂停态 ──
+            if (req.method === 'GET' && ends('/poem/admin/list')) {
+                if (!isAdmin(req, url, env)) return json({ ok: false, error: 'unauthorized' }, 401);
+                const limit = Math.min(Math.max(num(url.searchParams.get('limit') || '', 100), 1), 300);
+                const rows = await env.DB.prepare(
+                    `SELECT * FROM po_poems ORDER BY (status = 'open') DESC, COALESCE(sealed_at, created_at) DESC LIMIT ?`
+                ).bind(limit).all<PoemRow>();
+                const poems = [];
+                for (const r of (rows.results || [])) poems.push(poemView(r, await loadLines(env.DB, r.id)));
+                const paused = (await getFlag(env.DB, PAUSE_KEY)) === '1';
+                return json({ ok: true, poems, paused });
+            }
+
+            // ── [管理] 删一整首诗 或 删单句 ──
+            if (req.method === 'POST' && ends('/poem/admin/delete')) {
+                if (!isAdmin(req, url, env)) return json({ ok: false, error: 'unauthorized' }, 401);
+                const body: any = await req.json().catch(() => ({}));
+                const poemId = String(body.poemId || '');
+                const seq = parseInt(String(body.seq), 10);
+                if (poemId && Number.isFinite(seq)) {
+                    // 删单句（按 poemId + seq）→ 重算句数（不自动改封存态）
+                    await env.DB.prepare(`DELETE FROM po_poem_lines WHERE poem_id = ? AND seq = ?`).bind(poemId, seq).run();
+                    const cnt = await env.DB.prepare(`SELECT COUNT(*) AS n FROM po_poem_lines WHERE poem_id = ?`).bind(poemId).first<{ n: number }>();
+                    await env.DB.prepare(`UPDATE po_poems SET line_count = ? WHERE id = ?`).bind(cnt?.n ?? 0, poemId).run();
+                    return json({ ok: true, deleted: 'line' });
+                }
+                if (poemId) {
+                    const p = await env.DB.prepare(`SELECT booklet_id, status FROM po_poems WHERE id = ?`).bind(poemId).first<{ booklet_id: string; status: string }>();
+                    await deletePoem(env.DB, poemId);
+                    // 删的是已封存的诗 → 册子封存计数回算
+                    if (p && p.status === 'sealed') {
+                        const sc = await env.DB.prepare(`SELECT COUNT(*) AS n FROM po_poems WHERE booklet_id = ? AND status = 'sealed'`).bind(p.booklet_id).first<{ n: number }>();
+                        await env.DB.prepare(`UPDATE po_booklets SET poem_count = ? WHERE id = ?`).bind(sc?.n ?? 0, p.booklet_id).run();
+                    }
+                    return json({ ok: true, deleted: 'poem' });
+                }
+                return json({ ok: false, error: 'bad request' }, 400);
+            }
+
+            // ── [管理] 暂停 / 恢复「诗歌推入」（暂停后 start/append 一律 423）──
+            if (req.method === 'POST' && ends('/poem/admin/pause')) {
+                if (!isAdmin(req, url, env)) return json({ ok: false, error: 'unauthorized' }, 401);
+                const body: any = await req.json().catch(() => ({}));
+                await setFlag(env.DB, PAUSE_KEY, body.paused ? '1' : '0');
+                return json({ ok: true, paused: !!body.paused });
             }
 
             return json({ ok: false, error: 'not found' }, 404);

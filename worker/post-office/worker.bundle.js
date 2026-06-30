@@ -50,6 +50,7 @@ async function ensureSchema(db) {
   await db.exec(`CREATE INDEX IF NOT EXISTS idx_po_poems_sealed ON po_poems(status, sealed_at);`);
   await db.exec(`CREATE TABLE IF NOT EXISTS po_poem_lines (id TEXT PRIMARY KEY, poem_id TEXT NOT NULL, booklet_id TEXT NOT NULL, seq INTEGER NOT NULL, device TEXT NOT NULL, pen TEXT NOT NULL, content TEXT NOT NULL, created_at INTEGER NOT NULL);`);
   await db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_po_poem_lines_seq ON po_poem_lines(poem_id, seq);`);
+  await db.exec(`CREATE TABLE IF NOT EXISTS po_config (key TEXT PRIMARY KEY, value TEXT NOT NULL);`);
   schemaReady = true;
 }
 async function getUid(db, ownerId) {
@@ -116,6 +117,18 @@ var bookletView = (b) => ({
   status: b.status,
   createdAt: b.created_at
 });
+async function getFlag(db, key) {
+  const r = await db.prepare(`SELECT value FROM po_config WHERE key = ?`).bind(key).first();
+  return r?.value ?? "";
+}
+async function setFlag(db, key, value) {
+  await db.prepare(`INSERT INTO po_config (key, value) VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value = ?`).bind(key, value, value).run();
+}
+var PAUSE_KEY = "signal_paused";
+async function deletePoem(db, poemId) {
+  await db.prepare(`DELETE FROM po_poem_lines WHERE poem_id = ?`).bind(poemId).run();
+  await db.prepare(`DELETE FROM po_poems WHERE id = ?`).bind(poemId).run();
+}
 async function syncPoem(db, poem) {
   const cnt = await db.prepare(`SELECT COUNT(*) AS n FROM po_poem_lines WHERE poem_id = ?`).bind(poem.id).first();
   const lineCount = cnt?.n ?? 0;
@@ -325,9 +338,11 @@ var src_default = {
         const recentRows = await env.DB.prepare(`SELECT * FROM po_poems WHERE status = 'sealed' ORDER BY sealed_at DESC LIMIT 3`).all();
         const recent = [];
         for (const r of recentRows.results || []) recent.push(poemView(r, await loadLines(env.DB, r.id), myDev));
-        return json({ ok: true, booklet: bookletView(booklet), poem, recent });
+        const paused = await getFlag(env.DB, PAUSE_KEY) === "1";
+        return json({ ok: true, booklet: bookletView(booklet), poem, recent, paused });
       }
       if (req.method === "POST" && ends("/poem/start")) {
+        if (await getFlag(env.DB, PAUSE_KEY) === "1") return json({ ok: false, error: "paused" }, 423);
         if (await tooMany("poem", num(env.PO_RATE_REPLIES, 60))) return json({ ok: false, error: "rate limited" }, 429);
         const body = await req.json().catch(() => ({}));
         const device = String(body.device || "").slice(0, 80);
@@ -350,6 +365,7 @@ var src_default = {
         return json({ ok: true, booklet: bookletView(await ensureBooklet(env.DB)), poem: poemView(synced, await loadLines(env.DB, poemId), device) });
       }
       if (req.method === "POST" && ends("/poem/append")) {
+        if (await getFlag(env.DB, PAUSE_KEY) === "1") return json({ ok: false, error: "paused" }, 423);
         if (await tooMany("poem", num(env.PO_RATE_REPLIES, 60))) return json({ ok: false, error: "rate limited" }, 429);
         const body = await req.json().catch(() => ({}));
         const device = String(body.device || "").slice(0, 80);
@@ -412,6 +428,45 @@ var src_default = {
           Date.now()
         ).run();
         return json({ ok: true, booklet: bookletView(await env.DB.prepare(`SELECT * FROM po_booklets WHERE id = ?`).bind(id).first()) });
+      }
+      if (req.method === "GET" && ends("/poem/admin/list")) {
+        if (!isAdmin(req, url, env)) return json({ ok: false, error: "unauthorized" }, 401);
+        const limit = Math.min(Math.max(num(url.searchParams.get("limit") || "", 100), 1), 300);
+        const rows = await env.DB.prepare(
+          `SELECT * FROM po_poems ORDER BY (status = 'open') DESC, COALESCE(sealed_at, created_at) DESC LIMIT ?`
+        ).bind(limit).all();
+        const poems = [];
+        for (const r of rows.results || []) poems.push(poemView(r, await loadLines(env.DB, r.id)));
+        const paused = await getFlag(env.DB, PAUSE_KEY) === "1";
+        return json({ ok: true, poems, paused });
+      }
+      if (req.method === "POST" && ends("/poem/admin/delete")) {
+        if (!isAdmin(req, url, env)) return json({ ok: false, error: "unauthorized" }, 401);
+        const body = await req.json().catch(() => ({}));
+        const poemId = String(body.poemId || "");
+        const seq = parseInt(String(body.seq), 10);
+        if (poemId && Number.isFinite(seq)) {
+          await env.DB.prepare(`DELETE FROM po_poem_lines WHERE poem_id = ? AND seq = ?`).bind(poemId, seq).run();
+          const cnt = await env.DB.prepare(`SELECT COUNT(*) AS n FROM po_poem_lines WHERE poem_id = ?`).bind(poemId).first();
+          await env.DB.prepare(`UPDATE po_poems SET line_count = ? WHERE id = ?`).bind(cnt?.n ?? 0, poemId).run();
+          return json({ ok: true, deleted: "line" });
+        }
+        if (poemId) {
+          const p = await env.DB.prepare(`SELECT booklet_id, status FROM po_poems WHERE id = ?`).bind(poemId).first();
+          await deletePoem(env.DB, poemId);
+          if (p && p.status === "sealed") {
+            const sc = await env.DB.prepare(`SELECT COUNT(*) AS n FROM po_poems WHERE booklet_id = ? AND status = 'sealed'`).bind(p.booklet_id).first();
+            await env.DB.prepare(`UPDATE po_booklets SET poem_count = ? WHERE id = ?`).bind(sc?.n ?? 0, p.booklet_id).run();
+          }
+          return json({ ok: true, deleted: "poem" });
+        }
+        return json({ ok: false, error: "bad request" }, 400);
+      }
+      if (req.method === "POST" && ends("/poem/admin/pause")) {
+        if (!isAdmin(req, url, env)) return json({ ok: false, error: "unauthorized" }, 401);
+        const body = await req.json().catch(() => ({}));
+        await setFlag(env.DB, PAUSE_KEY, body.paused ? "1" : "0");
+        return json({ ok: true, paused: !!body.paused });
       }
       return json({ ok: false, error: "not found" }, 404);
     } catch (e) {

@@ -1600,6 +1600,104 @@ const PoemLineRow: React.FC<{ l: SignalPoem['lines'][number]; showSeq?: boolean 
     );
 };
 
+// 信号坠落处 · 后台（dev-only）：删诗 / 删句 / 暂停诗歌推入。凭 ADMIN_TOKEN（与漂流瓶同一个）。
+const SignalAdminPanel: React.FC<{ onClose: () => void; addToast?: (m: string, t?: any) => void }> = ({ onClose, addToast }) => {
+    const [token, setToken] = useState(getAdminToken());
+    const [poems, setPoems] = useState<SignalPoem[]>([]);
+    const [paused, setPaused] = useState(false);
+    const [loaded, setLoaded] = useState(false);
+    const [busy, setBusy] = useState(false);
+    const [confirmPoem, setConfirmPoem] = useState<string | null>(null);
+
+    const load = useCallback(async (tk: string) => {
+        if (!tk.trim()) { addToast?.('先填 ADMIN_TOKEN', 'error'); return; }
+        setBusy(true);
+        try {
+            setAdminToken(tk.trim());
+            const r = await Signal.adminList(tk.trim());
+            setPoems(r.poems); setPaused(r.paused); setLoaded(true);
+        } catch (e: any) {
+            addToast?.(String(e?.message).includes('unauthorized') ? 'ADMIN_TOKEN 不对' : '拉取失败：' + (e?.message || ''), 'error');
+        } finally { setBusy(false); }
+    }, [addToast]);
+
+    const togglePause = async () => {
+        if (!token.trim()) { addToast?.('先填 ADMIN_TOKEN', 'error'); return; }
+        setBusy(true);
+        try { const p = await Signal.adminPause(token.trim(), !paused); setPaused(p); addToast?.(p ? '已暂停诗歌推入' : '已恢复推入', 'success'); }
+        catch { addToast?.('操作失败', 'error'); } finally { setBusy(false); }
+    };
+    const delPoem = async (id: string) => {
+        setBusy(true);
+        try { await Signal.adminDelete(token.trim(), { poemId: id }); setPoems(ps => ps.filter(p => p.id !== id)); addToast?.('整首已删', 'success'); }
+        catch { addToast?.('删除失败', 'error'); } finally { setBusy(false); setConfirmPoem(null); }
+    };
+    const delLine = async (poemId: string, seq: number) => {
+        setBusy(true);
+        try {
+            await Signal.adminDelete(token.trim(), { poemId, seq });
+            setPoems(ps => ps.map(p => p.id === poemId ? { ...p, lines: p.lines.filter(l => l.seq !== seq), lineCount: p.lineCount - 1 } : p));
+            addToast?.('该句已删', 'success');
+        } catch { addToast?.('删除失败', 'error'); } finally { setBusy(false); }
+    };
+
+    return (
+        <div className="absolute inset-0 z-40 flex flex-col" style={{ background: 'rgba(6,7,22,0.97)' }}>
+            <div className="flex items-center gap-2 px-3.5 py-2.5 border-b border-white/10">
+                <span className="text-[12px] tracking-wider text-amber-100/90">信号坠落处 · 后台</span>
+                <button onClick={onClose} className="ml-auto h-7 w-7 rounded-full bg-white/10 active:bg-white/20 flex items-center justify-center"><X size={14} /></button>
+            </div>
+            <div className="px-3.5 py-2.5 border-b border-white/10 space-y-2">
+                <p className="text-[9.5px] text-white/45 leading-snug">用 worker 的 <b className="text-amber-200/70">ADMIN_TOKEN</b>（和漂流瓶后台同一个）管理跨用户诗集：删整首 / 删单句 / 暂停推入。token 只存本机。</p>
+                <div className="flex gap-1.5">
+                    <input value={token} onChange={e => setToken(e.target.value)} type="password" placeholder="ADMIN_TOKEN"
+                        className="flex-1 rounded-lg bg-black/25 px-3 py-2 text-[11.5px] text-amber-50 placeholder-white/25 outline-none" style={{ border: '1px solid rgba(220,190,120,.2)' }} />
+                    <button onClick={() => load(token)} disabled={busy} className="text-[11px] px-3 rounded-lg bg-amber-400/85 text-black font-semibold disabled:opacity-40">拉取</button>
+                </div>
+                {loaded && (
+                    <button onClick={togglePause} disabled={busy}
+                        className="w-full text-[11.5px] py-2 rounded-lg font-semibold disabled:opacity-40"
+                        style={{ background: paused ? 'rgba(244,63,94,.85)' : 'rgba(255,255,255,.08)', color: paused ? '#fff' : 'rgba(255,255,255,.8)', border: '1px solid rgba(255,255,255,.12)' }}>
+                        {paused ? '● 已暂停诗歌推入（点击恢复）' : '暂停诗歌推入'}
+                    </button>
+                )}
+            </div>
+            <div className="flex-1 overflow-y-auto vr-reader-scroll px-3 py-3 space-y-2.5">
+                {!loaded ? (
+                    <p className="text-[11px] text-white/35 text-center py-8">填 token 后点「拉取」。</p>
+                ) : poems.length === 0 ? (
+                    <p className="text-[11px] text-white/35 text-center py-8">后端还没有诗。</p>
+                ) : poems.map(p => (
+                    <div key={p.id} className="rounded-xl overflow-hidden" style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.07)' }}>
+                        <div className="flex items-center gap-2 px-3 py-2 border-b border-white/8">
+                            <span className="text-[12px] font-bold text-indigo-50 truncate" style={{ fontFamily: `'Noto Serif SC',serif` }}>《{p.title}》</span>
+                            <span className="text-[8.5px] tabular-nums shrink-0" style={{ color: p.status === 'open' ? 'rgba(134,239,172,.7)' : 'rgba(165,180,252,.5)' }}>{p.status === 'open' ? `写作中 ${p.lineCount}/${p.targetLines}` : `已封存 ${p.lineCount}句`}</span>
+                            {confirmPoem === p.id ? (
+                                <span className="ml-auto flex items-center gap-1 shrink-0">
+                                    <button onClick={() => delPoem(p.id)} disabled={busy} className="text-[10px] px-2 py-0.5 rounded-full text-white font-semibold" style={{ background: 'rgba(244,63,94,.85)' }}>确认删整首</button>
+                                    <button onClick={() => setConfirmPoem(null)} className="text-[10px] px-2 py-0.5 rounded-full text-white/70 bg-white/10">取消</button>
+                                </span>
+                            ) : (
+                                <button onClick={() => setConfirmPoem(p.id)} className="ml-auto text-[10px] px-2 py-0.5 rounded-full text-rose-200/90 bg-white/5 border border-rose-300/20 shrink-0">删整首</button>
+                            )}
+                        </div>
+                        <div className="px-3 py-2 space-y-1">
+                            {(p.lines || []).map(l => (
+                                <div key={l.seq} className="flex items-start gap-2 group">
+                                    <span className="tabular-nums text-[9px] mt-1 shrink-0 w-4 text-right text-indigo-300/40">{l.seq}</span>
+                                    <span className="flex-1 text-[12px] leading-relaxed text-white/85" style={{ fontStyle: 'italic' }}>{l.content} <span className="text-indigo-300/35 text-[9px] not-italic">— {l.pen}</span></span>
+                                    <button onClick={() => delLine(p.id, l.seq)} disabled={busy}
+                                        className="shrink-0 text-rose-300/70 active:text-rose-400 px-1" title="删这一句"><Trash size={12} /></button>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                ))}
+            </div>
+        </div>
+    );
+};
+
 const SignalPanel: React.FC<{ addToast?: (m: string, t?: any) => void }> = ({ addToast }) => {
     const [state, setState] = useState<SignalState | null>(null);
     const [feed, setFeed] = useState<SignalPoem[]>([]);
@@ -1608,6 +1706,7 @@ const SignalPanel: React.FC<{ addToast?: (m: string, t?: any) => void }> = ({ ad
     const [tab, setTab] = useState<'falling' | 'sky'>('falling');
     const [mineOnly, setMineOnly] = useState(false);
     const [openPoem, setOpenPoem] = useState<SignalPoem | null>(null);
+    const [adminOpen, setAdminOpen] = useState(false);
 
     const load = useCallback(async () => {
         try { setState(await Signal.current()); setOffline(false); }
@@ -1637,7 +1736,10 @@ const SignalPanel: React.FC<{ addToast?: (m: string, t?: any) => void }> = ({ ad
                 <div className="flex items-baseline gap-2">
                     <span className="text-[12.5px] tracking-[0.18em] text-indigo-50" style={{ fontFamily: `'Noto Serif SC',serif` }}>{bk?.title || '信号坠落处'}</span>
                     {bk?.subtitle && <span className="text-[9.5px] text-indigo-300/60 tracking-wider">{bk.subtitle}</span>}
-                    {bk && <span className="ml-auto text-[9px] text-white/35 tabular-nums">本册 {bk.poemCount}/{bk.poemsTarget} 首</span>}
+                    {state?.paused && <span className="text-[8px] rounded-full px-1.5 py-[1px] text-rose-100 shrink-0" style={{ background: 'rgba(244,63,94,.3)', border: '1px solid rgba(244,63,94,.5)' }}>已暂停推入</span>}
+                    {/* 后台只在本地 dev 出现；线上普通用户看不到，仍需 ADMIN_TOKEN */}
+                    {import.meta.env.DEV && <button onClick={() => setAdminOpen(true)} className="ml-auto text-[9px] px-2 py-0.5 rounded-full bg-white/8 text-amber-100/80 active:bg-white/15">后台</button>}
+                    {bk && <span className={`${import.meta.env.DEV ? '' : 'ml-auto'} text-[9px] text-white/35 tabular-nums`}>本册 {bk.poemCount}/{bk.poemsTarget} 首</span>}
                 </div>
                 <p className="mt-1 text-[10px] leading-relaxed text-indigo-200/55 whitespace-pre-line" style={{ fontStyle: 'italic' }}>{SIGNAL_EPIGRAPH}</p>
                 {bk?.theme && <div className="text-[9.5px] text-indigo-300/55 mt-1">主题：{bk.theme}</div>}
@@ -1737,6 +1839,9 @@ const SignalPanel: React.FC<{ addToast?: (m: string, t?: any) => void }> = ({ ad
                     <button onClick={() => setOpenPoem(null)} className="shrink-0 mx-auto mb-4 mt-1 text-[11px] text-white/60 rounded-full px-5 py-1.5 bg-white/8 active:bg-white/15" style={{ marginBottom: vrBottomPad('1rem') }}>合上</button>
                 </div>
             )}
+
+            {/* 后台（dev-only）：删诗/删句/暂停推入 */}
+            {adminOpen && <SignalAdminPanel onClose={() => { setAdminOpen(false); void load(); void loadFeed(mineOnly); }} addToast={addToast} />}
         </div>
     );
 };

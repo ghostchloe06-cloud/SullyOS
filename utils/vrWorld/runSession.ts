@@ -271,6 +271,8 @@ export async function runVRSession(deps: VRSessionDeps): Promise<VRSessionResult
             } catch {
                 return { ok: false, room: 'signal', reason: 'signal-offline' };
             }
+            // 管理员暂停推入 → 这次不写诗、不调 LLM，安静跳过
+            if (signalState.paused) return { ok: false, room: 'signal', reason: 'signal-paused' };
             const bk = signalState.booklet;
             if (signalState.poem && signalState.poem.status === 'open') {
                 signalMode = 'append';
