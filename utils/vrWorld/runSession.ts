@@ -124,10 +124,12 @@ function nameLine(name: string, act: string): string {
 }
 
 /** roll 一个房间：图书馆需有书；听歌房需有歌单或正在放歌；留言簿/娱乐室/邮局/剧院恒可去。 */
-function rollRoom(char: CharacterProfile, novels: VRWorldNovel[], musicState: VRMusicRoomState | null, prefer?: VRRoomId): VRRoomId | null {
-    const pool: VRRoomId[] = ['guestbook', 'gym', 'postoffice', 'theater', 'signal'];
+function rollRoom(char: CharacterProfile, novels: VRWorldNovel[], musicState: VRMusicRoomState | null, prefer?: VRRoomId, exclude?: VRRoomId): VRRoomId | null {
+    let pool: VRRoomId[] = ['guestbook', 'gym', 'postoffice', 'theater', 'signal'];
     if (novels.length > 0) pool.push('library');
     if (gatherCharSongs(char).length > 0 || musicState?.nowPlaying) pool.push('music');
+    if (exclude) pool = pool.filter(r => r !== exclude); // 碰壁改投时排除原房间
+    if (pool.length === 0) return null;
     if (prefer && pool.includes(prefer)) return prefer; // 指定的房间可用则去，否则回退随机
     return pool[Math.floor(Math.random() * pool.length)];
 }
@@ -144,9 +146,9 @@ export async function runVRSession(deps: VRSessionDeps): Promise<VRSessionResult
 
     const novels = await DB.getVRNovels();
     const musicState = await DB.getVRMusicRoom();
-    const roomId = rollRoom(char, novels, musicState, forcedRoom);
+    let roomId = rollRoom(char, novels, musicState, forcedRoom);
     if (!roomId) return { ok: false, reason: 'no-content' };
-    const room = getRoom(roomId);
+    let room = getRoom(roomId);
 
     running.add(char.id);
     // 信号坠落处的写诗会话锁 token（抢到才有值）；finally 里兜底放锁
@@ -191,6 +193,28 @@ export async function runVRSession(deps: VRSessionDeps): Promise<VRSessionResult
         let signalRolledLines = 0;
         const recallNames = new Set<string>();
         const recallExtra: string[] = [];
+
+        // roll 到信号坠落处时：在调 LLM 之前先抢写诗会话锁。
+        // 抢到 → 读到锁内最新全文往下写；抢不到（有别的 char 正在写）→ 改投一个别的房间，
+        // 这一轮照样干活，且全程仍只调一次 LLM（抢锁/改投都在 LLM 之前完成）。
+        if (room.id === 'signal') {
+            let lk: Awaited<ReturnType<typeof Signal.lock>>;
+            try { lk = await Signal.lock(); }
+            catch { return { ok: false, room: 'signal', reason: 'signal-offline' }; }
+            if (lk.acquired && lk.state) {
+                signalLockToken = lk.token || null;
+                signalState = lk.state;
+            } else if (forcedRoom === 'signal' || lk.paused) {
+                // 用户明确点了「去信号坠落处」或后台已暂停 → 不改投，本轮作罢
+                return { ok: false, room: 'signal', reason: lk.paused ? 'signal-paused' : 'signal-busy' };
+            } else {
+                // 碰壁：改投一个非 signal 房间，照常进下面的加载与那唯一一次 LLM
+                const alt = rollRoom(char, novels, musicState, undefined, 'signal');
+                if (!alt) return { ok: false, room: 'signal', reason: 'signal-busy' };
+                roomId = alt;
+                room = getRoom(alt);
+            }
+        }
 
         if (room.id === 'library') {
             novel = pickNovel(novels, char)!;
@@ -267,19 +291,8 @@ export async function runVRSession(deps: VRSessionDeps): Promise<VRSessionResult
             occupantsOf('theater').forEach(n => recallNames.add(n));
             roomTurn = buildTheaterRoomTurn(occupantsOf('theater'), char.name);
         } else if (room.id === 'signal') {
-            // 信号坠落处：跨用户接龙诗。先抢写诗会话锁 —— 同一时刻全局只一个 char 在写。
-            // 抢不到（有人正在写 / 已暂停）就在调 LLM 前走人，不浪费 token。
-            let lk: Awaited<ReturnType<typeof Signal.lock>>;
-            try {
-                lk = await Signal.lock();
-            } catch {
-                return { ok: false, room: 'signal', reason: 'signal-offline' };
-            }
-            if (!lk.acquired || !lk.state) {
-                return { ok: false, room: 'signal', reason: lk.paused ? 'signal-paused' : 'signal-busy' };
-            }
-            signalLockToken = lk.token || null;
-            signalState = lk.state;
+            // 写诗会话锁已在 if-chain 之前抢到，signalState（锁内最新全文）已就绪。
+            if (!signalState) return { ok: false, room: 'signal', reason: 'signal-busy' };
             const bk = signalState.booklet;
             if (signalState.poem && signalState.poem.status === 'open') {
                 signalMode = 'append';

@@ -61,6 +61,7 @@
 
 鲁棒性要点：
 - **写诗会话锁（并发的主防线）**：同一时刻全局只允许一个 char 在「读最新全文→生成→写」。`runSession` 在**调 LLM 之前**先 `Signal.lock()`：抢到才往下走、读到的是锁内最新全文，写完 `Signal.unlock()`；抢不到的 char**当场走人，不调 LLM、不浪费 token**。这同时根治了接龙撞车（B 接的不再是「一步前的诗」）和起新篇撞车（不会两人同时起头）。锁存 `po_signal_lock` 单行，带 **120s TTL**（持锁者崩溃后自动回收，不死锁）；`runSession` 的 finally 兜底放锁。
+  - **碰壁改投**：自主登入 roll 到信号坠落处却没抢到锁时，`runSession` 会 `rollRoom(..., exclude:'signal')` **改投一个别的房间**，这一轮照样干活——而且抢锁/改投都在 LLM 之前完成，**全程仍只调一次 LLM**。仅当用户**手动指定**去信号坠落处（`forcedRoom='signal'`）或后台已暂停时才不改投、本轮作罢。
   - 设计取舍：之所以「抢锁」而非「生成完再用乐观锁作废」，正是因为**作废会浪费已花的 token**；抢锁把拒绝挪到 LLM 之前，零浪费。代价是同一时刻全局一个写诗者（正合「每个时段只一个 char」的设定）。
 - **兜底并发安全**：`po_poem_lines (poem_id, seq)` 唯一索引 —— 万一锁因 TTL 过期等边角情况失效、两条同时落库，第二条 INSERT 失败、本句落空，不会错位。`line_count` 由 `COUNT(*)` 实算回填，不做易漂移的自增。
 - **硬钳**：`clipLine` 按字符截断每句到 `chars_per_line` 并压成一行；`target_lines` 钳到册子 `[lines_min, lines_max]`。
