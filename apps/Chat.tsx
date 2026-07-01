@@ -810,12 +810,12 @@ const Chat: React.FC = () => {
             // 仅"char 发送的、落到底部的最新一条"才触发：assistant 且非见面/通话等旁路消息。
             const src = last?.metadata?.source;
             if (last?.role === 'assistant' && src !== 'date' && src !== 'call') {
-                playWhiteboxSound(resolveActiveSound(char?.chromeCustomCss, char?.chatSound, osTheme.chatChromeCustomCss));
+                playWhiteboxSound(resolveActiveSound(char?.chromeCustomCss, char?.chatSound, osTheme.chatChromeCustomCss, osTheme.chatSound));
             }
         }
         // 基线只增不减：翻旧历史让末尾 ID 变小时不下调，返回底部也不会重复触发。
         sync.maxId = sync.maxId == null ? lastId : Math.max(sync.maxId, lastId);
-    }, [messages, activeCharacterId, osTheme.chatChromeCustomCss, char?.chromeCustomCss, char?.chatSound]);
+    }, [messages, activeCharacterId, osTheme.chatChromeCustomCss, osTheme.chatSound, char?.chromeCustomCss, char?.chatSound]);
 
     const formatTime = (ts: number) => {
         return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
@@ -3193,7 +3193,13 @@ const Chat: React.FC = () => {
                                 </div>
                                 <button onClick={() => setModalType('none')} className="px-2 text-xl leading-none text-slate-400 hover:text-slate-600">{'×'}</button>
                             </div>
-                            <WhiteboxSoundEditor sound={curSound} bound={isBound} onChangeSound={changeSound} onChangeBound={changeBound} />
+                            <WhiteboxSoundEditor
+                                sound={curSound}
+                                bound={isBound}
+                                onChangeSound={changeSound}
+                                onChangeBound={changeBound}
+                                hint={<>🔔 只在 <b>ta 新发的消息成为最新一条</b> 时响一次。这里是<b>该角色专属</b>；不设则用「外观 → 聊天界面」里的全局默认提示音。</>}
+                            />
                         </div>
                     </div>
                 );

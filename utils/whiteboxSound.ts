@@ -119,15 +119,18 @@ export const upsertWhiteboxSound = (css: string, sound: WhiteboxSound | null): s
 };
 
 /**
- * 求出实际生效的提示音。优先级：角色白框指令（已绑定）→ 角色独立字段（未绑定）→ 全局白框指令。
- * 这样无论提示音存在「绑进白框的注释」还是「独立字段」里都能播，且角色始终盖过全局。
+ * 求出实际生效的提示音。优先级（从高到低）：
+ *   角色白框指令（角色已绑定）→ 角色独立字段（角色未绑定）→ 全局白框指令 → 全局默认字段。
+ * 这样角色设了就用角色的，没设就回落到全局默认；两种存法（绑进注释 / 独立字段）都能播。
  */
 export const resolveActiveSound = (
     charCss?: string | null,
     charSound?: WhiteboxSound | null,
     globalCss?: string | null,
+    globalSound?: WhiteboxSound | null,
 ): WhiteboxSound | null => {
-    return parseWhiteboxSound(charCss) ?? (charSound && charSound.src ? charSound : null) ?? parseWhiteboxSound(globalCss);
+    const pick = (s?: WhiteboxSound | null) => (s && s.src ? s : null);
+    return parseWhiteboxSound(charCss) ?? pick(charSound) ?? parseWhiteboxSound(globalCss) ?? pick(globalSound);
 };
 
 // 提示音的「独立分享码」：SULLYSND1: + base64(utf8(JSON))。让用户不带白框、单独把提示音发给别人。

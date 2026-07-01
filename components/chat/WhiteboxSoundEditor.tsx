@@ -42,12 +42,16 @@ const copyText = async (text: string): Promise<boolean> => {
 
 interface Props {
     sound: WhiteboxSound | null;
-    bound: boolean;
     onChangeSound: (sound: WhiteboxSound | null) => void;
-    onChangeBound: (bound: boolean) => void;
+    /** 「绑定到白框」开关；全局默认提示音不涉及绑定，传 false 隐藏。默认显示。 */
+    showBind?: boolean;
+    bound?: boolean;
+    onChangeBound?: (bound: boolean) => void;
+    /** 顶部提示条文案（区分「角色版」与「全局默认版」）。 */
+    hint?: React.ReactNode;
 }
 
-const WhiteboxSoundEditor: React.FC<Props> = ({ sound, bound, onChangeSound, onChangeBound }) => {
+const WhiteboxSoundEditor: React.FC<Props> = ({ sound, onChangeSound, showBind = true, bound = false, onChangeBound, hint }) => {
     const volume = sound?.volume ?? 0.6;
     const src = sound?.src || '';
     const isBuiltin = !!BUILTIN_SOUNDS[src];
@@ -128,7 +132,7 @@ const WhiteboxSoundEditor: React.FC<Props> = ({ sound, bound, onChangeSound, onC
     return (
         <div className="space-y-4">
             <div className="rounded-2xl border border-amber-100 bg-amber-50/70 px-3.5 py-2.5 text-[11px] leading-relaxed text-amber-700">
-                🔔 提示音只在 <b>ta 新发的消息成为最新一条</b> 时响一次；你自己发消息、翻旧记录都不会响。
+                {hint ?? <>🔔 提示音只在 <b>ta 新发的消息成为最新一条</b> 时响一次；你自己发消息、翻旧记录都不会响。</>}
             </div>
 
             {/* 内置音效 */}
@@ -196,25 +200,27 @@ const WhiteboxSoundEditor: React.FC<Props> = ({ sound, bound, onChangeSound, onC
                 </div>
             </div>
 
-            {/* 绑定到白框 开关 */}
-            <div className="rounded-2xl border border-slate-100 bg-slate-50/70 px-3.5 py-3">
-                <label className="flex cursor-pointer items-start gap-3">
-                    <input
-                        type="checkbox"
-                        checked={bound}
-                        onChange={(e) => onChangeBound(e.target.checked)}
-                        className="mt-0.5 h-4 w-4 shrink-0 accent-indigo-500"
-                    />
-                    <span className="min-w-0">
-                        <span className="block text-[12px] font-bold text-slate-700">绑定到白框一起分享</span>
-                        <span className="block text-[10px] leading-snug text-slate-400">
-                            {bound
-                                ? '已绑定：分享这套白框时会带上提示音（上传的音频会进分享码，可能变大）。'
-                                : '未绑定：白框分享码保持轻量、只含皮肤；提示音用下方分享码单独传。'}
+            {/* 绑定到白框 开关（全局默认版不显示） */}
+            {showBind && (
+                <div className="rounded-2xl border border-slate-100 bg-slate-50/70 px-3.5 py-3">
+                    <label className="flex cursor-pointer items-start gap-3">
+                        <input
+                            type="checkbox"
+                            checked={bound}
+                            onChange={(e) => onChangeBound?.(e.target.checked)}
+                            className="mt-0.5 h-4 w-4 shrink-0 accent-indigo-500"
+                        />
+                        <span className="min-w-0">
+                            <span className="block text-[12px] font-bold text-slate-700">绑定到白框一起分享</span>
+                            <span className="block text-[10px] leading-snug text-slate-400">
+                                {bound
+                                    ? '已绑定：分享这套白框时会带上提示音（上传的音频会进分享码，可能变大）。'
+                                    : '未绑定：白框分享码保持轻量、只含皮肤；提示音用下方分享码单独传。'}
+                            </span>
                         </span>
-                    </span>
-                </label>
-            </div>
+                    </label>
+                </div>
+            )}
 
             {/* 提示音独立分享码 */}
             <div className="flex items-center gap-2">

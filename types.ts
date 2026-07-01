@@ -109,6 +109,8 @@ export interface OSTheme {
    *  以及顶栏各零件 .sully-chat-back / .sully-chat-avatar / .sully-chat-name / .sully-chat-status /
    *  .sully-chat-buffs / .sully-chat-token / .sully-chat-trigger。可换色 / 贴图 / 改外形 / 挪位。 */
   chatChromeCustomCss?: string;
+  /** 全局默认「白框提示音」：某角色未单独设提示音时回落到这里。src 同角色版（内置 key / 音频直链 / data:audio）。 */
+  chatSound?: { src: string; volume?: number };
   /** 隐藏顶栏的情绪 buff 栏。 */
   chatHideHeaderBuffs?: boolean;
 }
