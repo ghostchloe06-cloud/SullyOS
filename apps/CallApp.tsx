@@ -296,7 +296,6 @@ const CallApp: React.FC = () => {
   const [callRecords, setCallRecords] = useState<CallRecord[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string>(() => `call-${Date.now()}`);
   const [draftInput, setDraftInput] = useState('');
-  const [draftKeyboardActive, setDraftKeyboardActive] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const sttSessionRef = useRef<SttSession | null>(null);
   const sttSupported = useMemo(() => isSttSupported(), []);
@@ -347,7 +346,6 @@ const CallApp: React.FC = () => {
   }, [selectedChar?.bubbleStyle, customThemes]);
   const callScrollableRef = useRef<HTMLDivElement | null>(null);
   const draftInputRef = useRef<HTMLInputElement | null>(null);
-  const keyboardSettleTimersRef = useRef<number[]>([]);
   // 输入面板默认展开，但「进入通话」时不能自动聚焦输入框——移动端一聚焦就弹
   // 键盘、把整个界面往上顶（用户反馈的「一进通话就飞上去」）。只在用户后续
   // 手动展开面板时才聚焦，初次挂载跳过。
@@ -427,28 +425,11 @@ const CallApp: React.FC = () => {
     });
     return url;
   };
-  const clearKeyboardSettleTimers = () => {
-    keyboardSettleTimersRef.current.forEach(id => window.clearTimeout(id));
-    keyboardSettleTimersRef.current = [];
-  };
-  const settleCallViewportAfterKeyboard = () => {
-    clearKeyboardSettleTimers();
-    const settle = () => {
-      if (document.activeElement === draftInputRef.current) return;
-      window.scrollTo(0, 0);
-    };
-    settle();
-    keyboardSettleTimersRef.current = [80, 220, 420].map(delay => window.setTimeout(settle, delay));
-  };
-  const isViewportKeyboardOpen = () => {
-    const vv = window.visualViewport;
-    if (!vv) return false;
-    return Math.max(0, window.innerHeight - vv.height - vv.offsetTop) > 120;
-  };
-  const callColumnStyle = {
-    paddingBottom: draftKeyboardActive ? 'var(--keyboard-inset, 0px)' : '0px',
-    transition: 'padding-bottom 0.18s ease-out',
-  };
+  // 键盘避让统一交给全局机制：index.html 的 meta interactive-widget=resizes-content
+  // 让软键盘弹出时可视区自动缩小、布局回流；iOS 全屏 PWA 则由 utils/iosStandalone.ts
+  // 让 app 高度跟随可视区。CallApp 不再自己 paddingBottom / window.scrollTo 兜底——
+  // 那套自定义逻辑会和全局回流叠加，在 Chrome/Edge 上把整个界面顶上去且回不来
+  // （聊天等其它 App 从不这么做，也就没这个 bug）。
   // Resume from suspended call — restore bubbles & session state
   useEffect(() => {
     if (suspendedCall && viewMode === 'role-select') {
@@ -464,7 +445,6 @@ const CallApp: React.FC = () => {
     }
   }, [suspendedCall]);
   useEffect(() => () => {
-    clearKeyboardSettleTimers();
     revokeSessionBlobs();
     sttSessionRef.current?.stop();
   }, []);
@@ -520,29 +500,7 @@ const CallApp: React.FC = () => {
     // 跳过初次挂载的自动聚焦，避免进入通话时键盘把界面顶飞；之后用户主动展开才聚焦。
     if (!inputPanelMountedRef.current) { inputPanelMountedRef.current = true; return; }
     if (showInputPanel) draftInputRef.current?.focus();
-    else {
-      setDraftKeyboardActive(false);
-      settleCallViewportAfterKeyboard();
-    }
   }, [showInputPanel]);
-  useEffect(() => {
-    const handleViewportChange = () => {
-      if (isViewportKeyboardOpen()) {
-        if (document.activeElement === draftInputRef.current) setDraftKeyboardActive(true);
-        return;
-      }
-      setDraftKeyboardActive(false);
-      settleCallViewportAfterKeyboard();
-    };
-    window.visualViewport?.addEventListener('resize', handleViewportChange);
-    window.visualViewport?.addEventListener('scroll', handleViewportChange);
-    window.addEventListener('resize', handleViewportChange);
-    return () => {
-      window.visualViewport?.removeEventListener('resize', handleViewportChange);
-      window.visualViewport?.removeEventListener('scroll', handleViewportChange);
-      window.removeEventListener('resize', handleViewportChange);
-    };
-  }, []);
   // 开场白：进入通话后角色自动先开口
   const greetingFiredRef = useRef<string | null>(null);
   useEffect(() => {
@@ -1375,10 +1333,9 @@ const CallApp: React.FC = () => {
             style={{ top: p.top, left: p.left, width: p.s, height: p.s, opacity: 0.5, animationDelay: `${i * 0.4}s`, boxShadow: `0 0 6px ${accentColor}` }} />
         ))}
       </div>
-      <div className="relative z-10 flex flex-col h-full" style={callColumnStyle}>
-        {/* keyboard-inset：键盘弹起时把整列内容抬到键盘上方，避免浏览器把界面整体顶飞
-            （Chrome 等浏览器未生效 interactive-widget=resizes-content 时的兜底）。
-            iOS 全屏 PWA 下 keyboard-inset 恒为 0，键盘避让改由 app 高度跟随可视区统一处理（见 utils/iosStandalone.ts）。 */}
+      <div className="relative z-10 flex flex-col h-full">
+        {/* 键盘避让不在这里做 paddingBottom 兜底：交给全局 interactive-widget=resizes-content
+            与 iOS 全屏 PWA 的 app 高度跟随可视区（见 utils/iosStandalone.ts），和聊天等其它 App 一致。 */}
       {/* top channel bar */}
       <div className="relative px-5" style={{ paddingTop: 'max(2.25rem, var(--safe-top))' }}>
         <div className="absolute left-5 leading-tight" style={{ top: 'max(2.25rem, var(--safe-top))' }}>
@@ -1524,13 +1481,13 @@ const CallApp: React.FC = () => {
               ref={draftInputRef}
               value={draftInput}
               onChange={(e) => setDraftInput(e.target.value)}
-              onFocus={() => {
-                clearKeyboardSettleTimers();
-                setDraftKeyboardActive(true);
-              }}
-              onBlur={() => {
-                setDraftKeyboardActive(false);
-                settleCallViewportAfterKeyboard();
+              onFocus={(e) => {
+                // 和聊天一致：只做一次轻量的「就近滚入可视」，不再手动 scrollTo / 改 padding。
+                const el = e.currentTarget;
+                window.requestAnimationFrame(() => {
+                  if (document.activeElement !== el) return;
+                  try { el.scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch {}
+                });
               }}
               className="flex-1 bg-transparent px-2 text-sm outline-none placeholder:text-white/35"
               placeholder={isListening ? '在听你说……' : sendingBusy ? `${selectedChar?.name || '对方'}正在想……` : `想对${selectedChar?.name || '对方'}说什么？`}

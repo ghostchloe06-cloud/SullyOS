@@ -933,7 +933,10 @@ ${isInitialGeneration ? `
               } as CharacterProfile;
 
               await DB.saveCharacter(newChar);
-              addCharacter(); // Force refresh (naive)
+              // 不要调用 addCharacter()——它不是"刷新"，而是真的新建一个空白
+              // "New Character" 并写进 DB，reload 后就会多出一张空白卡。
+              // 导入的角色已经存进了 DB（上一行），reload 时 OSContext 会从
+              // DB 重新读全部角色，导入的角色自然会出现，无需手动刷新 state。
               setTimeout(() => window.location.reload(), 500);
 
               const wbToastSuffix = importedWbCount > 0 ? `，并同步 ${importedWbCount} 本世界书` : '';
