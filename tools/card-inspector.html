@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>角色卡危险信息检测 · 本地测试版</title>
+<style>
+  :root {
+    --bg: #0f1117; --panel: #171a23; --panel2: #1e222d; --line: #2a2f3c;
+    --txt: #e6e8ee; --muted: #9aa2b1; --accent: #7c9cff;
+    --danger: #ff5d6c; --danger-bg: #3a1620; --warn: #ffb454; --warn-bg: #3a2c14;
+    --ok: #46d19e; --ok-bg: #12291f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font: 14px/1.6 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg); color: var(--txt); padding: 24px;
+  }
+  .wrap { max-width: 900px; margin: 0 auto; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin-bottom: 20px; }
+  .badge { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--panel2); color: var(--muted); border: 1px solid var(--line); }
+  .drop {
+    border: 2px dashed var(--line); border-radius: 14px; padding: 34px 20px; text-align: center;
+    background: var(--panel); transition: .15s; cursor: pointer;
+  }
+  .drop.hover { border-color: var(--accent); background: var(--panel2); }
+  .drop b { color: var(--accent); }
+  textarea {
+    width: 100%; min-height: 110px; margin-top: 12px; background: var(--panel); color: var(--txt);
+    border: 1px solid var(--line); border-radius: 10px; padding: 12px; font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace; resize: vertical;
+  }
+  .row { display: flex; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+  button {
+    background: var(--accent); color: #0b1020; border: 0; border-radius: 9px; padding: 9px 16px;
+    font-weight: 600; cursor: pointer; font-size: 13px;
+  }
+  button.ghost { background: transparent; color: var(--muted); border: 1px solid var(--line); }
+  .verdict { margin: 22px 0 14px; padding: 16px 18px; border-radius: 12px; border: 1px solid var(--line); font-weight: 600; }
+  .verdict.danger { background: var(--danger-bg); border-color: var(--danger); color: #ffd7dc; }
+  .verdict.warn { background: var(--warn-bg); border-color: var(--warn); color: #ffe6c2; }
+  .verdict.ok { background: var(--ok-bg); border-color: var(--ok); color: #c7f5e3; }
+  .verdict .big { font-size: 17px; }
+  .sec { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; margin: 14px 0; overflow: hidden; }
+  .sec > h2 { font-size: 14px; margin: 0; padding: 12px 16px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 8px; }
+  .sec .body { padding: 6px 16px 14px; }
+  .item { padding: 9px 0; border-bottom: 1px dashed var(--line); }
+  .item:last-child { border-bottom: 0; }
+  .path { font: 12px ui-monospace, Menlo, Consolas, monospace; color: var(--accent); word-break: break-all; }
+  .val { font: 12px ui-monospace, Menlo, Consolas, monospace; color: #ffd7dc; word-break: break-all; }
+  .why { color: var(--muted); font-size: 12px; }
+  .pill { display: inline-block; font-size: 11px; padding: 1px 7px; border-radius: 6px; margin-right: 6px; }
+  .pill.red { background: var(--danger-bg); color: #ffb3bc; border: 1px solid var(--danger); }
+  .pill.yellow { background: var(--warn-bg); color: #ffd79a; border: 1px solid var(--warn); }
+  .pill.green { background: var(--ok-bg); color: #b0efd6; border: 1px solid var(--ok); }
+  .empty { color: var(--muted); font-size: 13px; padding: 8px 0; }
+  .foot { color: var(--muted); font-size: 12px; margin-top: 24px; line-height: 1.7; }
+  code { background: var(--panel2); padding: 1px 5px; border-radius: 5px; font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🕵️ 角色卡危险信息检测 <span class="badge">本地测试版 · 不接入正式版</span></h1>
+  <div class="sub">拖入 / 选择 / 粘贴一张角色卡 JSON，检测里面是否带了 API 密钥等危险信息。全程在本地浏览器运行，不上传任何数据。</div>
+
+  <div class="drop" id="drop">
+    把 <b>角色卡 .json</b> 拖到这里，或 <b>点击选择文件</b>
+    <input type="file" id="file" accept=".json,application/json" hidden />
+  </div>
+  <textarea id="paste" placeholder="…或者直接把角色卡 JSON 粘贴到这里"></textarea>
+  <div class="row">
+    <button id="scan">开始检测</button>
+    <button class="ghost" id="clear">清空</button>
+  </div>
+
+  <div id="out"></div>
+
+  <div class="foot">
+    检测逻辑：<br>
+    1. <b>深度递归扫描</b>整份 JSON——任何<b>字段名</b>像密钥（apiKey / secret / token / authorization / bearer / password / anonKey …）或<b>字段值</b>像密钥（<code>sk-…</code>、<code>Bearer …</code>、JWT、长十六进制/base64）的，一律标红。将来新增字段也能覆盖。<br>
+    2. 按已知清单核对<b>美化 / 语言 / 运行时状态</b>字段是否存在（导入正式版时这些会被剥离，但老卡文件本身仍可能带着）。<br>
+    密钥值默认打码显示，只露头尾几位供你比对。
+  </div>
+</div>
+
+<script>
+// ————— 已知字段清单（与 utils/characterCard.ts 的 CARD_STRIPPED_FIELDS 对应）—————
+const CREDENTIAL_CARRIERS = {
+  emotionConfig:   '情绪 buff API（emotionConfig.api）',
+  embeddingConfig: '记忆宫殿向量 embedding API',
+  proactiveConfig: '主动消息 副 API（secondaryApi）',
+  activeMsg2Config:'主动消息2 副 API（secondaryApi）',
+};
+const BEAUTIFY = ['embeddedTheme','bubbleStyle','chromeCustomCss','chatSound','chatSoundBound','chatBackground','dateBackground','thinkingChainStyle','thinkingChainCustomColors','thinkingChainCustomPrompt'];
+const LANGUAGE = ['chatVoiceLang','dateVoiceLang','callVoiceLang','chatVoiceEnabled','dateVoiceEnabled'];
+const RUNTIME  = ['activeBuffs','buffInjection','memoryPalaceInjection','savedDateState','savedRoomState','lastRoomDate','phoneState','dreamLogs','specialMomentRecords','vrState'];
+
+// 字段名像密钥
+const SECRET_KEY_NAME = /(api[_-]?key|secret|token|authorization|auth|bearer|password|passwd|pwd|access[_-]?key|private[_-]?key|anon[_-]?key|credential|apikey)/i;
+// 字段值像密钥
+const SECRET_VALUE = [
+  { re: /\bsk-[A-Za-z0-9_\-]{12,}/, label: 'OpenAI 风格密钥 sk-…' },
+  { re: /\bBearer\s+[A-Za-z0-9._\-]{12,}/i, label: 'Bearer 令牌' },
+  { re: /\beyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{6,}/, label: 'JWT' },
+  { re: /\b[A-Za-z0-9]{32,}\b/, label: '疑似长密钥 / 哈希（32+ 位）' },
+];
+// 这些字段名即使很长也别误报成密钥
+const VALUE_WHITELIST_KEYS = /^(id|systemPrompt|description|worldview|content|summary|memoryText|impression|avatar|src|prompt|notes|bio|title|label|text)$/i;
+
+function mask(v) {
+  if (typeof v !== 'string') v = String(v);
+  if (v.length <= 8) return '•'.repeat(v.length);
+  return v.slice(0, 4) + '••••••' + v.slice(-3) + ' (' + v.length + '字)';
+}
+
+function looksLikeSecretValue(v) {
+  if (typeof v !== 'string' || v.length < 12) return null;
+  if (v.startsWith('data:') || /^https?:\/\//.test(v) && !/[?&](key|token|secret)=/i.test(v)) return null;
+  for (const p of SECRET_VALUE) { if (p.re.test(v)) return p.label; }
+  return null;
+}
+
+// 深度递归扫描，返回命中项
+function deepScan(obj, path, hits) {
+  if (obj === null || typeof obj !== 'object') return;
+  for (const [k, v] of Object.entries(obj)) {
+    const p = path ? path + '.' + k : k;
+    const isSecretName = SECRET_KEY_NAME.test(k);
+    if (isSecretName && v != null && v !== '' && typeof v !== 'object') {
+      hits.push({ path: p, value: mask(v), why: '字段名疑似凭据（' + k + '）' });
+    } else if (typeof v === 'string' && !VALUE_WHITELIST_KEYS.test(k)) {
+      const lbl = looksLikeSecretValue(v);
+      if (lbl) hits.push({ path: p, value: mask(v), why: '字段值疑似' + lbl });
+    }
+    if (v && typeof v === 'object') deepScan(v, p, hits);
+  }
+}
+
+function esc(s){ return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+function render(data) {
+  const out = document.getElementById('out');
+  let html = '';
+
+  // 有效性
+  const isCard = data && data.type === 'sully_character_card';
+  const name = data && data.name ? data.name : '(无名)';
+
+  // 1. 深度扫描密钥
+  const secretHits = [];
+  deepScan(data, '', secretHits);
+  // 去重（同 path）
+  const seen = new Set(); const secrets = secretHits.filter(h => !seen.has(h.path) && seen.add(h.path));
+
+  // 2. 已知凭据载体（即使值为空也提示存在）
+  const carriers = [];
+  for (const [f, desc] of Object.entries(CREDENTIAL_CARRIERS)) {
+    if (data && data[f] != null) carriers.push({ field: f, desc });
+  }
+  const present = (arr) => arr.filter(f => data && data[f] != null);
+  const beaut = present(BEAUTIFY), lang = present(LANGUAGE), runtime = present(RUNTIME);
+
+  // 结论横幅
+  const hasSecret = secrets.length > 0;
+  if (hasSecret) {
+    html += `<div class="verdict danger"><div class="big">🔴 危险：这张卡里带了 ${secrets.length} 处疑似密钥 / 凭据</div>
+      不要把这张卡发给别人。导入到已修复的正式版时这些会被自动剥离，但卡文件本身仍在泄漏。</div>`;
+  } else if (carriers.length || beaut.length || lang.length || runtime.length) {
+    html += `<div class="verdict warn"><div class="big">🟡 未发现明文密钥，但带了可被剥离的隐私 / 覆盖类字段</div>
+      没扫到密钥值，但存在美化 / 语言 / 运行时状态或空的凭据配置对象（见下）。</div>`;
+  } else {
+    html += `<div class="verdict ok"><div class="big">🟢 干净：未检出密钥或隐私字段</div></div>`;
+  }
+
+  html += `<div class="sec"><h2>📇 基本信息</h2><div class="body">
+    <div class="item"><span class="pill ${isCard?'green':'yellow'}">${isCard?'合法角色卡':'type 不是 sully_character_card'}</span> 角色名：<b>${esc(name)}</b></div>
+  </div></div>`;
+
+  // 密钥区
+  html += `<div class="sec"><h2>🔑 密钥 / 凭据（深度扫描）</h2><div class="body">`;
+  if (secrets.length) {
+    for (const h of secrets) {
+      html += `<div class="item"><div class="path">${esc(h.path)}</div>
+        <div class="val">${esc(h.value)}</div><div class="why">${esc(h.why)}</div></div>`;
+    }
+  } else {
+    html += `<div class="empty">未扫到明文密钥值 ✅</div>`;
+  }
+  html += `</div></div>`;
+
+  // 凭据载体对象
+  if (carriers.length) {
+    html += `<div class="sec"><h2>⚙️ 含密钥槽位的配置对象</h2><div class="body">`;
+    for (const c of carriers) {
+      html += `<div class="item"><span class="pill red">${esc(c.field)}</span> ${esc(c.desc)}
+        <div class="why">该对象内嵌 apiKey 槽位——即使当前为空，也属于该剥离的凭据载体</div></div>`;
+    }
+    html += `</div></div>`;
+  }
+
+  const listSec = (title, icon, fields) => {
+    if (!fields.length) return '';
+    let s = `<div class="sec"><h2>${icon} ${title}（${fields.length}）</h2><div class="body">`;
+    s += `<div class="item">` + fields.map(f => `<span class="pill yellow">${esc(f)}</span>`).join('') + `</div>`;
+    s += `<div class="why" style="padding-top:6px">导入已修复的正式版时会被剥离；接收方应使用自己的设置，不该被卡覆盖。</div>`;
+    s += `</div></div>`;
+    return s;
+  };
+  html += listSec('美化字段', '🎨', beaut);
+  html += listSec('语言 / 语音偏好', '🗣️', lang);
+  html += listSec('运行时状态残留', '⏱️', runtime);
+
+  out.innerHTML = html;
+}
+
+function run(text) {
+  const out = document.getElementById('out');
+  if (!text || !text.trim()) { out.innerHTML = `<div class="verdict warn">请先拖入 / 粘贴角色卡 JSON</div>`; return; }
+  let data;
+  try { data = JSON.parse(text); }
+  catch (e) { out.innerHTML = `<div class="verdict danger"><div class="big">❌ JSON 解析失败</div>${esc(e.message)}</div>`; return; }
+  render(data);
+}
+
+// ————— 交互 —————
+const drop = document.getElementById('drop');
+const fileInput = document.getElementById('file');
+const paste = document.getElementById('paste');
+
+drop.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', e => {
+  const f = e.target.files[0]; if (!f) return;
+  const r = new FileReader();
+  r.onload = ev => { paste.value = ev.target.result; run(ev.target.result); };
+  r.readAsText(f);
+});
+['dragenter','dragover'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('hover'); }));
+['dragleave','drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('hover'); }));
+drop.addEventListener('drop', e => {
+  const f = e.dataTransfer.files[0]; if (!f) return;
+  const r = new FileReader();
+  r.onload = ev => { paste.value = ev.target.result; run(ev.target.result); };
+  r.readAsText(f);
+});
+document.getElementById('scan').addEventListener('click', () => run(paste.value));
+document.getElementById('clear').addEventListener('click', () => { paste.value=''; document.getElementById('out').innerHTML=''; });
+</script>
+</body>
+</html>
