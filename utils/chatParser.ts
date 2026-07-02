@@ -341,8 +341,23 @@ export const ChatParser = {
         const cjkSplitRe = new RegExp(`([${CJK}])\\s+(?=[${CJK}])`, 'g');
         const SPLIT = String.fromCharCode(1);  // CJK 切点标记
 
+        // 0. 保护 <语音…>…</语音> 原子块。外语语音字幕对齐模式下 (见 chatPrompts
+        //    voiceActingGuide) 标签内部常按空行分成好几段，一旦被下面的换行断句切碎，
+        //    <语音> 的开 / 闭标签就会散落到不同气泡里；MessageItem 的 hasVoiceTag 要求
+        //    开闭成对，配不上就当纯文字漏出原始标签，语音条和翻译也全不渲染 (掉格式)。
+        //    跟 worker 端 sanitize.ts 的 Phase 1.5 一样把整块换成独占一行的占位符，
+        //    切分后再原样还原成一个 chunk。
+        const ATOM = String.fromCharCode(2);
+        const voiceBlocks: string[] = [];
+        // 闭合标签容许空格 / 简繁互换 (normalizeVoiceTags 在 sanitize 阶段已修, 这里是保险)
+        const guardedText = text.replace(/<[语語]音[^>]*>[\s\S]*?<\/\s*[语語]音\s*>/g, m => {
+            const idx = voiceBlocks.length;
+            voiceBlocks.push(m);
+            return `\n${ATOM}${idx}${ATOM}\n`;
+        });
+
         // 1. Split on line breaks (AI decides where to break)
-        const lineChunks = text.split(/(?:\r\n|\r|\n|\u2028|\u2029)+/)
+        const lineChunks = guardedText.split(/(?:\r\n|\r|\n|\u2028|\u2029)+/)
             .map(c => c.trim())
             .filter(c => c.length > 0);
 
@@ -352,11 +367,17 @@ export const ChatParser = {
         //    "[[SEND_EMOJI: a b]]") 会被这条规则劈成 "[你" + "交给我吧]" 掉格式.
         //    做法: 先把 [...] / [[...]] 内空格换成占位符, split 后再换回.
         const SENTINEL = String.fromCharCode(0);
+        const ATOM_SOLO = new RegExp(`^${ATOM}(\\d+)${ATOM}$`);
+        const ATOM_GLOBAL = new RegExp(`${ATOM}(\\d+)${ATOM}`, 'g');
+        const restoreVoice = (s: string) => s.replace(ATOM_GLOBAL, (_m, n) => voiceBlocks[Number(n)] ?? '');
         const result: string[] = [];
         for (const chunk of lineChunks) {
+            // 独占一行的语音占位符 → 直接还原成完整语音块，不参与 CJK 空格切分
+            const solo = chunk.match(ATOM_SOLO);
+            if (solo) { result.push(voiceBlocks[Number(solo[1])]); continue; }
             const guarded = chunk.replace(/\[{1,2}[^\[\]]*\]{1,2}/g, m => m.replace(/\s/g, SENTINEL));
             const sub = guarded.replace(cjkSplitRe, `$1${SPLIT}`).split(SPLIT)
-                .map(c => c.split(SENTINEL).join(' ').trim())
+                .map(c => restoreVoice(c.split(SENTINEL).join(' ').trim()))  // 安全网: 同行残留占位符还原
                 .filter(c => c.length > 0);
             result.push(...sub);
         }
