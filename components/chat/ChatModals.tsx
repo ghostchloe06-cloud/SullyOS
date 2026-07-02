@@ -4,6 +4,7 @@ import Modal from '../os/Modal';
 import { CharacterProfile, Message, EmojiCategory, DailySchedule, ScheduleSlot, ApiPreset, APIConfig } from '../../types';
 import ScheduleCard from '../schedule/ScheduleCard';
 import EmotionSettingsPanel from './EmotionSettingsPanel';
+import { isTranslationLangPreset, normalizeTranslationLangLabel, TRANSLATION_LANG_MAX_LENGTH, TRANSLATION_LANG_PRESETS } from '../../utils/translationLang';
 
 interface ChatModalsProps {
     modalType: string;
@@ -123,6 +124,84 @@ interface ChatModalsProps {
     onSaveEmotion?: (config: NonNullable<CharacterProfile['emotionConfig']>) => void;
     onClearBuffs?: () => void;
 }
+
+interface TranslationLanguagePickerProps {
+    label: string;
+    value?: string;
+    tone: 'source' | 'target';
+    inputPlaceholder: string;
+    onSelect?: (lang: string) => void;
+}
+
+const TranslationLanguagePicker: React.FC<TranslationLanguagePickerProps> = ({
+    label,
+    value,
+    tone,
+    inputPlaceholder,
+    onSelect,
+}) => {
+    const [customLang, setCustomLang] = useState('');
+    const selectedClass = tone === 'source' ? 'bg-slate-700 text-white' : 'bg-primary text-white';
+    const customSelected = !!value && !isTranslationLangPreset(value);
+    const normalizedCustomLang = normalizeTranslationLangLabel(customLang);
+
+    const applyCustomLang = () => {
+        if (!normalizedCustomLang) return;
+        onSelect?.(normalizedCustomLang);
+        setCustomLang('');
+    };
+
+    return (
+        <div>
+            <label className="text-[10px] font-bold text-slate-400 mb-1.5 block">{label}</label>
+            <div className="flex flex-wrap gap-1.5">
+                {TRANSLATION_LANG_PRESETS.map(lang => (
+                    <button
+                        type="button"
+                        key={`${tone}-${lang}`}
+                        onClick={() => onSelect?.(lang)}
+                        className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition-all ${value === lang ? selectedClass : 'bg-slate-100 text-slate-500'}`}
+                    >
+                        {lang}
+                    </button>
+                ))}
+                {customSelected && (
+                    <button
+                        type="button"
+                        onClick={() => value && onSelect?.(value)}
+                        className={`max-w-full px-2.5 py-1 rounded-full text-[11px] font-bold transition-all truncate ${selectedClass}`}
+                        title={value}
+                    >
+                        {value}
+                    </button>
+                )}
+            </div>
+            <div className="mt-2 flex gap-1.5">
+                <input
+                    value={customLang}
+                    onChange={e => setCustomLang(e.target.value)}
+                    onKeyDown={e => {
+                        if (e.key === 'Enter') {
+                            e.preventDefault();
+                            applyCustomLang();
+                        }
+                    }}
+                    maxLength={TRANSLATION_LANG_MAX_LENGTH}
+                    placeholder={inputPlaceholder}
+                    className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[12px] text-slate-700 outline-none focus:border-primary"
+                />
+                <button
+                    type="button"
+                    onClick={applyCustomLang}
+                    disabled={!normalizedCustomLang}
+                    className={`shrink-0 px-2.5 py-1.5 rounded-lg text-[11px] font-bold transition-all ${normalizedCustomLang ? selectedClass : 'bg-slate-100 text-slate-300'}`}
+                >
+                    套用
+                </button>
+            </div>
+        </div>
+    );
+};
 
 const ChatModals: React.FC<ChatModalsProps> = ({
     modalType, setModalType,
@@ -329,36 +408,20 @@ const ChatModals: React.FC<ChatModalsProps> = ({
                          </p>
                          {translationEnabled && (
                              <div className="mt-3 space-y-3">
-                                 {/* Source Language (选) */}
-                                 <div>
-                                     <label className="text-[10px] font-bold text-slate-400 mb-1.5 block">选（气泡显示语言）</label>
-                                     <div className="flex flex-wrap gap-1.5">
-                                         {['中文', 'English', '日本語', '한국어', 'Français', 'Español'].map(lang => (
-                                             <button
-                                                 key={`src-${lang}`}
-                                                 onClick={() => onSetTranslateSourceLang?.(lang)}
-                                                 className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition-all ${translateSourceLang === lang ? 'bg-slate-700 text-white' : 'bg-slate-100 text-slate-500'}`}
-                                             >
-                                                 {lang}
-                                             </button>
-                                         ))}
-                                     </div>
-                                 </div>
-                                 {/* Target Language (译) */}
-                                 <div>
-                                     <label className="text-[10px] font-bold text-slate-400 mb-1.5 block">译（翻译目标语言）</label>
-                                     <div className="flex flex-wrap gap-1.5">
-                                         {['中文', 'English', '日本語', '한국어', 'Français', 'Español'].map(lang => (
-                                             <button
-                                                 key={`tgt-${lang}`}
-                                                 onClick={() => onSetTranslateLang?.(lang)}
-                                                 className={`px-2.5 py-1 rounded-full text-[11px] font-bold transition-all ${translateTargetLang === lang ? 'bg-primary text-white' : 'bg-slate-100 text-slate-500'}`}
-                                             >
-                                                 {lang}
-                                             </button>
-                                         ))}
-                                     </div>
-                                 </div>
+                                 <TranslationLanguagePicker
+                                     label="选（气泡显示语言）"
+                                     value={translateSourceLang}
+                                     tone="source"
+                                     inputPlaceholder="自定义，如 粤语"
+                                     onSelect={onSetTranslateSourceLang}
+                                 />
+                                 <TranslationLanguagePicker
+                                     label="译（翻译目标语言）"
+                                     value={translateTargetLang}
+                                     tone="target"
+                                     inputPlaceholder="自定义，如 中文（繁體）"
+                                     onSelect={onSetTranslateLang}
+                                 />
                                  {/* Preview */}
                                  <div className="text-[11px] text-center text-slate-500 bg-slate-50 rounded-lg py-2">
                                      选<span className="font-bold text-slate-700">{translateSourceLang || '?'}</span> 译<span className="font-bold text-primary">{translateTargetLang || '?'}</span>

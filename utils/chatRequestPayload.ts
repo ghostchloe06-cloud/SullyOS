@@ -24,6 +24,7 @@ import type { LuckinMiniAppSnapshot, LuckinChatState } from './luckinToolBridge'
 import type { MusicCfg, Song, LyricLine, MusicPlaybackSnapshot } from '../context/MusicContext';
 import { isPromptBuildSkipped } from './devDebug';
 import { injectWorldbookDepthEntries, resolveWorldbookEntries } from './worldbook';
+import { normalizeTranslationLangLabel } from './translationLang';
 
 export interface UserListeningContext {
     songName: string;
@@ -218,13 +219,15 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
     );
 
     // ── 4. 双语指令注入 ───────────────────────────────────
-    const bilingualActive = !!(translationConfig?.enabled && translationConfig.sourceLang && translationConfig.targetLang);
+    const sourceLang = normalizeTranslationLangLabel(translationConfig?.sourceLang);
+    const targetLang = normalizeTranslationLangLabel(translationConfig?.targetLang);
+    const bilingualActive = !!(translationConfig?.enabled && sourceLang && targetLang);
     if (bilingualActive && translationConfig) {
         systemPrompt += `\n\n[CRITICAL: 双语输出模式 - 必须严格遵守]
 你的每句话都必须用以下XML标签格式输出双语内容：
 <翻译>
-<原文>${translationConfig.sourceLang}内容</原文>
-<译文>${translationConfig.targetLang}内容</译文>
+<原文>${sourceLang}内容</原文>
+<译文>${targetLang}内容</译文>
 </翻译>
 
 规则：
@@ -234,7 +237,7 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
 - 表情包命令 [[SEND_EMOJI: ...]] 放在所有<翻译>标签外面
 - 引用命令 [[QUOTE: ...]] 也放在所有<翻译>标签外面；引用内容请原样照抄用户说过的原文（不要翻译、不要包<翻译>标签）
 
-示例（${translationConfig.sourceLang}→${translationConfig.targetLang}）：
+示例（${sourceLang}→${targetLang}）：
 <翻译>
 <原文>こんにちは！</原文>
 <译文>你好！</译文>

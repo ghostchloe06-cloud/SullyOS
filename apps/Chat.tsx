@@ -40,6 +40,7 @@ import { resolveTtsProvider } from '../utils/ttsProvider';
 import { isInstantConfigReady, loadInstantConfig } from '../utils/instantPushClient';
 import { resolveActiveSound, playWhiteboxSound, unlockWhiteboxAudio, parseWhiteboxSound, upsertWhiteboxSound, stripWhiteboxSoundDirective, WhiteboxSound } from '../utils/whiteboxSound';
 import WhiteboxSoundEditor from '../components/chat/WhiteboxSoundEditor';
+import { normalizeTranslationLangLabel } from '../utils/translationLang';
 
 const VOICE_LANG_LABELS: Record<string, string> = { en: 'English', ja: '日本語', ko: '한국어', fr: 'Français', es: 'Español' };
 type InstantToolUiStatus = {
@@ -143,14 +144,14 @@ const Chat: React.FC = () => {
     });
     const [translateSourceLang, setTranslateSourceLang] = useState(() => {
         // Fallback to legacy global key so existing users don't lose their setting on upgrade.
-        return localStorage.getItem(`chat_translate_source_lang_${activeCharacterId}`)
+        return normalizeTranslationLangLabel(localStorage.getItem(`chat_translate_source_lang_${activeCharacterId}`)
             || localStorage.getItem('chat_translate_source_lang')
-            || '日本語';
+            || '日本語') || '日本語';
     });
     const [translateTargetLang, setTranslateTargetLang] = useState(() => {
-        return localStorage.getItem(`chat_translate_lang_${activeCharacterId}`)
+        return normalizeTranslationLangLabel(localStorage.getItem(`chat_translate_lang_${activeCharacterId}`)
             || localStorage.getItem('chat_translate_lang')
-            || '中文';
+            || '中文') || '中文';
     });
     // Which messages are currently showing "译" version (toggle state only, no API calls)
     const [showingTargetIds, setShowingTargetIds] = useState<Set<number>>(new Set());
@@ -627,14 +628,14 @@ const Chat: React.FC = () => {
                 setTranslationEnabled(JSON.parse(localStorage.getItem(`chat_translate_enabled_${activeCharacterId}`) || 'false'));
             } catch { setTranslationEnabled(false); }
             setTranslateSourceLang(
-                localStorage.getItem(`chat_translate_source_lang_${activeCharacterId}`)
+                normalizeTranslationLangLabel(localStorage.getItem(`chat_translate_source_lang_${activeCharacterId}`)
                 || localStorage.getItem('chat_translate_source_lang')
-                || '日本語'
+                || '日本語') || '日本語'
             );
             setTranslateTargetLang(
-                localStorage.getItem(`chat_translate_lang_${activeCharacterId}`)
+                normalizeTranslationLangLabel(localStorage.getItem(`chat_translate_lang_${activeCharacterId}`)
                 || localStorage.getItem('chat_translate_lang')
-                || '中文'
+                || '中文') || '中文'
             );
             setVisibleCount(30);
             visibleCountRef.current = 30;
@@ -2626,8 +2627,8 @@ const Chat: React.FC = () => {
                 onToggleTranslation={() => { const next = !translationEnabled; setTranslationEnabled(next); localStorage.setItem(`chat_translate_enabled_${activeCharacterId}`, JSON.stringify(next)); if (!next) { setShowingTargetIds(new Set()); } }}
                 translateSourceLang={translateSourceLang}
                 translateTargetLang={translateTargetLang}
-                onSetTranslateSourceLang={(lang: string) => { setTranslateSourceLang(lang); localStorage.setItem(`chat_translate_source_lang_${activeCharacterId}`, lang); setShowingTargetIds(new Set()); }}
-                onSetTranslateLang={(lang: string) => { setTranslateTargetLang(lang); localStorage.setItem(`chat_translate_lang_${activeCharacterId}`, lang); setShowingTargetIds(new Set()); }}
+                onSetTranslateSourceLang={(lang: string) => { const next = normalizeTranslationLangLabel(lang); if (!next) return; setTranslateSourceLang(next); localStorage.setItem(`chat_translate_source_lang_${activeCharacterId}`, next); setShowingTargetIds(new Set()); }}
+                onSetTranslateLang={(lang: string) => { const next = normalizeTranslationLangLabel(lang); if (!next) return; setTranslateTargetLang(next); localStorage.setItem(`chat_translate_lang_${activeCharacterId}`, next); setShowingTargetIds(new Set()); }}
                 xhsEnabled={!!char.xhsEnabled}
                 onToggleXhs={() => updateCharacter(char.id, { xhsEnabled: !char.xhsEnabled })}
                 htmlModeEnabled={!!(char as any).htmlModeEnabled}
