@@ -325,7 +325,13 @@ const Chat: React.FC = () => {
     };
 
     const handleManualTts = async (msg: Message, autoTriggered = false) => {
-        if (voiceDataMap[msg.id] || voiceLoading.has(msg.id)) return;
+        if (voiceLoading.has(msg.id)) return;
+        if (voiceDataMap[msg.id]) {
+            if (autoTriggered) return;
+            // 手动点「转换语音」= 用户要求重新生成（典型场景：编辑了消息内容后）。
+            // 丢掉这条旧语音再走正常合成；文本没变时会命中共享 TTS 缓存，不会重复请求 API。
+            discardVoiceForMessages([msg.id]);
+        }
 
         // Parse the structured voice output: spoken text (sanitized) + per-message emotion.
         const parsedVoice = parseVoiceOutput(msg.content);
@@ -2050,7 +2056,10 @@ const Chat: React.FC = () => {
 
     const confirmEditMessage = async () => {
         if (!selectedMessage) return;
+        const contentChanged = editContent !== selectedMessage.content;
         await DB.updateMessage(selectedMessage.id, editContent);
+        // 内容变了旧语音就作废，否则语音条仍会播放编辑前的音频。
+        if (contentChanged) discardVoiceForMessages([selectedMessage.id]);
         setMessages(prev => prev.map(m => m.id === selectedMessage.id ? { ...m, content: editContent } : m));
         setModalType('none');
         setSelectedMessage(null);
