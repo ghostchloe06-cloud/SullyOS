@@ -450,7 +450,8 @@ export interface DateStyleConfig {
 export interface RoomItem {
     id: string;
     name: string;
-    type: 'furniture' | 'decor';
+    /** rug=地毯：永远铺在最底层，角色与其它家具都压在它上面 */
+    type: 'furniture' | 'decor' | 'rug';
     image: string;
     x: number;
     y: number;

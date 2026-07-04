@@ -7,7 +7,7 @@ import ScheduleCard from '../components/schedule/ScheduleCard';
 import { ContextBuilder } from '../utils/context';
 import { injectMemoryPalace } from '../utils/memoryPalace/pipeline';
 import { processImageToBlob } from '../utils/file';
-import { putImageBlob, useBlobRefUrl, isBlobRef, migrateDataUrlToRef } from '../utils/blobRef';
+import { putImageBlob, useBlobRefUrl, isBlobRef, migrateDataUrlToRef, resolveBlobRefsDeep } from '../utils/blobRef';
 import TokenImg from '../components/os/TokenImg';
 import Modal from '../components/os/Modal';
 import { safeResponseJson } from '../utils/safeApi';
@@ -57,6 +57,10 @@ const ASSET_LIBRARY = {
         { name: '椅子', image: FURNITURE_ICONS.chair, defaultScale: 1.0 },
         { name: '马桶', image: FURNITURE_ICONS.toilet, defaultScale: 1.0 },
         { name: '浴缸', image: FURNITURE_ICONS.bathtub, defaultScale: 1.5 },
+    ],
+    rug: [
+        { name: '条纹地毯', image: FURNITURE_ICONS.rug, defaultScale: 1.6 },
+        { name: '圆形地毯', image: FURNITURE_ICONS.roundRug, defaultScale: 1.6 },
     ],
     decor: [
         { name: '盆栽', image: FURNITURE_ICONS.plant, defaultScale: 0.8 },
@@ -318,7 +322,7 @@ const RoomApp: React.FC = () => {
     const char = characters.find(c => c.id === activeCharacterId);
 
     // Custom Item Library State (new: unified with visibility)
-    type CustomAsset = { id: string; name: string; image: string; defaultScale: number; description?: string; visibility: 'public' | 'character'; assignedCharIds?: string[] };
+    type CustomAsset = { id: string; name: string; image: string; defaultScale: number; description?: string; visibility: 'public' | 'character'; assignedCharIds?: string[]; itemType?: 'furniture' | 'rug' };
     const [allCustomAssets, setAllCustomAssets] = useState<CustomAsset[]>([]);
     const customAssets = useMemo(() => {
         if (!char) return allCustomAssets.filter(a => a.visibility === 'public');
@@ -329,6 +333,13 @@ const RoomApp: React.FC = () => {
     const [customItemImage, setCustomItemImage] = useState('');
     const [customItemUrl, setCustomItemUrl] = useState('');
     const [customItemDescription, setCustomItemDescription] = useState('');
+    const [customItemType, setCustomItemType] = useState<'furniture' | 'rug'>('furniture');
+
+    // Export Room Template State（装修模式导出「当前小屋」为样板房 JSON）
+    const [showExportModal, setShowExportModal] = useState(false);
+    const [exportName, setExportName] = useState('');
+    const [exportDescription, setExportDescription] = useState('');
+    const [isExporting, setIsExporting] = useState(false);
 
     // Asset Edit Modal State
     const [editingAsset, setEditingAsset] = useState<CustomAsset | null>(null);
@@ -337,6 +348,7 @@ const RoomApp: React.FC = () => {
     const [editImage, setEditImage] = useState('');
     const [editVisibility, setEditVisibility] = useState<'public' | 'character'>('public');
     const [editAssignedCharIds, setEditAssignedCharIds] = useState<string[]>([]);
+    const [editItemType, setEditItemType] = useState<'furniture' | 'rug'>('furniture');
     const assetLongPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
     // PERF: Cleanup rAF and debounce timers on unmount
@@ -842,7 +854,7 @@ ${!shouldGenerateTodo ? `(系统: 今日待办已存在，无需生成，请忽�
     const saveRoom = (newItems: RoomItem[]) => { setItems(newItems); if (char) { updateCharacter(char.id, { roomConfig: { ...char.roomConfig, items: newItems } }); } };
     
     // Updated addItem to accept description
-    const addItem = (asset: {name: string, image: string, defaultScale: number, description?: string}, type: 'furniture' | 'decor') => { 
+    const addItem = (asset: {name: string, image: string, defaultScale: number, description?: string}, type: 'furniture' | 'decor' | 'rug') => {
         const newItem: RoomItem = { 
             id: `item-${Date.now()}`, 
             name: asset.name, 
@@ -920,7 +932,7 @@ ${!shouldGenerateTodo ? `(系统: 今日待办已存在，无需生成，请忽�
             image: imageToUse,
             defaultScale: 1.0,
             description: customItemDescription || undefined
-        }, 'furniture');
+        }, customItemType);
 
         const newAsset: CustomAsset = {
             id: `asset_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
@@ -929,6 +941,7 @@ ${!shouldGenerateTodo ? `(系统: 今日待办已存在，无需生成，请忽�
             defaultScale: 1.0,
             description: customItemDescription || undefined,
             visibility: 'public',
+            itemType: customItemType,
         };
         await persistAssets([...allCustomAssets, newAsset]);
 
@@ -937,6 +950,7 @@ ${!shouldGenerateTodo ? `(系统: 今日待办已存在，无需生成，请忽�
         setCustomItemImage('');
         setCustomItemUrl('');
         setCustomItemDescription('');
+        setCustomItemType('furniture');
     };
 
     // Long-press on custom asset → open edit modal
@@ -948,6 +962,7 @@ ${!shouldGenerateTodo ? `(系统: 今日待办已存在，无需生成，请忽�
             setEditImage(asset.image);
             setEditVisibility(asset.visibility);
             setEditAssignedCharIds(asset.assignedCharIds || []);
+            setEditItemType(asset.itemType || 'furniture');
         }, 600);
     };
 
@@ -967,6 +982,7 @@ ${!shouldGenerateTodo ? `(系统: 今日待办已存在，无需生成，请忽�
             image: editImage || a.image,
             visibility: editVisibility,
             assignedCharIds: editVisibility === 'character' ? editAssignedCharIds : undefined,
+            itemType: editItemType,
         } : a);
         await persistAssets(updated);
         setEditingAsset(null);
@@ -995,6 +1011,67 @@ ${!shouldGenerateTodo ? `(系统: 今日待办已存在，无需生成，请忽�
         saveRoom(SULLY_FURNITURE);
         setShowSettingsModal(false);
         addToast('Sully 的房间已还原', 'success');
+    };
+
+    // --- Export Room Template（装修模式导出「当前小屋」为样板房） ---
+    // 位置 x/y 是相对房间的百分比（0-100），任何屏幕尺寸都能按原样复原。
+    // 图像：图床/http 链接原样保留；上传图（blobref/base64）统一解析成 data URL 内嵌，
+    // 导出文件自包含，不依赖本机 IndexedDB。
+    const buildRoomTemplate = async () => {
+        const template = {
+            schema: 'sullyos.room-template.v1',
+            name: exportName.trim() || `${char?.name || '未命名'}的小屋`,
+            description: exportDescription.trim(),
+            exportedAt: new Date().toISOString(),
+            room: {
+                wallImage: char?.roomConfig?.wallImage || '',
+                wallScale: char?.roomConfig?.wallScale,
+                wallRepeat: char?.roomConfig?.wallRepeat,
+                floorImage: char?.roomConfig?.floorImage || '',
+                floorScale: char?.roomConfig?.floorScale,
+                floorRepeat: char?.roomConfig?.floorRepeat,
+            },
+            items: items.map(i => ({
+                name: i.name,
+                type: i.type,
+                image: i.image,
+                x: i.x,
+                y: i.y,
+                scale: i.scale,
+                rotation: i.rotation,
+                isInteractive: i.isInteractive,
+                description: i.descriptionPrompt || '',
+            })),
+        };
+        await resolveBlobRefsDeep(template);
+        return template;
+    };
+
+    const handleExportRoom = async (action: 'download' | 'copy') => {
+        setIsExporting(true);
+        try {
+            const template = await buildRoomTemplate();
+            const json = JSON.stringify(template, null, 2);
+            if (action === 'copy') {
+                await navigator.clipboard.writeText(json);
+                addToast('小屋 JSON 已复制到剪贴板', 'success');
+            } else {
+                const blob = new Blob([json], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `${template.name.replace(/[\\/:*?"<>|]/g, '_')}.room.json`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                addToast('小屋样板房已导出', 'success');
+            }
+        } catch (e: any) {
+            addToast(`导出失败: ${e?.message || e}`, 'error');
+        } finally {
+            setIsExporting(false);
+        }
     };
 
     // --- PERF FIX: Direct DOM Dragging (bypasses React re-renders) ---
@@ -1337,7 +1414,9 @@ ${!shouldGenerateTodo ? `(系统: 今日待办已存在，无需生成，请忽�
                                 top: `${item.y}%`,
                                 width: `${80 * item.scale}px`,
                                 transform: `translate(-50%, -100%) rotate(${item.rotation}deg)`,
-                                zIndex: isDragging ? 100 : Math.floor(item.y),
+                                // 地毯压缩到 [1,11] 的底层区间：角色 zIndex ≥ 80（y 钳制在地平线以下再 +20），
+                                // 普通家具按 y 排 z，两者都必然盖在地毯上。
+                                zIndex: isDragging ? 100 : (item.type === 'rug' ? 1 + Math.floor(item.y / 10) : Math.floor(item.y)),
                                 transition: isDragging ? 'none' : 'transform 0.2s ease-out',
                                 willChange: isDragging ? 'left, top' : 'auto' // GPU layer only when needed
                             }}
@@ -1486,6 +1565,20 @@ ${!shouldGenerateTodo ? `(系统: 今日待办已存在，无需生成，请忽�
                                     <div className="flex-1"><label className="text-[10px] text-slate-400 block mb-1">缩放</label><input type="range" min="0.5" max="3" step="0.1" value={items.find(i => i.id === selectedItemId)?.scale || 1} onChange={(e) => updateSelectedItem({ scale: parseFloat(e.target.value) })} className="w-full h-1 bg-slate-200 rounded-full" /></div>
                                     <div className="flex-1"><label className="text-[10px] text-slate-400 block mb-1">旋转</label><input type="range" min="-180" max="180" step="5" value={items.find(i => i.id === selectedItemId)?.rotation || 0} onChange={(e) => updateSelectedItem({ rotation: parseInt(e.target.value) })} className="w-full h-1 bg-slate-200 rounded-full" /></div>
                                 </div>
+                                {/* 类型切换：把已摆好的物品就地改成地毯（沉到底层）或改回家具 */}
+                                {(() => {
+                                    const sel = items.find(i => i.id === selectedItemId);
+                                    if (!sel) return null;
+                                    const isRug = sel.type === 'rug';
+                                    return (
+                                        <div className="flex items-center justify-between bg-slate-50 rounded-xl px-3 py-2 border border-slate-100">
+                                            <span className="text-[10px] text-slate-400">图层类型{isRug ? '：地毯（垫底，角色踩在上面）' : ''}</span>
+                                            <button onClick={() => updateSelectedItem({ type: isRug ? 'furniture' : 'rug' })} className={`text-xs font-bold px-3 py-1 rounded-full transition-colors ${isRug ? 'bg-purple-100 text-purple-600' : 'bg-slate-200 text-slate-500'}`}>
+                                                {isRug ? '改回普通家具' : '设为地毯'}
+                                            </button>
+                                        </div>
+                                    );
+                                })()}
                             </div>
                         ) : (
                             <div className="space-y-4">
@@ -1494,6 +1587,8 @@ ${!shouldGenerateTodo ? `(系统: 今日待办已存在，无需生成，请忽�
                                     <button onClick={() => setShowCustomModal(true)} className="flex flex-col items-center gap-1 shrink-0"><div className="w-12 h-12 bg-purple-500 rounded-xl flex items-center justify-center text-white shadow-md"><Sparkle size={24} /></div><span className="text-[10px] font-bold text-slate-500">自定义</span></button>
                                     <button onClick={() => wallInputRef.current?.click()} className="flex flex-col items-center gap-1 shrink-0"><div className="w-12 h-12 bg-slate-200 rounded-xl flex items-center justify-center text-slate-500 shadow-sm border border-slate-300"><Image size={24} /></div><span className="text-[10px] font-bold text-slate-500">换墙纸</span></button>
                                     <button onClick={() => floorInputRef.current?.click()} className="flex flex-col items-center gap-1 shrink-0"><div className="w-12 h-12 bg-slate-200 rounded-xl flex items-center justify-center shadow-sm border border-slate-300"><img src={twemojiUrl('1f9f1')} alt="brick" className="w-6 h-6" /></div><span className="text-[10px] font-bold text-slate-500">换地板</span></button>
+                                    {/* Export Room Template Button */}
+                                    <button onClick={() => { setExportName(prev => prev || `${char?.name || ''}的小屋`); setShowExportModal(true); }} className="flex flex-col items-center gap-1 shrink-0"><div className="w-12 h-12 bg-emerald-500 rounded-xl flex items-center justify-center text-white shadow-md"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="M3 16.5v2.25A2.25 2.25 0 0 0 5.25 21h13.5A2.25 2.25 0 0 0 21 18.75V16.5M7.5 7.5 12 3m0 0 4.5 4.5M12 3v13.5" /></svg></div><span className="text-[10px] font-bold text-slate-500">导出小屋</span></button>
                                     {/* Settings Button */}
                                     <button onClick={() => setShowSettingsModal(true)} className="flex flex-col items-center gap-1 shrink-0"><div className="w-12 h-12 bg-slate-200 rounded-xl flex items-center justify-center text-slate-600 shadow-sm border border-slate-300"><GearSix size={24} /></div><span className="text-[10px] font-bold text-slate-500">设置</span></button>
                                     {/* Developer Export Button */}
@@ -1518,7 +1613,7 @@ ${!shouldGenerateTodo ? `(系统: 今日待办已存在，无需生成，请忽�
                         assets && assets.length > 0 && (
                             <div key={category} className="mb-6">
                                 <h4 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3 sticky top-0 bg-white py-2 z-10 flex justify-between">
-                                    {category === 'sully_special' ? 'Sully 专属 (Special)' : (category === 'custom' ? '自定义 (Custom)' : category)}
+                                    {category === 'sully_special' ? 'Sully 专属 (Special)' : (category === 'custom' ? '自定义 (Custom)' : (category === 'rug' ? '地毯 (Rug)' : category))}
                                     <span className="text-[9px] bg-slate-100 px-2 rounded-full">{assets.length}</span>
                                 </h4>
                                 <div className="grid grid-cols-4 gap-4">
@@ -1530,13 +1625,13 @@ ${!shouldGenerateTodo ? `(系统: 今日待办已存在，无需生成，请忽�
                                             onMouseDown: () => handleAssetTouchStart(asset),
                                             onMouseUp: handleAssetTouchEnd,
                                             onMouseLeave: handleAssetTouchEnd,
-                                            onContextMenu: (e: React.MouseEvent) => { e.preventDefault(); handleAssetTouchStart(asset); assetLongPressTimer.current && clearTimeout(assetLongPressTimer.current); setEditingAsset(asset); setEditName(asset.name); setEditDescription(asset.description || ''); setEditImage(asset.image); setEditVisibility(asset.visibility || 'public'); setEditAssignedCharIds(asset.assignedCharIds || []); }
+                                            onContextMenu: (e: React.MouseEvent) => { e.preventDefault(); handleAssetTouchStart(asset); assetLongPressTimer.current && clearTimeout(assetLongPressTimer.current); setEditingAsset(asset); setEditName(asset.name); setEditDescription(asset.description || ''); setEditImage(asset.image); setEditVisibility(asset.visibility || 'public'); setEditAssignedCharIds(asset.assignedCharIds || []); setEditItemType(asset.itemType || 'furniture'); }
                                         } : {};
 
                                         return (
                                             <button
                                                 key={asset.id || i}
-                                                onClick={() => addItem(asset, category === 'custom' || category === 'sully_special' ? 'furniture' : category as any)}
+                                                onClick={() => addItem(asset, category === 'custom' ? (asset.itemType || 'furniture') : (category === 'sully_special' ? 'furniture' : category as any))}
                                                 className="flex flex-col items-center gap-2 group relative active:scale-95 transition-transform"
                                                 {...handlers}
                                             >
@@ -1579,6 +1674,14 @@ ${!shouldGenerateTodo ? `(系统: 今日待办已存在，无需生成，请忽�
                         <div>
                             <label className="text-[10px] font-bold text-slate-400 block mb-1">描述</label>
                             <input value={editDescription} onChange={e => setEditDescription(e.target.value)} placeholder="物品描述..." className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-blue-500" />
+                        </div>
+                        <div>
+                            <label className="text-[10px] font-bold text-slate-400 block mb-1">物品类型</label>
+                            <div className="flex gap-2">
+                                <button onClick={() => setEditItemType('furniture')} className={`flex-1 py-2 rounded-xl text-xs font-bold border transition-colors ${editItemType === 'furniture' ? 'bg-purple-50 border-purple-300 text-purple-600' : 'bg-slate-50 border-slate-200 text-slate-400'}`}>家具</button>
+                                <button onClick={() => setEditItemType('rug')} className={`flex-1 py-2 rounded-xl text-xs font-bold border transition-colors ${editItemType === 'rug' ? 'bg-purple-50 border-purple-300 text-purple-600' : 'bg-slate-50 border-slate-200 text-slate-400'}`}>地毯</button>
+                            </div>
+                            <p className="text-[9px] text-slate-400 mt-1">类型改动只影响之后新摆放的物品，已摆好的不受影响。</p>
                         </div>
                         <div>
                             <label className="text-[10px] font-bold text-slate-400 block mb-1">分类</label>
@@ -1624,6 +1727,14 @@ ${!shouldGenerateTodo ? `(系统: 今日待办已存在，无需生成，请忽�
                                 <input value={customItemName} onChange={e => setCustomItemName(e.target.value)} placeholder="例如: 懒人沙发" className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm focus:outline-purple-500 font-bold" />
                             </div>
                         </div>
+                    </div>
+                    <div>
+                        <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">物品类型</label>
+                        <div className="flex gap-2">
+                            <button onClick={() => setCustomItemType('furniture')} className={`flex-1 py-2 rounded-xl text-xs font-bold border transition-colors ${customItemType === 'furniture' ? 'bg-purple-50 border-purple-300 text-purple-600' : 'bg-slate-50 border-slate-200 text-slate-400'}`}>家具</button>
+                            <button onClick={() => setCustomItemType('rug')} className={`flex-1 py-2 rounded-xl text-xs font-bold border transition-colors ${customItemType === 'rug' ? 'bg-purple-50 border-purple-300 text-purple-600' : 'bg-slate-50 border-slate-200 text-slate-400'}`}>地毯</button>
+                        </div>
+                        <p className="text-[9px] text-slate-400 mt-1">地毯永远铺在最底层，角色和其它家具都会压在它上面。</p>
                     </div>
                     <div>
                         <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">物品描述</label>
@@ -1674,6 +1785,34 @@ ${!shouldGenerateTodo ? `(系统: 今日待办已存在，无需生成，请忽�
                     <div><img src={twemojiUrl('1f570-fe0f')} alt="clock" className="w-10 h-10 mx-auto" /></div>
                     <p className="text-sm text-slate-600 font-bold">每天早上 6:00 自动刷新</p>
                     <p className="text-xs text-slate-400">还没到时间哦，确定要消耗算力强制重新生成今天的房间状态吗？</p>
+                </div>
+            </Modal>
+
+            {/* Export Room Template Modal（导出当前小屋为样板房） */}
+            <Modal
+                isOpen={showExportModal}
+                title="导出当前小屋"
+                onClose={() => !isExporting && setShowExportModal(false)}
+                footer={
+                    <div className="flex gap-2 w-full">
+                        <button onClick={() => handleExportRoom('copy')} disabled={isExporting} className="flex-1 py-3 bg-slate-100 text-slate-600 font-bold rounded-2xl text-xs disabled:opacity-50">复制 JSON</button>
+                        <button onClick={() => handleExportRoom('download')} disabled={isExporting} className="flex-1 py-3 bg-emerald-500 text-white font-bold rounded-2xl text-xs disabled:opacity-50">{isExporting ? '打包中...' : '下载文件'}</button>
+                    </div>
+                }
+            >
+                <div className="space-y-4">
+                    <div>
+                        <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">小屋名称</label>
+                        <input value={exportName} onChange={e => setExportName(e.target.value)} placeholder={`${char?.name || ''}的小屋`} className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-sm font-bold focus:outline-emerald-500" />
+                    </div>
+                    <div>
+                        <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">小屋描述</label>
+                        <textarea value={exportDescription} onChange={e => setExportDescription(e.target.value)} rows={3} placeholder="介绍一下这套样板房：风格、亮点、适合谁住…" className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs focus:outline-emerald-500 resize-none" />
+                    </div>
+                    <div className="bg-emerald-50 border border-emerald-100 rounded-xl px-3 py-2.5 text-[10px] text-emerald-700 leading-relaxed">
+                        导出内容：名称、描述、墙面/地板配置，以及 {items.length} 件物品各自的图像与相对摆放位置（x/y 为房间百分比坐标，任何屏幕都能原样复原）。
+                        <br />图床链接原样保留；本机上传的图会转成 base64 内嵌进 JSON，文件自包含、可直接分享。
+                    </div>
                 </div>
             </Modal>
 
