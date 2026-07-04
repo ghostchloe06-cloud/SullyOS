@@ -109,6 +109,28 @@ const Sparkles = React.memo<{ items: Sp[] }>(({ items }) => (
     </>
 ));
 
+// 手绘蓬蓬云：多泡泡剪影 + 薰衣草底影（group opacity 整体合成，重叠处不会加深起缝）
+const Cloud = React.memo<{ style?: React.CSSProperties; className?: string; alpha?: number }>(({ style, className, alpha = 0.95 }) => (
+    <svg viewBox="0 0 120 64" className={className} style={style} aria-hidden>
+        {/* 底影（淡紫，整体下移一点，画出手绘的厚度） */}
+        <g fill="#cfc3ec" opacity={alpha * 0.4} transform="translate(0 3.5)">
+            <ellipse cx="34" cy="46" rx="26" ry="14" />
+            <circle cx="52" cy="30" r="20" />
+            <circle cx="78" cy="36" r="16" />
+            <ellipse cx="88" cy="47" rx="21" ry="12" />
+            <circle cx="24" cy="35" r="13" />
+        </g>
+        {/* 云本体（白，泡泡拼出蓬蓬轮廓） */}
+        <g fill="#ffffff" opacity={alpha}>
+            <ellipse cx="34" cy="46" rx="26" ry="14" />
+            <circle cx="52" cy="30" r="20" />
+            <circle cx="78" cy="36" r="16" />
+            <ellipse cx="88" cy="47" rx="21" ry="12" />
+            <circle cx="24" cy="35" r="13" />
+        </g>
+    </svg>
+));
+
 // 四角宝石（rotate-45 小方块，华丽卡片标配）
 const GemCorners = React.memo<{ color?: string; inset?: number }>(({ color = 'rgba(234,118,180,0.75)', inset = 8 }) => (
     <>
@@ -207,10 +229,13 @@ const StageWindow = React.memo<{ night: boolean }>(({ night }) => (
                 : 'linear-gradient(180deg, #bfe0f7 0%, #dff0fc 70%, #f0f8fe 100%)',
             boxShadow: '0 3px 10px rgba(150,120,200,0.25)',
         }}>
-            {/* 云朵（静态圆角块，无 blur）：夜里变成淡淡的夜云 */}
-            <div className="absolute top-[28%] left-[12%] w-[26%] h-[36%] rounded-full" style={{ background: night ? 'rgba(255,255,255,0.14)' : 'rgba(255,255,255,0.85)' }} />
-            <div className="absolute top-[18%] left-[22%] w-[18%] h-[34%] rounded-full" style={{ background: night ? 'rgba(255,255,255,0.1)' : 'rgba(255,255,255,0.75)' }} />
-            <div className="absolute top-[42%] right-[16%] w-[22%] h-[32%] rounded-full" style={{ background: night ? 'rgba(255,255,255,0.12)' : 'rgba(255,255,255,0.7)' }} />
+            {/* 手绘蓬蓬云（SVG 泡泡剪影 + 底影），慢速飘移；夜里变成淡淡的夜云 */}
+            <Cloud className="absolute" alpha={night ? 0.16 : 0.95}
+                style={{ left: '6%', top: '16%', width: '36%', animation: 'tama-drift 9s ease-in-out infinite alternate' }} />
+            <Cloud className="absolute" alpha={night ? 0.12 : 0.8}
+                style={{ right: '8%', top: '34%', width: '30%', animation: 'tama-drift 13s ease-in-out infinite alternate-reverse' }} />
+            <Cloud className="absolute" alpha={night ? 0.1 : 0.6}
+                style={{ left: '38%', top: '52%', width: '20%', animation: 'tama-drift 11s ease-in-out 1.5s infinite alternate' }} />
             {/* 夜空专属：一轮弯月 + 满窗星星 */}
             {night && (
                 <>
@@ -471,6 +496,7 @@ const TamagotchiHome: React.FC = () => {
                 @keyframes tama-bounce { 0% { transform: scale(1); } 35% { transform: scale(1.12, 0.9); } 70% { transform: scale(0.95, 1.06); } 100% { transform: scale(1); } }
                 @keyframes tama-zzz { 0%,100% { opacity: 0.35; transform: translateY(0); } 50% { opacity: 1; transform: translateY(-4px); } }
                 @keyframes tama-twinkle { 0%,100% { opacity: 0.25; transform: scale(0.8); } 50% { opacity: 1; transform: scale(1.1); } }
+                @keyframes tama-drift { 0% { transform: translateX(-4%); } 100% { transform: translateX(5%); } }
             `}</style>
 
             <BackDecor />
