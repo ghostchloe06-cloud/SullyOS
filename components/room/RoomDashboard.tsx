@@ -18,14 +18,25 @@ const VIRTUAL_W = 390;
 const VIRTUAL_H = 300;
 const FLOOR_HORIZON = 65; // 与 RoomApp 保持一致：地板从 65% 开始
 
+/** 与全屏小屋同一套交互状态（由 RoomApp 传入，两个视图共用同一份 state/handler）。 */
+export interface StageInteraction {
+    actorState: { x: number; y: number; action: string };
+    aiBubble: { text: string; visible: boolean };
+    onLookAt: (item: RoomItem, e?: React.MouseEvent) => void;
+    onPokeActor: () => void;
+    onDismissBubble: () => void;
+}
+
 const MiniRoomStage: React.FC<{
     items: RoomItem[];
     wallStyle: string;
     floorStyle: string;
     actorImage?: string;
-}> = ({ items, wallStyle, floorStyle, actorImage }) => {
+    interaction: StageInteraction;
+}> = ({ items, wallStyle, floorStyle, actorImage, interaction }) => {
     const boxRef = useRef<HTMLDivElement>(null);
     const [scale, setScale] = useState(0);
+    const { actorState, aiBubble, onLookAt, onPokeActor, onDismissBubble } = interaction;
 
     useEffect(() => {
         const el = boxRef.current;
@@ -47,21 +58,40 @@ const MiniRoomStage: React.FC<{
                     {items.map(item => (
                         <div
                             key={item.id}
-                            className="absolute"
+                            onClick={(e) => { e.stopPropagation(); onLookAt(item, e); }}
+                            className={`absolute ${item.isInteractive ? 'cursor-pointer active:scale-95' : ''}`}
                             style={{
                                 left: `${item.x}%`,
                                 top: `${item.y}%`,
                                 width: `${80 * item.scale}px`,
                                 transform: `translate(-50%, -100%) rotate(${item.rotation}deg)`,
                                 zIndex: Math.floor(item.y),
+                                transition: 'transform 0.2s ease-out',
                             }}
                         >
                             <TokenImg value={item.image} className="w-full h-auto object-contain pointer-events-none select-none" draggable={false} loading="lazy" />
                         </div>
                     ))}
+                    {/* 小人：与全屏同一份 actorState，走位/弹跳/气泡在两个视图间连续 */}
                     {actorImage && (
-                        <div className="absolute" style={{ left: '50%', top: `${Math.max(FLOOR_HORIZON, 78)}%`, width: '120px', transform: 'translate(-50%, -100%)', zIndex: 100 }}>
-                            <img src={actorImage} className="w-full h-full object-contain" alt="" />
+                        <div
+                            onClick={(e) => { e.stopPropagation(); onPokeActor(); }}
+                            className="absolute transition-[left,top] duration-[1000ms] ease-in-out cursor-pointer active:scale-95"
+                            style={{
+                                left: `${actorState.x}%`,
+                                top: `${Math.max(FLOOR_HORIZON, actorState.y)}%`,
+                                width: '120px',
+                                transform: `translate(-50%, -100%) scale(${actorState.action === 'walk' ? 1.05 : (actorState.action === 'bounce' ? 1.1 : 1)})`,
+                                zIndex: Math.floor(actorState.y) + 20,
+                            }}
+                        >
+                            <img src={actorImage} className={`w-full h-full object-contain ${actorState.action === 'walk' ? 'animate-bounce' : ''}`} alt="" />
+                            {aiBubble.visible && (
+                                <div className="absolute bottom-[105%] left-1/2 -translate-x-1/2 bg-white px-4 py-3 rounded-[20px] rounded-bl-none shadow-lg border-2 border-black/5 min-w-[120px] max-w-[280px] z-50">
+                                    <p className="text-xs font-bold text-slate-700 leading-tight text-center break-words">{aiBubble.text}</p>
+                                    <button onClick={(e) => { e.stopPropagation(); onDismissBubble(); }} className="absolute -top-2 -right-2 bg-slate-200 text-slate-500 rounded-full w-5 h-5 flex items-center justify-center text-[9px]">×</button>
+                                </div>
+                            )}
                         </div>
                     )}
                 </div>
@@ -101,6 +131,11 @@ interface RoomDashboardProps {
     /** 今日已生成时的欢迎语（savedRoomState.welcomeMessage） */
     welcomeMessage?: string;
     recentMessages: Message[];
+    /** 与全屏小屋共用的交互状态/handler：LIVE 窗内点家具/戳小人 = 小屋同一套交互 */
+    interaction: StageInteraction;
+    /** 点家具后的观察文本（与全屏共用同一份 state） */
+    observationText: string;
+    onDismissObservation: () => void;
     onBack: () => void;
     onEnterRoom: () => void;
     onOpenChat: () => void;
@@ -110,7 +145,8 @@ interface RoomDashboardProps {
 
 const RoomDashboard: React.FC<RoomDashboardProps> = ({
     char, items, wallStyle, floorStyle, actorImage, schedule, welcomeMessage,
-    recentMessages, onBack, onEnterRoom, onOpenChat, onOpenFragments, onOpenSettings,
+    recentMessages, interaction, observationText, onDismissObservation,
+    onBack, onEnterRoom, onOpenChat, onOpenFragments, onOpenSettings,
 }) => {
     const [now, setNow] = useState(new Date());
     useEffect(() => {
@@ -181,17 +217,31 @@ const RoomDashboard: React.FC<RoomDashboardProps> = ({
                     </div>
                 </div>
 
-                {/* LIVE 小屋直播窗（等比例缩放，点击进全屏小屋） */}
-                <button onClick={onEnterRoom} className={`${cardCls} w-full overflow-hidden p-0 text-left active:scale-[0.99] transition-transform`}>
-                    <div className="absolute top-2.5 left-3 z-10 flex items-center gap-1.5 px-2 py-1 rounded-full bg-white/85 border border-[#d9cdf0]/80 shadow-sm">
+                {/* LIVE 小屋窗：不是缩略图入口，本身就是小屋——点家具/戳小人与全屏同一套交互。
+                    全屏（装修/更新这一天等重操作）走右上角展开键或底部导航 LIVE。 */}
+                <div className={`${cardCls} w-full overflow-hidden p-0`}>
+                    <div className="absolute top-2.5 left-3 z-10 flex items-center gap-1.5 px-2 py-1 rounded-full bg-white/85 border border-[#d9cdf0]/80 shadow-sm pointer-events-none">
                         <span className="w-1.5 h-1.5 rounded-full bg-rose-400 animate-pulse"></span>
                         <span className="text-[9px] font-bold tracking-[0.2em] text-[#7c6ba6]">LIVE</span>
                     </div>
-                    <div className="absolute top-2.5 right-3 z-10 px-2 py-1 rounded-full bg-white/85 border border-[#d9cdf0]/80 shadow-sm text-[9px] font-bold text-[#8a7ab0]">
-                        ☁ {timeStr}
+                    <div className="absolute top-2.5 right-3 z-10 flex items-center gap-1.5">
+                        <span className="px-2 py-1 rounded-full bg-white/85 border border-[#d9cdf0]/80 shadow-sm text-[9px] font-bold text-[#8a7ab0] pointer-events-none">☁ {timeStr}</span>
+                        <button onClick={onEnterRoom} aria-label="全屏小屋" className="p-1.5 rounded-full bg-white/85 border border-[#d9cdf0]/80 shadow-sm text-[#8a7ab0] active:scale-90 transition-transform">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.2} stroke="currentColor" className="w-3 h-3"><path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" /></svg>
+                        </button>
                     </div>
-                    <MiniRoomStage items={items} wallStyle={wallStyle} floorStyle={floorStyle} actorImage={actorImage} />
-                </button>
+                    <MiniRoomStage items={items} wallStyle={wallStyle} floorStyle={floorStyle} actorImage={actorImage} interaction={interaction} />
+                    {/* 观察卡：点家具后的旁白（与全屏共用同一份 state） */}
+                    {observationText && (
+                        <div className="relative border-t border-[#d9cdf0]/50 bg-white/75 px-3 py-2.5">
+                            <div className="flex justify-between items-start">
+                                <span className="text-[8px] font-bold text-[#8a7ab0] uppercase tracking-[0.25em]">Observation</span>
+                                <button onClick={onDismissObservation} className="text-[#b0a3d4] -mt-0.5 px-1">×</button>
+                            </div>
+                            <p className="text-[11px] text-[#4a3f63] leading-relaxed mt-0.5">{observationText}</p>
+                        </div>
+                    )}
+                </div>
 
                 {/* 当前日程 */}
                 <div className={`${cardCls} p-3.5`}>
