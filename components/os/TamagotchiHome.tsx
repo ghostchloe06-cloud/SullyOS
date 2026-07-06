@@ -1,8 +1,10 @@
 import React, { useEffect, useMemo, useState, useRef, useCallback } from 'react';
 import { useOS } from '../../context/OSContext';
 import { INSTALLED_APPS } from '../../constants';
-import { AppID, CharacterProfile, RoomItem } from '../../types';
+import { AppID, CharacterProfile, RoomItem, DailySchedule, ScheduleSlot } from '../../types';
 import { DB } from '../../utils/db';
+import { getLastInnerState } from '../../utils/emotionApply';
+import { getFlowNarrativeKey } from '../../utils/scheduleGenerator';
 import AppIcon from './AppIcon';
 import TokenImg from './TokenImg';
 import { useBlobRefUrl } from '../../utils/blobRef';
@@ -324,16 +326,17 @@ const StatusCard = React.memo<{ hh: string; mm: string; level: number; exp: numb
     }
 );
 
-// ─── 舞台家具（静态贴纸，逐件 memo）───────────────────────────
-const StageItem = React.memo<{ item: RoomItem }>(({ item }) => (
-    <div className="absolute pointer-events-none select-none"
+// ─── 舞台家具（贴纸，逐件 memo；可点击 = 小屋同款就地交互）─────────
+const StageItem = React.memo<{ item: RoomItem; onTap: (item: RoomItem) => void }>(({ item, onTap }) => (
+    <div className="absolute select-none cursor-pointer active:opacity-90"
+        onClick={(e) => { e.stopPropagation(); onTap(item); }}
         style={{
             left: `${item.x}%`, top: `${item.y}%`,
             width: `${80 * item.scale}px`,
             transform: `translate(-50%, -100%) rotate(${item.rotation}deg)`,
             zIndex: itemZ(item),
         }}>
-        <TokenImg value={item.image} className="w-full h-auto object-contain" draggable={false} loading="lazy" alt="" />
+        <TokenImg value={item.image} className="w-full h-auto object-contain pointer-events-none" draggable={false} loading="lazy" alt="" />
     </div>
 ));
 
@@ -384,8 +387,13 @@ const StageWindow = React.memo<{ night: boolean }>(({ night }) => (
 ));
 
 // ─── 角色（呼吸 / 游荡 / 戳一戳念聊天台词 / 夜间飘 Zzz），自治状态不外溢 ─
-const Actor = React.memo<{ actorImg: string | undefined; night: boolean; pokeLines: string[]; unread: number; onChat: () => void }>(
-    ({ actorImg, night, pokeLines, unread, onChat }) => {
+// nudge/say：家具就地交互的外部指令（走到家具旁 + 念缓存的反应台词），seq 变化才生效——
+// 事件驱动的一次性 set，不引入任何常驻动画/interval，不破性能宪法。
+const Actor = React.memo<{
+    actorImg: string | undefined; night: boolean; pokeLines: string[]; unread: number; onChat: () => void;
+    nudge?: { x: number; y: number; seq: number }; say?: { text: string; seq: number };
+}>(
+    ({ actorImg, night, pokeLines, unread, onChat, nudge, say }) => {
         const [pos, setPos] = useState({ x: 48, y: 80 });
         const [bounce, setBounce] = useState(false);
         const [pokeText, setPokeText] = useState('');
@@ -402,6 +410,18 @@ const Actor = React.memo<{ actorImg: string | undefined; night: boolean; pokeLin
             t = setTimeout(wander, 15000);
             return () => clearTimeout(t);
         }, [night]);
+
+        // 家具交互指令：走过去 + 念一句（气泡复用 pokeText 通道，优先级一致）
+        useEffect(() => {
+            if (nudge && nudge.seq > 0) setPos({ x: nudge.x, y: nudge.y });
+        }, [nudge?.seq]);
+        useEffect(() => {
+            if (say && say.seq > 0 && say.text) {
+                setPokeText(say.text);
+                const t = setTimeout(() => setPokeText(''), 4200);
+                return () => clearTimeout(t);
+            }
+        }, [say?.seq]);
 
         const poke = (e: React.MouseEvent) => {
             e.stopPropagation();
@@ -475,43 +495,76 @@ const StageClock = React.memo<{ hh: string; mm: string; night: boolean }>(({ hh,
 ));
 
 // ─── 小屋舞台：渐变描边华丽框；props 全为原始值/memo 引用 ────────────
+// 等比例缩放（用户点名修的）：家具/小人是「位置百分比 + 尺寸固定像素」，直接放小容器里
+// 会"位置缩了、东西不缩"。这里按固定 390 宽虚拟画布原样渲染，再整体 transform:scale ——
+// 墙/地板/家具/小人一起缩，与小屋 App 全屏视图比例完全一致。
+// 交互（用户点名要的）：舞台不再是「点一下去小屋 App」的跳转封面——点家具就地看
+// （念缓存的反应 + 走过去），戳小人念台词；去小屋 App 改走右下角 ⌂ 小钮 / dock HOME。
+const STAGE_W = 390;
+const STAGE_H = 330;
 const RoomStage = React.memo<{
     items: RoomItem[]; wallStyle: string; floorStyle: string;
     actorImg: string | undefined; night: boolean; pokeLines: string[]; unread: number;
     hh: string; mm: string;
+    nudge?: { x: number; y: number; seq: number }; say?: { text: string; seq: number };
+    onItemTap: (item: RoomItem) => void;
     onVisit: () => void; onChat: () => void;
-}>(({ items, wallStyle, floorStyle, actorImg, night, pokeLines, unread, hh, mm, onVisit, onChat }) => (
-    /* 外层：渐变描边圈（伴色→邻色→主色浅调）+ 主色柔影 */
-    <div className="relative flex-1 min-h-0 rounded-[2rem] p-[3px]"
-        style={{ background: RIM, boxShadow: '0 8px 24px var(--tg-glow35)' }}>
-        {/* 框上四角小白钻 */}
-        {[[0, 0], [1, 0], [0, 1], [1, 1]].map(([r, b], i) => (
-            <span key={i} className="absolute w-2 h-2 rotate-45 pointer-events-none z-[80]"
-                style={{ [r ? 'right' : 'left']: -3, [b ? 'bottom' : 'top']: -3, background: '#fff', boxShadow: `0 0 6px ${PAL.pink}` } as React.CSSProperties} />
-        ))}
-        <div onClick={onVisit}
-            className="relative w-full h-full rounded-[1.85rem] overflow-hidden cursor-pointer active:opacity-95"
-            style={{ border: '2px solid rgba(255,255,255,0.9)', contain: 'layout paint' }}>
-            {/* 墙 / 地板（与 RoomApp 同分割线） */}
-            <div className="absolute top-0 left-0 w-full h-[65%] z-0" style={{ background: wallStyle }} />
-            <div className="absolute bottom-0 left-0 w-full h-[35%] z-0" style={{ background: floorStyle }} />
-            <div className="absolute top-[65%] w-full h-6 bg-gradient-to-b from-black/10 to-transparent pointer-events-none z-0" />
-            <StageWindow night={night} />
+}>(({ items, wallStyle, floorStyle, actorImg, night, pokeLines, unread, hh, mm, nudge, say, onItemTap, onVisit, onChat }) => {
+    const boxRef = useRef<HTMLDivElement>(null);
+    const [scale, setScale] = useState(0);
+    useEffect(() => {
+        const el = boxRef.current;
+        if (!el) return;
+        const update = () => setScale(el.clientWidth / STAGE_W);
+        update();
+        const ro = new ResizeObserver(update);
+        ro.observe(el);
+        return () => ro.disconnect();
+    }, []);
+    return (
+        /* 外层：渐变描边圈（伴色→邻色→主色浅调）+ 主色柔影 */
+        <div className="relative shrink-0 rounded-[2rem] p-[3px]"
+            style={{ background: RIM, boxShadow: '0 8px 24px var(--tg-glow35)' }}>
+            {/* 框上四角小白钻 */}
+            {[[0, 0], [1, 0], [0, 1], [1, 1]].map(([r, b], i) => (
+                <span key={i} className="absolute w-2 h-2 rotate-45 pointer-events-none z-[80]"
+                    style={{ [r ? 'right' : 'left']: -3, [b ? 'bottom' : 'top']: -3, background: '#fff', boxShadow: `0 0 6px ${PAL.pink}` } as React.CSSProperties} />
+            ))}
+            <div ref={boxRef}
+                className="relative w-full rounded-[1.85rem] overflow-hidden"
+                style={{ border: '2px solid rgba(255,255,255,0.9)', contain: 'layout paint', aspectRatio: `${STAGE_W}/${STAGE_H}` }}>
+                {/* 虚拟画布：390 宽设计稿整体缩放，人/家具/背景等比例 */}
+                {scale > 0 && (
+                    <div className="absolute top-0 left-0" style={{ width: STAGE_W, height: STAGE_H, transform: `scale(${scale})`, transformOrigin: 'top left' }}>
+                        {/* 墙 / 地板（与 RoomApp 同分割线） */}
+                        <div className="absolute top-0 left-0 w-full h-[65%] z-0" style={{ background: wallStyle }} />
+                        <div className="absolute bottom-0 left-0 w-full h-[35%] z-0" style={{ background: floorStyle }} />
+                        <div className="absolute top-[65%] w-full h-6 bg-gradient-to-b from-black/10 to-transparent pointer-events-none z-0" />
+                        <StageWindow night={night} />
 
-            {items.map(item => <StageItem key={item.id} item={item} />)}
+                        {items.map(item => <StageItem key={item.id} item={item} onTap={onItemTap} />)}
 
-            <Actor actorImg={actorImg} night={night} pokeLines={pokeLines} unread={unread} onChat={onChat} />
+                        <Actor actorImg={actorImg} night={night} pokeLines={pokeLines} unread={unread} onChat={onChat} nudge={nudge} say={say} />
+                    </div>
+                )}
 
-            {/* ✦LIVE 徽标（渐变粉 + 呼吸小点）+ 角落电子钟 */}
-            <div className="absolute top-2 left-2 z-[72] rounded-full px-2.5 py-[4px] pointer-events-none select-none flex items-center gap-1.5"
-                style={{ background: `linear-gradient(135deg, ${PAL.pink}, ${PAL.hot})`, border: '1.5px solid rgba(255,255,255,0.85)', boxShadow: '0 3px 8px var(--tg-hotglow45)' }}>
-                <span className="w-1.5 h-1.5 rounded-full bg-white" style={{ animation: 'tama-twinkle 1.6s ease-in-out infinite' }} />
-                <span className="text-[9px] font-bold tracking-[0.16em] text-white" style={{ fontFamily: FONT_PX }}>LIVE</span>
+                {/* 徽标/钟/⌂ 挂在容器层（不进缩放画布，任何屏宽都保持原生清晰度） */}
+                <div className="absolute top-2 left-2 z-[72] rounded-full px-2.5 py-[4px] pointer-events-none select-none flex items-center gap-1.5"
+                    style={{ background: `linear-gradient(135deg, ${PAL.pink}, ${PAL.hot})`, border: '1.5px solid rgba(255,255,255,0.85)', boxShadow: '0 3px 8px var(--tg-hotglow45)' }}>
+                    <span className="w-1.5 h-1.5 rounded-full bg-white" style={{ animation: 'tama-twinkle 1.6s ease-in-out infinite' }} />
+                    <span className="text-[9px] font-bold tracking-[0.16em] text-white" style={{ fontFamily: FONT_PX }}>LIVE</span>
+                </div>
+                <StageClock hh={hh} mm={mm} night={night} />
+                {/* ⌂ 进小屋 App（装修/更新这一天等重操作） */}
+                <button onClick={onVisit} aria-label="进小屋"
+                    className="absolute bottom-2 right-2 z-[72] w-8 h-8 rounded-xl flex items-center justify-center active:scale-90 transition-transform"
+                    style={{ background: 'rgba(255,255,255,0.9)', border: `2px solid ${PAL.frame}`, boxShadow: '0 2px 6px var(--tg-glow25)', color: PAL.grape }}>
+                    <div className="w-4 h-4">{DOCK_GLYPHS.home}</div>
+                </button>
             </div>
-            <StageClock hh={hh} mm={mm} night={night} />
         </div>
-    </div>
-));
+    );
+});
 
 // ─── 底部五键 dock（CARE / TALK / HOME / ALBUM / SETTINGS）──────────
 // 图标一律 currentColor：扁平手绘风里图标用描边同色，不用白色
@@ -540,12 +593,115 @@ const DockKey: React.FC<{ glyph: string; label: string; fill: string; line: stri
     </button>
 );
 
+// ─── 信息卡（当前日程 / 一句心声 / 消息）───────────────────────────
+// 与 StatusCard 同一套卡面语言：白玉底 + 描金内框 + 四角宝石 + 星芒。
+// 全部 memo + 原始值 props：分钟跳动/主色切换不触达它们 reconcile。
+const PanelCard: React.FC<{ title: string; right?: React.ReactNode; children: React.ReactNode }> = ({ title, right, children }) => (
+    <div className="relative rounded-[1.4rem] px-3.5 py-3 overflow-hidden"
+        style={{ background: 'rgba(255,255,255,0.72)', border: `1.5px solid ${PAL.frameSoft}`, boxShadow: '0 5px 16px var(--tg-glow25)' }}>
+        <div className="absolute inset-[5px] rounded-[1.1rem] pointer-events-none" style={{ border: '1px solid var(--tg-frame-a30)' }} />
+        <GemCorners inset={9} />
+        <div className="relative flex items-center justify-between mb-1.5">
+            <span className="flex items-center gap-1.5 text-[12px] font-bold tracking-wide" style={{ fontFamily: FONT_CN, color: PAL.grape }}>
+                {title}<span className="text-[8px]" style={{ color: PAL.gold }}>✦</span>
+            </span>
+            {right}
+        </div>
+        <div className="relative">{children}</div>
+    </div>
+);
+
+// 当前日程：当前时段 + 之后安排 + 进度点；没日程给引导占位
+const SchedulePanel = React.memo<{ curText: string; curTime: string; nextText: string; dots: string; onOpen: () => void }>(
+    ({ curText, curTime, nextText, dots, onOpen }) => (
+        <PanelCard title="当前日程" right={<span className="text-[13px] tabular-nums" style={{ fontFamily: FONT_NUM, color: PAL.grape }}>{curTime}</span>}>
+            <button onClick={onOpen} className="w-full text-left active:opacity-80">
+                <p className="text-[13px] leading-relaxed" style={{ fontFamily: FONT_CN, color: PAL.ink }}>{curText}</p>
+                {nextText && <p className="text-[10px] mt-1" style={{ color: PAL.fade, fontFamily: FONT_CN }}>{nextText}</p>}
+                {dots && (
+                    <div className="flex items-center gap-1.5 mt-2">
+                        {dots.split('').map((d, i) => (
+                            <span key={i} className="rounded-full" style={d === '1'
+                                ? { width: 8, height: 8, background: 'var(--tg-ink)' }
+                                : { width: 6, height: 6, background: 'var(--tg-frame-a30)' }} />
+                        ))}
+                    </div>
+                )}
+            </button>
+        </PanelCard>
+    )
+);
+
+// 一句心声：情绪评估的 innerState → 日程意识流 → 「新的一天。」占位
+const HeartPanel = React.memo<{ text: string }>(({ text }) => (
+    <PanelCard title="一句心声" right={<span className="text-[12px]" style={{ color: PAL.fade }}>🪶</span>}>
+        <p className="text-[12px] leading-[1.8]" style={{ fontFamily: FONT_CN, color: PAL.grape, display: '-webkit-box', WebkitLineClamp: 3, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>{text}</p>
+    </PanelCard>
+));
+
+// 消息：最近几条对话气泡 + 「回点什么…」回复条（点击无缝跳聊天）
+const MessagesPanel = React.memo<{ msgs: { id: number; mine: boolean; text: string }[]; unread: number; onChat: () => void }>(
+    ({ msgs, unread, onChat }) => (
+        <PanelCard title="消息" right={
+            <button onClick={onChat} className="text-[10px] font-bold active:scale-95 flex items-center gap-1" style={{ color: PAL.fade, fontFamily: FONT_CN }}>
+                {unread > 0 && <span className="min-w-[16px] h-[16px] px-1 rounded-full flex items-center justify-center text-[9px] font-bold text-white" style={{ background: PAL.hot }}>{unread > 99 ? '99+' : unread}</span>}
+                全部 ›
+            </button>
+        }>
+            {msgs.length > 0 ? (
+                <div className="space-y-1.5 mb-2.5">
+                    {msgs.map(m => (
+                        <div key={m.id} className={`flex ${m.mine ? 'justify-end' : 'justify-start'}`}>
+                            <div className="max-w-[82%] px-2.5 py-1.5 rounded-2xl text-[11px] leading-relaxed"
+                                style={m.mine
+                                    ? { background: `linear-gradient(135deg, ${PAL.peri}, ${PAL.pink})`, color: '#fff', borderBottomRightRadius: 6, fontFamily: FONT_CN, textShadow: '0 1px 2px rgba(90,70,130,0.25)' }
+                                    : { background: PAL.cream, color: PAL.ink, border: `1.5px solid ${PAL.frameSoft}`, borderBottomLeftRadius: 6, fontFamily: FONT_CN }}>
+                                {m.text}
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            ) : (
+                <p className="text-[11px] mb-2.5" style={{ color: PAL.fade, fontFamily: FONT_CN }}>还没聊过天，说点什么吧。</p>
+            )}
+            <button onClick={onChat} className="w-full flex items-center gap-2 px-3 py-2 rounded-2xl active:scale-[0.99] transition-transform"
+                style={{ background: PAL.cream, border: `2px solid ${PAL.frameSoft}` }}>
+                <span className="flex-1 text-left text-[11px]" style={{ color: PAL.fade, fontFamily: FONT_CN }}>回点什么…</span>
+                <span className="w-6 h-6 rounded-full flex items-center justify-center shrink-0"
+                    style={{ background: `linear-gradient(135deg, ${PAL.pink}, ${PAL.hot})`, boxShadow: '0 2px 6px var(--tg-hotglow45)' }}>
+                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#fff" className="w-3 h-3"><path d="M3.478 2.404a.75.75 0 0 0-.926.941l2.432 7.905H13.5a.75.75 0 0 1 0 1.5H4.984l-2.432 7.905a.75.75 0 0 0 .926.94 60.519 60.519 0 0 0 18.445-8.986.75.75 0 0 0 0-1.218A60.517 60.517 0 0 0 3.478 2.404Z" /></svg>
+                </span>
+            </button>
+        </PanelCard>
+    )
+);
+
+/** 与 context.ts buildScheduleInjection 同款分钟数比较：从后往前找第一个已开始的 slot。 */
+const findCurrentSlot = (schedule: DailySchedule | null): { cur: ScheduleSlot | null; next: ScheduleSlot | null } => {
+    if (!schedule?.slots?.length) return { cur: null, next: null };
+    const now = new Date();
+    const m = now.getHours() * 60 + now.getMinutes();
+    for (let i = schedule.slots.length - 1; i >= 0; i--) {
+        const [h, mi] = schedule.slots[i].startTime.split(':').map(Number);
+        if (m >= h * 60 + mi) return { cur: schedule.slots[i], next: schedule.slots[i + 1] || null };
+    }
+    return { cur: null, next: schedule.slots[0] };
+};
+
 // ─── 主组件 ───────────────────────────────────────────────────
 const TamagotchiHome: React.FC = () => {
     const { openApp, characters, activeCharacterId, setActiveCharacterId, virtualTime, unreadMessages, isDataLoaded, lastMsgTimestamp, addToast } = useOS();
 
-    const [stat, setStat] = useState<{ msgCount: number; pokeLines: string[] }>({ msgCount: 0, pokeLines: [] });
+    const [stat, setStat] = useState<{ msgCount: number; pokeLines: string[]; recent: { id: number; mine: boolean; text: string }[] }>({ msgCount: 0, pokeLines: [], recent: [] });
     const [drawerOpen, setDrawerOpen] = useState(false);
+    // 今日日程（当前日程卡 + 心声兜底）：一天一份，进屏取一次
+    const [schedule, setSchedule] = useState<DailySchedule | null>(null);
+    // 一句心声：localStorage 读取放进 state，避免 virtualTime 每秒 re-render 都同步读盘
+    const [heartLine, setHeartLine] = useState('');
+    // 家具就地交互：走过去(nudge) + 念反应(say) + 观察旁白（seq 事件驱动，无常驻动画）
+    const [nudge, setNudge] = useState<{ x: number; y: number; seq: number }>({ x: 48, y: 80, seq: 0 });
+    const [say, setSay] = useState<{ text: string; seq: number }>({ text: '', seq: 0 });
+    const [observation, setObservation] = useState('');
     const [devDebugVisible, setDevDebugVisible] = useState(() => isDevDebugAvailable());
     useEffect(() => subscribeDevDebugAvailability(setDevDebugVisible), []);
 
@@ -570,8 +726,9 @@ const TamagotchiHome: React.FC = () => {
     );
 
     // 取数：消息数（Lv/经验条）+ ta 最近 30 条文字回复（戳一戳台词，最新在前按顺序循环）
+    // + 消息卡的最近 3 条文本气泡预览（同一次查询顺手带出，不多读一次库）
     useEffect(() => {
-        if (!isDataLoaded || !char) { setStat({ msgCount: 0, pokeLines: [] }); return; }
+        if (!isDataLoaded || !char) { setStat({ msgCount: 0, pokeLines: [], recent: [] }); return; }
         DB.getMessagesByCharId(char.id).then(msgs => {
             const visible = msgs.filter(m => m.role !== 'system');
             const lines = visible
@@ -581,9 +738,53 @@ const TamagotchiHome: React.FC = () => {
                 .slice(-30)
                 .reverse()
                 .map(t => t.length > 42 ? t.slice(0, 42) + '…' : t);
-            setStat({ msgCount: visible.length, pokeLines: lines });
+            const recent = visible
+                .filter(m => (m.role === 'user' || m.role === 'assistant') && (!m.type || m.type === 'text') && typeof m.content === 'string' && m.content.trim())
+                .slice(-3)
+                .map(m => ({
+                    id: m.id,
+                    mine: m.role === 'user',
+                    text: m.content.length > 56 ? m.content.slice(0, 56) + '…' : m.content,
+                }));
+            setStat({ msgCount: visible.length, pokeLines: lines, recent });
         }).catch(() => {});
     }, [char?.id, lastMsgTimestamp, isDataLoaded]);
+
+    // 今日日程：换角色 / 有新消息（聊天会触发生成）时刷一次
+    useEffect(() => {
+        if (!char) { setSchedule(null); return; }
+        const today = new Date().toISOString().split('T')[0];
+        DB.getDailySchedule(char.id, today).then(s => setSchedule(s || null)).catch(() => setSchedule(null));
+    }, [char?.id, lastMsgTimestamp]);
+
+    // 一句心声：innerState（情绪评估落的）→ 日程意识流 → 占位
+    useEffect(() => {
+        if (!char) { setHeartLine('新的一天。'); return; }
+        const inner = getLastInnerState(char.id);
+        const flow = schedule?.flowNarrative?.[getFlowNarrativeKey(new Date().getHours())] || '';
+        setHeartLine(inner || flow || '新的一天。');
+    }, [char?.id, lastMsgTimestamp, schedule]);
+
+    // 家具就地交互：小屋 App 同款（读 savedRoomState.items 的缓存反应，零 LLM 调用），
+    // 走过去 + 念一句 + 观察旁白；这段互动照样落一条系统消息进聊天（带最近 50 条去重），
+    // 让角色记得「刚才一起看过这件东西」。
+    const onItemTap = useCallback((item: RoomItem) => {
+        if (!char) return;
+        const saved = (char.savedRoomState?.items || {}) as Record<string, { description?: string; reaction?: string }>;
+        const cached = saved[item.id] || saved[item.name];
+        const reaction = cached?.reaction || '(盯…)';
+        const desc = cached?.description || `${item.name}静静地摆在那里。`;
+        setNudge(p => ({ x: item.x, y: Math.min(92, Math.max(FLOOR_HORIZON + 5, item.y + 5)), seq: p.seq + 1 }));
+        setSay(p => ({ text: reaction.length > 42 ? reaction.slice(0, 42) + '…' : reaction, seq: p.seq + 1 }));
+        setObservation(desc);
+        if (cached?.description) {
+            const content = `[${char.name}的小屋]（在主屏幕看了看${item.name}）${desc}。${char.name}表示：${cached.reaction || ''}`;
+            DB.getMessagesByCharId(char.id).then(msgs => {
+                const dup = msgs.slice(-50).some(m => m.role === 'system' && m.content === content);
+                if (!dup) DB.saveMessage({ charId: char.id, role: 'system', type: 'text', content }).catch(() => {});
+            }).catch(() => {});
+        }
+    }, [char]);
 
     // 小屋数据：优先角色 roomConfig，兜底镜像样板房（见文件头注释）
     const isSully = char?.id === 'preset-sully-v2' || char?.name === 'Sully';
@@ -625,6 +826,17 @@ const TamagotchiHome: React.FC = () => {
     const hh = virtualTime.hours.toString().padStart(2, '0');
     const mm = virtualTime.minutes.toString().padStart(2, '0');
     const { level, exp, expMax } = deriveStats(stat.msgCount);
+
+    // 当前日程卡的展示串（纯字符串 props → memo 卡片只在内容真变时 reconcile）
+    const { cur: curSlot, next: nextSlot } = findCurrentSlot(schedule);
+    const slotCurTime = curSlot?.startTime || '--:--';
+    const slotCurText = curSlot
+        ? `${curSlot.emoji ? curSlot.emoji + ' ' : ''}${curSlot.activity}${curSlot.location ? `（${curSlot.location}）` : ''}`
+        : (schedule ? `今天还没开始活动${nextSlot ? `，稍后先${nextSlot.activity}（${nextSlot.startTime}）` : ''}` : '今天的日程还没生成，去聊两句就有了～');
+    const slotNextText = curSlot && nextSlot ? `之后 · ${nextSlot.startTime} ${nextSlot.activity}` : '';
+    const slotDots = schedule?.slots?.length
+        ? schedule.slots.map(s => (curSlot && s.startTime <= curSlot.startTime) ? '1' : '0').join('')
+        : '';
     const totalUnread = useMemo(() => Object.values(unreadMessages).reduce((a, b) => a + b, 0), [unreadMessages]);
     const charUnread = char ? (unreadMessages[char.id] || 0) : 0;
 
@@ -726,21 +938,40 @@ const TamagotchiHome: React.FC = () => {
                 <>
                     <StatusCard hh={hh} mm={mm} level={level} exp={exp} expMax={expMax} charName={char.name} avatar={char.avatar} multiChar={characters.length > 1} onSwitch={switchChar} />
 
-                    {/* ===== 小屋舞台 ===== */}
-                    <div className="relative flex-1 min-h-0 flex flex-col mt-3.5">
+                    {/* ===== 中段（可滚动）：小屋舞台 + 观察旁白 + 三张信息卡 ===== */}
+                    <div className="relative flex-1 min-h-0 overflow-y-auto no-scrollbar mt-3.5 pb-1.5">
                         <RoomStage
                             items={items} wallStyle={wallStyle} floorStyle={floorStyle}
                             actorImg={actorImg} night={night} pokeLines={stat.pokeLines} unread={charUnread}
                             hh={hh} mm={mm}
+                            nudge={nudge} say={say} onItemTap={onItemTap}
                             onVisit={openRoom} onChat={openChat}
                         />
-                        {/* 华丽分节丝带：发丝线 + 星芒 + 文字 */}
-                        <div className="flex items-center gap-2 mt-2 shrink-0 px-2">
-                            <div className="flex-1 h-px" style={{ background: `linear-gradient(90deg, transparent, ${PAL.frame})`, opacity: 0.6 }} />
-                            <span className="text-[8px]" style={{ color: PAL.hot }}>✦</span>
-                            <span className="text-[9px] tracking-[0.3em] font-bold" style={{ fontFamily: FONT_PX, color: PAL.fade }}>TAP SCREEN TO VISIT</span>
-                            <span className="text-[8px]" style={{ color: PAL.hot }}>✦</span>
-                            <div className="flex-1 h-px" style={{ background: `linear-gradient(270deg, transparent, ${PAL.frame})`, opacity: 0.6 }} />
+                        {/* 观察旁白（点家具后出现）/ 平时是华丽分节丝带 */}
+                        {observation ? (
+                            <div className="relative mt-2 px-3.5 py-2.5 rounded-2xl"
+                                style={{ background: 'rgba(255,255,255,0.72)', border: `1.5px solid ${PAL.frameSoft}`, boxShadow: '0 4px 12px var(--tg-glow16)' }}>
+                                <div className="flex justify-between items-start">
+                                    <span className="text-[8px] font-bold tracking-[0.28em]" style={{ fontFamily: FONT_PX, color: PAL.fade }}>OBSERVATION ✦</span>
+                                    <button onClick={() => setObservation('')} className="px-1 -mt-0.5" style={{ color: PAL.fade }}>×</button>
+                                </div>
+                                <p className="text-[11px] leading-relaxed mt-0.5" style={{ fontFamily: FONT_CN, color: PAL.grape }}>{observation}</p>
+                            </div>
+                        ) : (
+                            <div className="flex items-center gap-2 mt-2 px-2">
+                                <div className="flex-1 h-px" style={{ background: `linear-gradient(90deg, transparent, ${PAL.frame})`, opacity: 0.6 }} />
+                                <span className="text-[8px]" style={{ color: PAL.hot }}>✦</span>
+                                <span className="text-[9px] tracking-[0.3em] font-bold" style={{ fontFamily: FONT_PX, color: PAL.fade }}>TAP FURNITURE · POKE TA</span>
+                                <span className="text-[8px]" style={{ color: PAL.hot }}>✦</span>
+                                <div className="flex-1 h-px" style={{ background: `linear-gradient(270deg, transparent, ${PAL.frame})`, opacity: 0.6 }} />
+                            </div>
+                        )}
+
+                        {/* 三张信息卡：当前日程 / 一句心声 / 消息 */}
+                        <div className="mt-2.5 space-y-2.5">
+                            <SchedulePanel curText={slotCurText} curTime={slotCurTime} nextText={slotNextText} dots={slotDots} onOpen={openChat} />
+                            <HeartPanel text={heartLine} />
+                            <MessagesPanel msgs={stat.recent} unread={charUnread} onChat={openChat} />
                         </div>
                     </div>
 
