@@ -7,7 +7,7 @@ import { Share } from '@capacitor/share';
 import { safeResponseJson } from '../utils/safeApi';
 import { EXPORT_CHUNK_SIZE, sliceRanges } from '../utils/backupExport';
 import Modal from '../components/os/Modal';
-import { NotionManager, FeishuManager } from '../utils/realtimeContext';
+import { NotionManager, FeishuManager, RealtimeContextManager, fetchOwmWeather, fetchOpenMeteoWeather } from '../utils/realtimeContext';
 import { XhsMcpClient } from '../utils/xhsMcpClient';
 import { getMcdToken, setMcdToken as saveMcdToken, isMcdEnabled, setMcdEnabled as saveMcdEnabled, testMcdConnection, resetMcdSession } from '../utils/mcdMcpClient';
 import { getLuckinToken, setLuckinToken as saveLuckinToken, isLuckinEnabled, setLuckinEnabled as saveLuckinEnabled, testLuckinConnection, resetLuckinSession } from '../utils/luckinMcpClient';
@@ -815,28 +815,26 @@ const Settings: React.FC = () => {
               userXsecToken: realtimeConfig.xhsMcpConfig?.userXsecToken, // 保留自动获取的 token
           }
       });
+      RealtimeContextManager.clearCache(); // 城市/来源改了就别再吐旧缓存
       addToast('实时感知配置已保存', 'success');
       setShowRealtimeModal(false);
   };
 
-  // 测试天气API连接
+  // 测试天气API连接：填了 key 测 OpenWeatherMap，没填测免费的 Open-Meteo
   const testWeatherApi = async () => {
-      if (!rtWeatherKey) {
-          setRtTestStatus('请先填写 API Key');
+      if (!rtWeatherCity) {
+          setRtTestStatus('请先填写城市');
           return;
       }
       setRtTestStatus('正在测试...');
       try {
-          const url = `https://api.openweathermap.org/data/2.5/weather?q=${rtWeatherCity}&appid=${rtWeatherKey}&units=metric&lang=zh_cn`;
-          const res = await fetch(url);
-          if (res.ok) {
-              const data = await safeResponseJson(res);
-              setRtTestStatus(`连接成功！${data.name}: ${data.weather[0]?.description}, ${Math.round(data.main.temp)}°C`);
-          } else {
-              setRtTestStatus(`连接失败: HTTP ${res.status}`);
-          }
+          const weather = rtWeatherKey
+              ? await fetchOwmWeather(rtWeatherCity, rtWeatherKey)
+              : await fetchOpenMeteoWeather(rtWeatherCity);
+          const source = rtWeatherKey ? 'OpenWeatherMap' : 'Open-Meteo';
+          setRtTestStatus(`连接成功！(${source}) ${weather.city}: ${weather.description}, ${weather.temp}°C`);
       } catch (e: any) {
-          setRtTestStatus(`网络错误: ${e.message}`);
+          setRtTestStatus(`连接失败: ${e.message}`);
       }
   };
 
@@ -2472,12 +2470,12 @@ const Settings: React.FC = () => {
                   {rtWeatherEnabled && (
                       <div className="space-y-2">
                           <div>
-                              <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">OpenWeatherMap API Key</label>
-                              <input type="password" value={rtWeatherKey} onChange={e => setRtWeatherKey(e.target.value)} className="w-full bg-white/80 border border-emerald-200 rounded-xl px-3 py-2 text-sm font-mono" placeholder="获取: openweathermap.org" />
+                              <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">OpenWeatherMap API Key（可选）</label>
+                              <input type="password" value={rtWeatherKey} onChange={e => setRtWeatherKey(e.target.value)} className="w-full bg-white/80 border border-emerald-200 rounded-xl px-3 py-2 text-sm font-mono" placeholder="留空则用免费的 Open-Meteo，无需注册" />
                           </div>
                           <div>
-                              <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">城市 (英文)</label>
-                              <input type="text" value={rtWeatherCity} onChange={e => setRtWeatherCity(e.target.value)} className="w-full bg-white/80 border border-emerald-200 rounded-xl px-3 py-2 text-sm" placeholder="Beijing, Shanghai, etc." />
+                              <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">城市</label>
+                              <input type="text" value={rtWeatherCity} onChange={e => setRtWeatherCity(e.target.value)} className="w-full bg-white/80 border border-emerald-200 rounded-xl px-3 py-2 text-sm" placeholder="北京 / Beijing / Shanghai" />
                           </div>
                           <button onClick={testWeatherApi} className="w-full py-2 bg-emerald-100 text-emerald-600 text-xs font-bold rounded-xl active:scale-95 transition-transform">测试天气API</button>
                       </div>
