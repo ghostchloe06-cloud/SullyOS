@@ -5,7 +5,7 @@ import { DB } from '../utils/db';
 import { StudyCourse, StudyChapter, CharacterProfile, Message, UserProfile, APIConfig, StudyTutorPreset, QuizQuestion, QuizSession, QuizQuestionNote } from '../types';
 import { ContextBuilder } from '../utils/context';
 import Modal from '../components/os/Modal';
-import { safeResponseJson } from '../utils/safeApi';
+import { safeResponseJson, extractJson } from '../utils/safeApi';
 import { injectMemoryPalace } from '../utils/memoryPalace/pipeline';
 import { Notepad, Check, X, CheckCircle, XCircle, Hand } from '@phosphor-icons/react';
 
@@ -609,7 +609,11 @@ For each chapter, provide a title, a brief summary of what it covers, and a diff
         if (!response.ok) throw new Error('API Error');
         const data = await safeResponseJson(response);
         const content = data.choices[0].message.content.replace(/```json/g, '').replace(/```/g, '').trim();
-        const json = JSON.parse(content);
+        // 同 generateQuiz：走 extractJson 的多层容错，避免 Claude 未转义字符导致的 parse error。
+        const json = extractJson(content);
+        if (!json || !Array.isArray(json.chapters)) {
+            throw new Error('模型返回的章节格式无法解析，请重试');
+        }
 
         return {
             id: `course-${Date.now()}`,
@@ -978,6 +982,8 @@ ${chunkText.substring(0, 10000)}
 - Provide a brief explanation for each answer
 
 ### Output Format (Strict JSON, no markdown wrapping)
+- Output ONLY the JSON object, no prose before or after.
+- Inside any string value, escape special characters: use \\" for quotes, \\\\ for backslashes (e.g. LaTeX like \\\\frac), and \\n for line breaks. Do NOT put raw newlines or unescaped quotes inside a string.
 {
   "questions": [
     {
@@ -1017,7 +1023,12 @@ ${chunkText.substring(0, 10000)}
             if (!response.ok) throw new Error(`API Error: ${response.status}`);
             const data = await safeResponseJson(response);
             const content = (data.choices?.[0]?.message?.content || data.choices?.[0]?.message?.reasoning_content || '').replace(/```json/g, '').replace(/```/g, '').trim();
-            const json = JSON.parse(content);
+            // Claude 常返回未转义特殊字符（引号 / 反斜杠 / 换行）的 JSON，裸 JSON.parse 会在
+            // line 12 附近炸。走 extractJson 的多层容错（去围栏 / 补尾逗号 / 转义内层引号 / 修复截断）。
+            const json = extractJson(content);
+            if (!json || !Array.isArray(json.questions)) {
+                throw new Error('模型返回的题目格式无法解析，请重试');
+            }
 
             const questions: QuizQuestion[] = (json.questions || []).map((q: any, i: number) => ({
                 id: `q-${Date.now()}-${i}`,
