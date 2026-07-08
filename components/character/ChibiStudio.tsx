@@ -2,9 +2,10 @@ import React, { useMemo, useState } from 'react';
 import { useOS } from '../../context/OSContext';
 import { CharacterProfile, ChibiStudioSlotId } from '../../types';
 import { CreatorIframe, type ChibiResult, LIKE520_RECORD_KEY, isSullyChar, sullyPresets } from '../Like520Event';
+import CreatorPartsUploader from './CreatorPartsUploader';
 import { useBlobRefUrl, putImageBlob, dataUrlToBlob, resolveRefToDataUrl } from '../../utils/blobRef';
 import { VR_DEFAULT_INTERVAL_MIN } from '../../utils/vrWorld/constants';
-import { CaretLeft, PencilSimple, ArrowsClockwise, Sparkle, X } from '@phosphor-icons/react';
+import { CaretLeft, CaretRight, PencilSimple, ArrowsClockwise, Sparkle, X, FileArrowUp } from '@phosphor-icons/react';
 
 // ============================================================
 // QQ捏人工坊（神经链接）—— 手办展示柜
@@ -206,6 +207,7 @@ const ChibiStudio: React.FC<{ charId: string; onClose: () => void }> = ({ charId
     const [editing, setEditing] = useState<ChibiStudioSlotId | null>(null);
     const [syncConfirm, setSyncConfirm] = useState<ChibiStudioSlotId | null>(null);
     const [syncing, setSyncing] = useState(false);
+    const [showUploader, setShowUploader] = useState(false); // 自定义素材工坊（PSD 批量导入）
 
     const studio = char?.chibiStudio;
     const rec = char?.specialMomentRecords?.[LIKE520_RECORD_KEY];
@@ -346,6 +348,11 @@ const ChibiStudio: React.FC<{ charId: string; onClose: () => void }> = ({ charId
         setSyncConfirm(null);
     };
 
+    // ── 自定义素材工坊（PSD 批量导入）──
+    if (showUploader) {
+        return <CreatorPartsUploader onClose={() => setShowUploader(false)} />;
+    }
+
     // ── 捏人器全屏页 ──
     if (editing) {
         const slotMeta = SLOTS.find(s => s.id === editing)!;
@@ -394,6 +401,14 @@ const ChibiStudio: React.FC<{ charId: string; onClose: () => void }> = ({ charId
                 <p className="text-[10.5px] text-indigo-300/55 mt-2 pl-1">
                     同一只角色在三个地方的 Q 版形象——可以各捏各的，也可以挑一只「同步到全部」。
                 </p>
+                {/* 自定义素材工坊入口：PSD 批量导入自己的部件（正式站用户也能用） */}
+                <button onClick={() => setShowUploader(true)}
+                    className="mt-3 w-full flex items-center gap-2 rounded-xl px-3.5 py-2.5 border border-amber-300/25 active:scale-[0.99] transition-transform"
+                    style={{ background: 'linear-gradient(135deg, rgba(251,191,36,0.14), rgba(245,158,11,0.06))' }}>
+                    <FileArrowUp size={16} weight="bold" className="text-amber-300 shrink-0" />
+                    <span className="text-[12px] font-bold text-amber-100 tracking-wide">上传自定义素材（PSD 批量导入）</span>
+                    <CaretRight size={15} weight="bold" className="ml-auto text-amber-200/50" />
+                </button>
             </div>
 
             {/* 展示柜（三层展台） */}
