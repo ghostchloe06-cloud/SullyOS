@@ -15,7 +15,7 @@ import { DEFAULT_ARCHIVE_PROMPTS } from '../components/chat/ChatConstants';
 import ImpressionPanel from '../components/character/ImpressionPanel';
 import RoomPlatePanel from '../components/character/RoomPlatePanel';
 import MemoryArchivist from '../components/character/MemoryArchivist';
-import ChibiStudio from '../components/character/ChibiStudio';
+import ChibiStudio, { ChibiShelfPanel } from '../components/character/ChibiStudio';
 import { safeFetchJson, extractContent } from '../utils/safeApi';
 import { fetchMiniMaxVoices, MiniMaxVoiceItem } from '../utils/minimaxVoice';
 import { resolveMiniMaxApiKey } from '../utils/minimaxApiKey';
@@ -138,7 +138,7 @@ const Character: React.FC = () => {
           return next;
       });
   };
-  const [detailTab, setDetailTab] = useState<'identity' | 'memory' | 'impression' | 'plates'>('identity');
+  const [detailTab, setDetailTab] = useState<'identity' | 'memory' | 'impression' | 'plates' | 'chibi'>('identity');
   // QQ捏人工坊（手办柜）全屏覆盖层
   const [showChibiStudio, setShowChibiStudio] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -1215,6 +1215,7 @@ ${isInitialGeneration ? `
                        <button onClick={() => setDetailTab('memory')} className={`pb-2 transition-colors relative ${detailTab === 'memory' ? 'text-slate-800' : ''}`}>记忆 ({(formData.memories || []).length}){detailTab === 'memory' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-primary rounded-full"></div>}</button>
                        <button onClick={() => setDetailTab('impression')} className={`pb-2 transition-colors relative ${detailTab === 'impression' ? 'text-slate-800' : ''}`}>印象{detailTab === 'impression' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-primary rounded-full"></div>}</button>
                        <button onClick={() => setDetailTab('plates')} className={`pb-2 transition-colors relative ${detailTab === 'plates' ? 'text-slate-800' : ''}`}>门牌{detailTab === 'plates' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-primary rounded-full"></div>}</button>
+                       <button onClick={() => setDetailTab('chibi')} className={`pb-2 transition-colors relative ${detailTab === 'chibi' ? 'text-slate-800' : ''}`}>手办{detailTab === 'chibi' && <div className="absolute bottom-0 left-0 w-full h-0.5 bg-primary rounded-full"></div>}</button>
                    </div>
                  </div>
                </div>
@@ -1267,22 +1268,6 @@ ${isInitialGeneration ? `
                                    />
                                </div>
                            </div>
-
-                           {/* QQ捏人工坊入口：小小窝 / 彼方 / 特别时光 三处 Q 版形象统一管理 */}
-                           <button
-                               onClick={() => setShowChibiStudio(true)}
-                               className="w-full relative overflow-hidden rounded-2xl px-4 py-3 flex items-center gap-3 text-left border border-violet-200/70 shadow-[0_6px_18px_rgba(140,120,200,0.18)] active:scale-[0.99] transition-transform"
-                               style={{ background: 'linear-gradient(135deg, #2b2150 0%, #171130 100%)' }}
-                           >
-                               <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[44px] leading-none text-white/[0.06] pointer-events-none select-none">❋</span>
-                               <span className="w-9 h-9 rounded-xl flex items-center justify-center text-lg shrink-0"
-                                   style={{ background: 'linear-gradient(135deg, rgba(244,163,202,0.35), rgba(143,155,244,0.35))' }}>🧸</span>
-                               <span className="flex-1 min-w-0">
-                                   <span className="block text-[13px] font-bold text-white tracking-wide">QQ捏人 · 手办柜</span>
-                                   <span className="block text-[10px] text-indigo-200/60 mt-0.5 truncate">小小窝 / 彼方 / 特别时光 三处 Q 版形象，可各捏各的或一键同步</span>
-                               </span>
-                               <span className="text-indigo-200/50 text-xs shrink-0">›</span>
-                           </button>
 
                            <div>
                                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block">分组</label>
@@ -1646,6 +1631,10 @@ ${isInitialGeneration ? `
                            onUpdateImpression={(newImp) => handleChange('impression', newImp)}
                            onDelete={() => handleChange('impression', undefined)}
                        />
+                   )}
+
+                   {detailTab === 'chibi' && formData.id && (
+                       <ChibiShelfPanel charId={formData.id} onOpen={() => setShowChibiStudio(true)} />
                    )}
 
                    {detailTab === 'plates' && formData.id && (

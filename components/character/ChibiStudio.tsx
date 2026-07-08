@@ -124,6 +124,81 @@ const DisplayCase: React.FC<{
     );
 };
 
+/**
+ * 「手办」tab 用的迷你展示柜：三个槽位横排预览 + 进入手办柜按钮。
+ * 只读展示，编辑/同步都在全屏工坊里做。
+ */
+export const ChibiShelfPanel: React.FC<{ charId: string; onOpen: () => void }> = ({ charId, onOpen }) => {
+    const { characters } = useOS();
+    const char = characters.find(c => c.id === charId);
+    const studio = char?.chibiStudio;
+    const recChibi = char?.specialMomentRecords?.[LIKE520_RECORD_KEY]?.customData?.charChibi as { dataUrl?: string } | undefined;
+    const roomUrl = useBlobRefUrl(char?.sprites?.['chibi']);
+    const vrUrl = useBlobRefUrl(char?.vrState?.chibi?.img);
+    const l5Url = useBlobRefUrl(recChibi?.dataUrl || studio?.like520?.img);
+    if (!char) return null;
+    const urlOf: Record<ChibiStudioSlotId, string | undefined> = { room: roomUrl, vr: vrUrl, like520: l5Url };
+    const dressed = SLOTS.filter(s => !!urlOf[s.id]).length;
+
+    return (
+        <div className="animate-fade-in space-y-4">
+            <StudioStyle />
+            {/* 迷你展示柜（点整柜也能进） */}
+            <div onClick={onOpen}
+                className="relative rounded-3xl overflow-hidden border border-white/10 shadow-[0_10px_30px_rgba(40,30,80,0.35)] cursor-pointer active:scale-[0.99] transition-transform"
+                style={{ background: 'linear-gradient(180deg, #2b2150 0%, #171130 100%)' }}>
+                <div className="absolute inset-y-0 w-14 pointer-events-none opacity-[0.06]"
+                    style={{ background: 'linear-gradient(90deg, transparent, #fff, transparent)', animation: 'chibistudio-shine 5.5s ease-in-out infinite' }} />
+                {CASE_SPARKLES.map((sp, i) => (
+                    <span key={i} className="absolute text-white pointer-events-none select-none"
+                        style={{ top: sp.top, left: sp.left, fontSize: sp.s, animation: `chibistudio-twinkle 2.6s ease-in-out ${sp.d} infinite` }}>✦</span>
+                ))}
+                <div className="relative px-4 pt-4 pb-1 flex items-baseline gap-2">
+                    <span className="font-serif text-[15px] font-bold text-white tracking-wide">QQ捏人 · 手办柜</span>
+                    <span className="text-[9px] tracking-[3px] text-indigo-300/60 font-medium">FIGURE STUDIO</span>
+                    <span className="ml-auto text-[10px] text-indigo-200/50">{dressed}/3 已上架</span>
+                </div>
+                {/* 三格迷你展台 */}
+                <div className="relative grid grid-cols-3 gap-2 px-3 pb-4 pt-1">
+                    {SLOTS.map(meta => {
+                        const url = urlOf[meta.id];
+                        return (
+                            <div key={meta.id} className="relative rounded-xl overflow-hidden border border-white/10 bg-white/[0.03]">
+                                <div className="absolute top-0 left-1/2 -translate-x-1/2 w-20 h-16 pointer-events-none"
+                                    style={{ background: `radial-gradient(60% 100% at 50% 0%, ${meta.accent}30 0%, transparent 70%)` }} />
+                                <div className="relative h-[88px] flex items-end justify-center">
+                                    {url ? (
+                                        <img src={url} alt={meta.label} className="relative z-10 object-contain mb-2.5 max-w-[80%]"
+                                            style={{ height: 62, animation: 'chibistudio-float 3.4s ease-in-out infinite', filter: 'drop-shadow(0 3px 6px rgba(0,0,0,.5))' }} />
+                                    ) : (
+                                        <div className="relative z-10 mb-5 w-9 h-11 rounded-lg border border-dashed border-indigo-300/25 flex items-center justify-center text-indigo-200/35">
+                                            <Sparkle size={13} />
+                                        </div>
+                                    )}
+                                    <div className="absolute bottom-1.5 left-1/2 -translate-x-1/2 w-12 h-[9px] rounded-[50%]"
+                                        style={{ background: `linear-gradient(180deg, ${meta.accent}50, rgba(255,255,255,0.07))` }} />
+                                </div>
+                                <div className="relative text-center pb-1.5">
+                                    <span className="text-[9.5px] font-bold text-indigo-100/85">{meta.label}</span>
+                                </div>
+                            </div>
+                        );
+                    })}
+                </div>
+            </div>
+
+            <button onClick={onOpen}
+                className="w-full rounded-2xl py-3 text-[13px] font-bold text-white flex items-center justify-center gap-2 shadow-[0_6px_18px_rgba(140,120,200,0.30)] active:scale-[0.98] transition-transform"
+                style={{ background: 'linear-gradient(135deg, #a78bda, #8f9bf4)' }}>
+                🧸 进入手办柜
+            </button>
+            <p className="text-[10.5px] text-slate-400 leading-relaxed px-1">
+                小小窝立绘、彼方小人、特别时光 520 大头贴——三处 Q 版形象在这里统一打理：可以各捏各的，也可以挑一只「同步到全部」。
+            </p>
+        </div>
+    );
+};
+
 const ChibiStudio: React.FC<{ charId: string; onClose: () => void }> = ({ charId, onClose }) => {
     const { characters, updateCharacter, addToast } = useOS();
     const char = characters.find(c => c.id === charId);
