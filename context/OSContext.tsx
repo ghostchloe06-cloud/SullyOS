@@ -2634,6 +2634,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
               'quizzes', 'guidebook', 'scheduled_messages', 'life_sim',
               'handbook', 'trackers', 'tracker_entries', 'hotnews_snapshots',
               'memory_nodes', 'memory_vectors', 'memory_links', 'topic_boxes', 'anticipations', 'event_boxes',
+              'room_plates', 'digest_reports',
               'daily_schedule', 'memory_batches',
               'pixel_home_assets', 'pixel_home_layouts',
               // 「彼方」虚拟世界各房间 store —— 早期导出清单漏了，导致备份不含房间数据
@@ -2853,6 +2854,7 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           // Stores that never contain base64 image data — skip recursive traversal
           const noImageStores = new Set([
               'memory_nodes', 'memory_vectors', 'memory_links', 'topic_boxes', 'anticipations', 'event_boxes',
+              'room_plates', 'digest_reports',
               'bank_transactions', 'scheduled_messages', 'memory_batches', 'hotnews_snapshots'
           ]);
 
@@ -3006,6 +3008,8 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
                   case 'topic_boxes': backupData.topicBoxes = processedData; break;
                   case 'anticipations': backupData.anticipations = processedData; break;
                   case 'event_boxes': backupData.eventBoxes = processedData; break;
+                  case 'room_plates': backupData.roomPlates = processedData; break;
+                  case 'digest_reports': backupData.digestReports = processedData; break;
                   case 'daily_schedule': backupData.dailySchedules = processedData; break;
                   case 'memory_batches': backupData.memoryBatches = processedData; break;
                   case 'pixel_home_assets': backupData.pixelHomeAssets = processedData; break;

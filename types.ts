@@ -2844,6 +2844,8 @@ export interface FullBackupData {
     topicBoxes?: any[];
     anticipations?: any[];
     eventBoxes?: any[];
+    roomPlates?: any[];      // 房间门牌（情景→语义固化层）
+    digestReports?: any[];   // 消化日志（每角色最近 30 条）
     memoryPalaceHighWaterMarks?: Record<string, number>; // charId → lastProcessedMsgId
     memoryPalaceFlags?: Record<string, string>; // mp_personality_tried_* / mp_first_archive_notice_* 等 UI 标记
     cloudBackupConfig?: CloudBackupConfig;

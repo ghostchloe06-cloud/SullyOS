@@ -1621,8 +1621,9 @@ export default function MemoryPalaceApp() {
 
             const result = await importMemoryPalace(data, char.id);
             const vecPart = result.vectors > 0 ? `、${result.vectors} 条向量` : '';
+            const platePart = result.roomPlateEntries > 0 ? `、${result.roomPlateEntries} 条门牌认知` : '';
             setImportResult(
-                `[ok]已导入 ${result.nodes} 条记忆、${result.eventBoxes} 个事件盒、${result.anticipations} 个期盼${vecPart}`
+                `[ok]已导入 ${result.nodes} 条记忆、${result.eventBoxes} 个事件盒、${result.anticipations} 个期盼${vecPart}${platePart}`
                 + (hadVectors ? '' : '（无向量，建议到「全局设置」重建向量后再用语义检索）')
             );
             await loadStats();
@@ -3878,7 +3879,7 @@ create table if not exists memory_vectors (
                     </div>
                     <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 12, lineHeight: 1.6 }}>
                         把 <b>{char.name}</b> 记忆宫殿里的全部记忆导出成 JSON：含每条记忆的正文、房间、重要性、情绪、标签、时间，
-                        以及事件盒（整合回忆）和窗台期盼。
+                        以及事件盒（整合回忆）、窗台期盼和房间门牌（常驻认知）。
                     </div>
 
                     {/* 是否带向量：长期用同一 embedding 模型就勾上，向量可直接复用免重新向量化 */}

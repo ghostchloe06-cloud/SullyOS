@@ -213,6 +213,8 @@ active(新建) → anchor(7天+，心理锚点) → fulfilled / disappointed
 
 **审计**：神经链接 app「门牌」标签页（`RoomPlatePanel`）可查看/改写/删除——蒸错的事实一旦常驻会被自信地重复很久，必须有人工纠错口。一键清空（wipe）会连门牌一起清。
 
+**备份**：门牌与消化日志都随「设置-导出」全量备份走（v2 分片，导出装配在 OSContext、还原在 `importFullData`，clear-and-add 语义）；门牌另随记忆宫殿导出/导入迁移（`export.ts`，合并语义：同文本去重、尊重容量上限、条目重生成 ID）。
+
 ---
 
 ## 系统对比
