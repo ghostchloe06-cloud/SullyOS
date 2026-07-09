@@ -1883,7 +1883,7 @@ const SignalPanel: React.FC<{ addToast?: (m: string, t?: any) => void; character
                                         <span className="inline-block h-px w-8" style={{ background: 'linear-gradient(90deg,transparent,rgba(201,168,106,.55))' }} />❦<span className="inline-block h-px w-8" style={{ background: 'linear-gradient(90deg,rgba(201,168,106,.55),transparent)' }} />
                                     </div>
                                     <div className="text-[9px] tracking-[0.14em]" style={{ color: 'rgba(201,168,106,.55)', fontFamily: `'Noto Serif SC',serif` }}>篇幅 {poem.targetLines} · 已坠落 {poem.lineCount} · 还差 {Math.max(0, poem.targetLines - poem.lineCount)} 句封笔</div>
-                                    {poem.brief && <div className="mt-1.5 text-[9.5px] italic px-3 leading-relaxed" style={{ color: 'rgba(201,168,106,.5)', fontFamily: `'Noto Serif SC',serif` }}>方向 · {poem.brief}</div>}
+                                    {poem.brief && <div className="mt-1.5 text-[9.5px] italic px-3 leading-relaxed" style={{ color: 'rgba(201,168,106,.5)', fontFamily: `'Noto Serif SC',serif` }}>{poem.brief}</div>}
                                 </div>
                                 <div className="mt-2">
                                     {(() => { const auth = getMyAuthorship(poem.id); return (poem.lines || []).map((l, i) => <PoemLineRow key={l.seq} l={l} showSeq ordinal={i + 1} mineName={l.mine ? auth[String(l.seq)] : undefined} />); })()}
@@ -2004,7 +2004,7 @@ const SignalPanel: React.FC<{ addToast?: (m: string, t?: any) => void; character
                                 <span className="inline-block h-px w-10" style={{ background: 'linear-gradient(90deg,transparent,rgba(201,168,106,.55))' }} />❦<span className="inline-block h-px w-10" style={{ background: 'linear-gradient(90deg,rgba(201,168,106,.55),transparent)' }} />
                             </div>
                             <div className="text-[9px] tracking-wider" style={{ fontFamily: `'Noto Serif SC',serif`, color: 'rgba(201,168,106,.55)' }}>{openPoem.lineCount} 句 · {(openPoem.mineCount || 0) > 0 ? <span style={{ color: '#f0dca8' }}>你的回声落在这里 {openPoem.mineCount} 句</span> : '一首陌生人合写的诗'}</div>
-                            {openPoem.brief && <div className="mt-1.5 text-[9.5px] italic max-w-xs mx-auto leading-relaxed" style={{ fontFamily: `'Noto Serif SC',serif`, color: 'rgba(201,168,106,.5)' }}>方向 · {openPoem.brief}</div>}
+                            {openPoem.brief && <div className="mt-1.5 text-[9.5px] italic max-w-xs mx-auto leading-relaxed" style={{ fontFamily: `'Noto Serif SC',serif`, color: 'rgba(201,168,106,.5)' }}>{openPoem.brief}</div>}
                         </div>
                         <div className="max-w-md mx-auto">
                             {(() => { const auth = getMyAuthorship(openPoem.id); return (openPoem.lines || []).map(l => <PoemLineRow key={l.seq} l={l} mineName={l.mine ? auth[String(l.seq)] : undefined} />); })()}
