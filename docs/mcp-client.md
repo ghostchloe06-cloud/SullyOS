@@ -42,10 +42,18 @@
 
 ## 设计要点（改之前必看）
 
-- **走 function-calling，不走文本指令**。工具以 OpenAI `tools` 参数注入，复用
-  瑞幸聊天点单的客户端工具循环（`useChatAI.ts` 3.6 段）。工具名命中
-  `mcpToolResolve` 映射 → 分发给对应服务器；没命中且瑞幸模式开着 → 走瑞幸
-  原逻辑。两类工具可同场。
+- **两层容错（对标见面观测协议）**。第一层走 function-calling：工具以 OpenAI
+  `tools` 参数注入，复用瑞幸聊天点单的客户端工具循环（`useChatAI.ts` 3.6 段），
+  工具名命中 `mcpToolResolve` 映射 → 分发给对应服务器；没命中且瑞幸模式开着 →
+  走瑞幸原逻辑，两类工具可同场。第二层兜"掉格式"（3.6b 段）：不支持 FC 的模型
+  会把调用写成正文文字（`ask_question("SullyOS")` / `ask_question: SullyOS`），
+  `extractTextFakedMcpCalls` 只认已启用服务器的真实工具名（暴露名/原名都认，
+  括号/JSON/kwargs/冒号行四种形态），系统代为执行后把结果喂回去让角色重说，
+  `executedSig` 防复读重执行。**所以不要求模型支持 function calling**，支持的
+  走第一层（更稳），不支持的落第二层。
+- **流式 tool_calls 必须重组**。`safeApi.ts` 的 `parseSseToCompletion` 会把
+  `delta.tool_calls` 分片按 index 分组、arguments 逐片拼接——改这里时别弄丢，
+  否则开 stream 的用户工具调用会被静默吞掉（症状就是"角色说要查但没动静"）。
 - **工具清单读持久化结果，不在聊天路径发网络请求**。`tools/list` 只在设置里
   点「测试连接」时跑；服务器更新了工具需要用户重新点一次。
 - **暴露名 ≠ 真实工具名**。OpenAI 工具名只许 `[A-Za-z0-9_-]{1,64}`，MCP 工具
@@ -58,6 +66,14 @@
   （服务器重启后 `Mcp-Session-Id` 作废是常态）。
 - **配置改动要 `resetMcpSession`**：URL/token/代理任一变了旧 session 就不能用，
   设置卡片的 `update()` 已处理。
+
+## 排查「角色把工具调用输出成文字」
+
+1. 先确认是不是流式吞掉了 tool_calls（上面第二条）——开 DevTools 看响应里
+   有没有 `delta.tool_calls`，有但界面没反应就是重组层出问题。
+2. 模型不支持 FC / 中转剥了 `tools` 参数 → 属第二层容错的正常工作范围，
+   假调用会被代执行 + 二次生成，用户最终看不到乱码。若还是漏，通常是模型
+   编了不存在的工具名（只认已启用服务器的真实工具名，不认幻觉名）。
 
 ## 已知边界
 

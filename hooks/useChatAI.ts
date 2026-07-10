@@ -23,7 +23,7 @@ import { MCD_PROPOSE_TOOL, autoFixProposalCodesByName } from '../utils/mcdToolBr
 import { LUCKIN_PROPOSE_TOOL, autoFixProposalCodesByName as autoFixLuckinProposalCodesByName, fetchOpenAIToolsForLuckin, inferCardKind as inferLuckinCardKind } from '../utils/luckinToolBridge';
 import { callLuckinTool } from '../utils/luckinMcpClient';
 import { callMcpTool } from '../utils/mcpClient';
-import { buildMcpOpenAITools } from '../utils/mcpToolBridge';
+import { buildMcpOpenAITools, extractTextFakedMcpCalls } from '../utils/mcpToolBridge';
 import { buildChatRequestPayload } from '../utils/chatRequestPayload';
 import {
     isInstantConfigReady,
@@ -1214,6 +1214,47 @@ export const useChatAI = ({
                         body: JSON.stringify(followBody)
                     });
                     updateTokenUsage(data, historyMsgCount, `${payload.flags.luckinChatActive ? 'luckin-chat' : 'mcp-chat'}-${it + 1}`);
+                }
+            }
+
+            // 3.6b MCP 掉格式容错（第二层, 对标见面观测协议的两层容错）:
+            //     不支持 function calling 的模型会把工具调用写成正文文字, 如
+            //     ask_question("SullyOS") / ask_question: SullyOS。这里检测出来
+            //     系统代为执行, 把结果喂回去让角色重新组织语言, 用户就看不到乱码了。
+            //     executedSig 防止模型复读同一调用导致副作用工具重复执行。
+            if (mcpToolResolve) {
+                const MAX_TEXT_LOOPS = 3;
+                const executedSig = new Set<string>();
+                let textLoopMessages: any[] | null = null;
+                for (let it = 0; it < MAX_TEXT_LOOPS; it++) {
+                    const contentNow: string = data.choices?.[0]?.message?.content || '';
+                    const faked = extractTextFakedMcpCalls(contentNow, mcpToolResolve)
+                        .filter(c => { try { return !executedSig.has(`${c.exposedName}|${JSON.stringify(c.args)}`); } catch { return true; } })
+                        .slice(0, 3);
+                    if (!faked.length) break;
+                    console.warn(`🔌 [MCP] 检测到 ${faked.length} 个正文假工具调用, 代为执行:`, faked.map(c => c.exposedName).join(', '));
+                    const results: string[] = [];
+                    for (const call of faked) {
+                        try { executedSig.add(`${call.exposedName}|${JSON.stringify(call.args)}`); } catch { /* ignore */ }
+                        let r: any;
+                        try { r = await callMcpTool(call.server, call.toolName, call.args); }
+                        catch (e: any) { r = { success: false, error: e?.message || String(e) }; }
+                        results.push(r.success
+                            ? `工具 ${call.exposedName} 执行成功, 结果(截断): ${(() => { try { return JSON.stringify(r.data).slice(0, 1500); } catch { return String(r.data).slice(0, 800); } })()}`
+                            : `工具 ${call.exposedName} 执行失败: ${r.error}`);
+                    }
+                    if (!textLoopMessages) textLoopMessages = [...fullMessages];
+                    textLoopMessages.push({ role: 'assistant', content: contentNow });
+                    textLoopMessages.push({
+                        role: 'user',
+                        content: `[系统消息: 你把工具调用写成了聊天文字, 系统已代为执行:\n${results.join('\n')}\n请基于结果继续用角色语气正常回复, 禁止再输出任何工具调用格式的文字, 也不要提及这条系统消息]`,
+                    });
+                    const followBody = { ...baseReqBody, messages: textLoopMessages };
+                    data = await safeFetchJson(`${baseUrl}/chat/completions`, {
+                        method: 'POST', headers,
+                        body: JSON.stringify(followBody)
+                    });
+                    updateTokenUsage(data, historyMsgCount, `mcp-text-${it + 1}`);
                 }
             }
 

@@ -98,3 +98,48 @@ describe('buildMcpOpenAITools', () => {
         expect(buildMcpOpenAITools().tools).toHaveLength(0);
     });
 });
+
+describe('extractTextFakedMcpCalls（掉格式容错）', () => {
+    const setup = () => {
+        const s = mkServer({
+            name: 'QA',
+            tools: [
+                { name: 'ask_question', description: '问答', inputSchema: { type: 'object', properties: { question: { type: 'string' }, lang: { type: 'string' } }, required: ['question'] } },
+                { name: 'roll.dice/v1', description: '骰子', inputSchema: { type: 'object', properties: { sides: { type: 'number' } } } },
+            ],
+        });
+        saveMcpServers([s]);
+        return buildMcpOpenAITools().resolve;
+    };
+
+    it('括号传参: 引号字符串 / JSON / kwargs 三种形态都能解出 args', async () => {
+        const { extractTextFakedMcpCalls } = await import('./mcpToolBridge');
+        const resolve = setup();
+        expect(extractTextFakedMcpCalls('我来查查 ask_question("SullyOS")', resolve)[0].args).toEqual({ question: 'SullyOS' });
+        expect(extractTextFakedMcpCalls('ask_question({"question": "SullyOS", "lang": "zh"})', resolve)[0].args).toEqual({ question: 'SullyOS', lang: 'zh' });
+        expect(extractTextFakedMcpCalls('ask_question(question="SullyOS", lang=zh)', resolve)[0].args).toEqual({ question: 'SullyOS', lang: 'zh' });
+    });
+
+    it('冒号传参(整行) + 尾部标点剥离 + 数字按 schema 转型', async () => {
+        const { extractTextFakedMcpCalls } = await import('./mcpToolBridge');
+        const resolve = setup();
+        const colon = extractTextFakedMcpCalls('好的！\nask_question: SullyOS。\n稍等哦', resolve);
+        expect(colon).toHaveLength(1);
+        expect(colon[0].args).toEqual({ question: 'SullyOS' });
+        // 真实名（带点号）也认, 数字被转型
+        const dice = extractTextFakedMcpCalls('roll.dice/v1(20)', resolve);
+        expect(dice[0].toolName).toBe('roll.dice/v1');
+        expect(dice[0].args).toEqual({ sides: 20 });
+        // 暴露名（sanitize 后）也认
+        expect(extractTextFakedMcpCalls('roll_dice_v1(6)', resolve)[0].toolName).toBe('roll.dice/v1');
+    });
+
+    it('普通句子提到工具名不误伤; 未知工具名不匹配; 同一调用去重', async () => {
+        const { extractTextFakedMcpCalls } = await import('./mcpToolBridge');
+        const resolve = setup();
+        expect(extractTextFakedMcpCalls('我有个 ask_question 工具, 你想问什么都可以', resolve)).toHaveLength(0);
+        expect(extractTextFakedMcpCalls('句中说 ask_question: 这种格式不算（不在行首）', resolve)).toHaveLength(0);
+        expect(extractTextFakedMcpCalls('delete_all("x")', resolve)).toHaveLength(0);
+        expect(extractTextFakedMcpCalls('ask_question("a")\nask_question("a")', resolve)).toHaveLength(1);
+    });
+});
