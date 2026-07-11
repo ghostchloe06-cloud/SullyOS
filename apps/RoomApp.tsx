@@ -681,7 +681,12 @@ const RoomApp: React.FC = () => {
     };
 
     const initializeRoomState = async (c: CharacterProfile, currentItems: RoomItem[], force: boolean = false) => {
-        if (!apiConfig.apiKey) return;
+        // 不能静默 return：API 配置缺失时「更新这一天」会变成点了毫无反应的死按钮
+        // （用户现场：localStorage 被清 → os_api_config 丢失 → 此处静默退出）。
+        if (!apiConfig?.baseUrl || !apiConfig?.apiKey) {
+            addToast('请先在设置里配置 API（生成今日房间需要调用模型）', 'error');
+            return;
+        }
 
         setIsInitializing(true);
         const loadingTexts = [`正在打扫${c.name}的房间...`, "正在整理思绪...", "正在擦拭家具...", "正在生成全部物品记忆..."];
