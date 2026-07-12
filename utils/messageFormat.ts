@@ -184,6 +184,36 @@ export function normalizeMessageContent(
         return '[TRPG游戏片段]';
     }
 
+    // 笔友会小说章节：从笔友会历史章节多选转发到聊天的归档总结。必须翻成完整可读文本，
+    // 让上下文 / 归档 / palace 都能读到"这本书写了什么"。共创者视角是"我们一起写的书"，
+    // 非共创者视角是"用户分享给我看的书"，措辞要区分开。
+    if (type === 'novel_card') {
+        const n = msg.metadata?.novel as {
+            bookTitle?: string;
+            subtitle?: string;
+            bookSummary?: string;
+            userName?: string;
+            collaboratorNames?: string[];
+            chapters?: Array<{ index?: number; summary?: string }>;
+        } | undefined;
+        if (n) {
+            const collabs = n.collaboratorNames || [];
+            const isCoauthor = collabs.includes(charName);
+            const others = collabs.filter(name => name && name !== charName);
+            const uName = n.userName || userName;
+            const withPart = others.length ? `（还有${others.join('、')}）` : '';
+            const head = isCoauthor
+                ? `这是${charName}和${uName}${withPart}一起在笔友会共同创作的小说《${n.bookTitle || '无题'}》的章节归档（用户转发到聊天，这本书是你们共同的创作回忆，你是执笔人之一）`
+                : `这是${uName}${collabs.length ? `和${collabs.join('、')}` : ''}在笔友会创作的小说《${n.bookTitle || '无题'}》的章节归档（用户分享给${charName}看的，${charName}没有参与创作）`;
+            const intro = (n.bookSummary || '').trim() ? `\n简介：${(n.bookSummary || '').trim()}` : '';
+            const body = (n.chapters || [])
+                .map(c => `第${c.index ?? '?'}章总结：\n${(c.summary || '').trim().slice(0, 2000)}`)
+                .join('\n\n');
+            return `[笔友会小说章节] ${head}：${intro}\n${body}`;
+        }
+        return '[笔友会小说章节]';
+    }
+
     // 小红书卡片：把笔记标题 + 正文 desc + 作者翻成可读文本喂给角色。标题来自分享文案
     // （无需后端），desc/作者来自 MCP 抓取（可能没有）。没专门分支时会走默认只给 content(=标题)，
     // 抓空时甚至空字符串，角色读不到任何东西。

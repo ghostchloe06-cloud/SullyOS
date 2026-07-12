@@ -1,5 +1,5 @@
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { useOS } from '../context/OSContext';
 import { AppID, CharacterProfile, CharacterExportData, UserImpression, MemoryFragment } from '../types';
 import { SlidersHorizontal, SpeakerHigh, Books, BookOpen } from '@phosphor-icons/react';
@@ -135,6 +135,9 @@ const Character: React.FC = () => {
   const [showBatchModal, setShowBatchModal] = useState(false); 
   const [deleteConfirmTarget, setDeleteConfirmTarget] = useState<string | null>(null);
   const [showWorldbookModal, setShowWorldbookModal] = useState(false); // New Modal
+  // 挂载世界书弹窗：搜索词 + 当前展开的分组（分组默认折叠，避免全量条目一次性渲染卡爆）
+  const [wbModalSearch, setWbModalSearch] = useState('');
+  const [wbModalExpandedCategory, setWbModalExpandedCategory] = useState<string | null>(null);
   const [showGroupModal, setShowGroupModal] = useState(false); // 角色分组管理
   const [newGroupName, setNewGroupName] = useState('');
   // 编辑页「新建分组并指派」的内联输入
@@ -360,6 +363,36 @@ const Character: React.FC = () => {
       if (!formData) return;
       const currentBooks = formData.mountedWorldbooks || [];
       handleChange('mountedWorldbooks', currentBooks.filter(b => b.id !== bookId));
+  };
+
+  // 挂载弹窗的分组数据。必须 useMemo：之前这段 reduce 内联在 JSX 里，
+  // 弹窗没打开时整个编辑表单每敲一个字都会重新分组一遍全部世界书。
+  const wbModalGroups = useMemo(() => {
+      const groups: Record<string, typeof worldbooks> = {};
+      worldbooks.forEach(wb => {
+          const cat = wb.category || '未分类设定 (General)';
+          if (!groups[cat]) groups[cat] = [];
+          groups[cat].push(wb);
+      });
+      return Object.entries(groups);
+  }, [worldbooks]);
+
+  // 搜索态：按标题/分组名过滤，最多展示前 60 条避免长列表卡顿。
+  const WB_SEARCH_LIMIT = 60;
+  const wbModalSearchResults = useMemo(() => {
+      const query = wbModalSearch.trim().toLowerCase();
+      if (!query) return null;
+      const matched = worldbooks.filter(wb =>
+          wb.title.toLowerCase().includes(query) ||
+          (wb.category || '未分类设定 (General)').toLowerCase().includes(query)
+      );
+      return { books: matched.slice(0, WB_SEARCH_LIMIT), total: matched.length };
+  }, [worldbooks, wbModalSearch]);
+
+  const openWorldbookModal = () => {
+      setWbModalSearch('');
+      setWbModalExpandedCategory(null);
+      setShowWorldbookModal(true);
   };
 
   // ... (Other handlers unchanged)
@@ -1523,7 +1556,7 @@ ${isInitialGeneration ? `
                            <div>
                                <div className="flex justify-between items-center mb-2 px-1">
                                    <label className="text-[10px] font-bold text-indigo-500 uppercase tracking-widest block flex items-center gap-1"><Books size={12} /> 扩展设定 (Worldbooks)</label>
-                                   <button onClick={() => setShowWorldbookModal(true)} className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-1 rounded font-bold hover:bg-indigo-100">+ 挂载</button>
+                                   <button onClick={openWorldbookModal} className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-1 rounded font-bold hover:bg-indigo-100">+ 挂载</button>
                                 </div>
                                 <div className="space-y-2">
                                    {formData.mountedWorldbooks && formData.mountedWorldbooks.length > 0 ? (
@@ -1707,47 +1740,96 @@ ${isInitialGeneration ? `
             title="挂载世界书" 
             onClose={() => setShowWorldbookModal(false)} 
         >
-            <div className="max-h-[50vh] overflow-y-auto no-scrollbar space-y-4 p-1">
+            <div className="max-h-[50vh] overflow-y-auto no-scrollbar space-y-3 p-1">
                 {worldbooks.length === 0 ? (
                     <div className="text-center text-slate-400 text-xs py-8">
                         还没有世界书，请去桌面【世界书】App 创建。
                     </div>
                 ) : (
-                    // Group books for UI
-                    Object.entries(worldbooks.reduce((acc, wb) => {
-                        const cat = wb.category || '未分类设定 (General)';
-                        if (!acc[cat]) acc[cat] = [];
-                        acc[cat].push(wb);
-                        return acc;
-                    }, {} as Record<string, typeof worldbooks>)).map(([category, books]) => (
-                        <div key={category} className="space-y-2">
-                            <div className="flex justify-between items-center px-1">
-                                <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider">{category}</h4>
-                                <button 
-                                    onClick={() => mountCategory(category)}
-                                    className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded font-bold hover:bg-indigo-100"
-                                >
-                                    挂载整组
-                                </button>
+                    <>
+                        <input
+                            value={wbModalSearch}
+                            onChange={e => setWbModalSearch(e.target.value)}
+                            placeholder="搜索世界书标题或分组..."
+                            className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-700 outline-none focus:bg-white focus:border-indigo-300 transition-all"
+                        />
+                        {wbModalSearchResults ? (
+                            // 搜索态：扁平结果列表
+                            <div className="space-y-2">
+                                {wbModalSearchResults.books.length === 0 ? (
+                                    <div className="text-center text-slate-400 text-xs py-6">没有匹配的世界书。</div>
+                                ) : (
+                                    wbModalSearchResults.books.map(wb => {
+                                        const isMounted = formData?.mountedWorldbooks?.some(m => m.id === wb.id);
+                                        return (
+                                            <button
+                                                key={wb.id}
+                                                onClick={() => !isMounted && mountWorldbook(wb.id)}
+                                                disabled={isMounted}
+                                                className={`w-full p-3 rounded-xl border text-left transition-all ${isMounted ? 'bg-slate-50 border-slate-200 opacity-50 cursor-not-allowed' : 'bg-white border-indigo-100 hover:border-indigo-300 shadow-sm active:scale-95'}`}
+                                            >
+                                                <div className="flex justify-between items-center gap-2">
+                                                    <span className="font-bold text-slate-700 text-sm truncate">{wb.title}</span>
+                                                    {isMounted && <span className="text-[10px] text-slate-400 shrink-0">已挂载</span>}
+                                                </div>
+                                                <div className="text-[10px] text-slate-400 truncate mt-0.5">{wb.category || '未分类设定 (General)'}</div>
+                                            </button>
+                                        );
+                                    })
+                                )}
+                                {wbModalSearchResults.total > wbModalSearchResults.books.length && (
+                                    <div className="text-center text-[10px] text-slate-400 py-1">
+                                        共 {wbModalSearchResults.total} 条匹配，仅显示前 {wbModalSearchResults.books.length} 条，请继续输入缩小范围。
+                                    </div>
+                                )}
                             </div>
-                            {books.map(wb => {
-                                const isMounted = formData?.mountedWorldbooks?.some(m => m.id === wb.id);
+                        ) : (
+                            // 默认态：分组手风琴，只渲染展开分组的条目
+                            wbModalGroups.map(([category, books]) => {
+                                const isExpanded = wbModalExpandedCategory === category;
                                 return (
-                                    <button 
-                                        key={wb.id} 
-                                        onClick={() => !isMounted && mountWorldbook(wb.id)}
-                                        disabled={isMounted}
-                                        className={`w-full p-4 rounded-xl border text-left transition-all ${isMounted ? 'bg-slate-50 border-slate-200 opacity-50 cursor-not-allowed' : 'bg-white border-indigo-100 hover:border-indigo-300 shadow-sm active:scale-95'}`}
-                                    >
-                                        <div className="flex justify-between items-center mb-1">
-                                            <span className="font-bold text-slate-700 text-sm truncate">{wb.title}</span>
-                                            {isMounted && <span className="text-[10px] text-slate-400">已挂载</span>}
+                                    <div key={category} className="rounded-xl border border-slate-100 bg-slate-50/50 overflow-hidden">
+                                        <div
+                                            onClick={() => setWbModalExpandedCategory(isExpanded ? null : category)}
+                                            className="flex items-center gap-2 px-3 py-2.5 cursor-pointer select-none"
+                                        >
+                                            <span className={`transition-transform duration-200 text-slate-400 ${isExpanded ? 'rotate-90' : ''}`}>
+                                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-3.5 h-3.5"><path fillRule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clipRule="evenodd" /></svg>
+                                            </span>
+                                            <h4 className="flex-1 min-w-0 text-xs font-bold text-slate-500 truncate">{category}</h4>
+                                            <span className="text-[10px] text-slate-400 shrink-0">{books.length}</span>
+                                            <button
+                                                onClick={(e) => { e.stopPropagation(); mountCategory(category); }}
+                                                className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded font-bold hover:bg-indigo-100 shrink-0"
+                                            >
+                                                挂载整组
+                                            </button>
                                         </div>
-                                    </button>
+                                        {isExpanded && (
+                                            <div className="px-2 pb-2 space-y-2">
+                                                {books.map(wb => {
+                                                    const isMounted = formData?.mountedWorldbooks?.some(m => m.id === wb.id);
+                                                    return (
+                                                        <button
+                                                            key={wb.id}
+                                                            onClick={() => !isMounted && mountWorldbook(wb.id)}
+                                                            disabled={isMounted}
+                                                            className={`w-full p-3 rounded-xl border text-left transition-all ${isMounted ? 'bg-slate-50 border-slate-200 opacity-50 cursor-not-allowed' : 'bg-white border-indigo-100 hover:border-indigo-300 shadow-sm active:scale-95'}`}
+                                                        >
+                                                            <div className="flex justify-between items-center gap-2">
+                                                                <span className="font-bold text-slate-700 text-sm truncate">{wb.title}</span>
+                                                                {isMounted && <span className="text-[10px] text-slate-400 shrink-0">已挂载</span>}
+                                                            </div>
+                                                        </button>
+                                                    );
+                                                })}
+                                            </div>
+                                        )}
+                                    </div>
                                 );
-                            })}
-                        </div>
-                    ))
+                            })
+                        )}
+                    </>
                 )}
             </div>
         </Modal>
@@ -1802,7 +1884,8 @@ ${isInitialGeneration ? `
                 <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-12 h-12 text-slate-300"><path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z" /></svg>
                 <p className="text-sm text-slate-600 text-center leading-relaxed">
                     确定要删除与该角色的所有连接吗？<br/>
-                    <span className="text-xs text-red-400 font-bold">该操作不可恢复，记忆将被清空。</span>
+                    <span className="text-xs text-red-400 font-bold">该操作不可恢复，记忆将被清空。</span><br/>
+                    <span className="text-[10px] text-slate-400">仅对 ta 可见的专属表情分类也会一并删除。</span>
                 </p>
             </div>
         </Modal>

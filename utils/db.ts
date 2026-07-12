@@ -996,6 +996,64 @@ export const DB = {
       });
   },
 
+  // 「幽灵表情包」清理：删角色不会级联清理表情分类，导致只对已删角色可见的
+  // 专属分类在单聊面板里被过滤掉（看不到也删不掉），却仍会出现在群聊表情面板
+  // 和 AI 提示词里。按「现存角色 id 白名单」做三件事：
+  //   1. 分类绑定里指向已删角色的 id → 剔除（部分失效只修绑定，不动表情）
+  //   2. 剔除后一个角色都不剩的非系统分类 → 整个删除，连同分类下所有表情
+  //   3. categoryId 指向已不存在分类的表情 → 删除（无主表情）
+  // dryRun=true 只扫描统计、不落库，供 UI 做「先扫描再确认」。
+  cleanupEmojiResidue: async (
+      validCharacterIds: string[],
+      options: { dryRun?: boolean } = {}
+  ): Promise<{
+      removedCategories: { id: string; name: string }[];
+      fixedCategories: { id: string; name: string }[];
+      removedEmojiCount: number;
+  }> => {
+      const validIds = new Set(validCharacterIds);
+      const [categories, emojis] = await Promise.all([DB.getEmojiCategories(), DB.getEmojis()]);
+
+      const removedCategories: { id: string; name: string }[] = [];
+      const fixedCategories: EmojiCategory[] = [];
+      for (const cat of categories) {
+          if (!cat.allowedCharacterIds || cat.allowedCharacterIds.length === 0) continue; // 全员可见，不动
+          const alive = cat.allowedCharacterIds.filter(cid => validIds.has(cid));
+          if (alive.length === cat.allowedCharacterIds.length) continue; // 绑定全部有效
+          if (alive.length === 0 && !cat.isSystem) {
+              removedCategories.push({ id: cat.id, name: cat.name });
+          } else {
+              // 系统分类绑定全失效时也走这里：清空绑定回落「全员可见」，绝不删系统分类
+              fixedCategories.push({ ...cat, allowedCharacterIds: alive });
+          }
+      }
+
+      const removedCatIds = new Set(removedCategories.map(c => c.id));
+      const remainingCatIds = new Set(categories.map(c => c.id).filter(id => !removedCatIds.has(id)));
+      const emojisToDelete = emojis.filter(e => e.categoryId && !remainingCatIds.has(e.categoryId));
+
+      if (!options.dryRun && (removedCategories.length || fixedCategories.length || emojisToDelete.length)) {
+          const db = await openDB();
+          const tx = db.transaction([STORE_EMOJI_CATEGORIES, STORE_EMOJIS], 'readwrite');
+          const catStore = tx.objectStore(STORE_EMOJI_CATEGORIES);
+          const emojiStore = tx.objectStore(STORE_EMOJIS);
+          removedCategories.forEach(c => catStore.delete(c.id));
+          fixedCategories.forEach(c => catStore.put(c));
+          emojisToDelete.forEach(e => emojiStore.delete(e.name));
+          await new Promise<void>((resolve, reject) => {
+              tx.oncomplete = () => resolve();
+              tx.onerror = () => reject(tx.error);
+              tx.onabort = () => reject(tx.error);
+          });
+      }
+
+      return {
+          removedCategories,
+          fixedCategories: fixedCategories.map(c => ({ id: c.id, name: c.name })),
+          removedEmojiCount: emojisToDelete.length,
+      };
+  },
+
   initializeEmojiData: async (): Promise<void> => {
       const cats = await DB.getEmojiCategories();
       // 巧妙利用 UI 强制保留 default 分类的特性：

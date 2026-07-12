@@ -179,6 +179,17 @@ export const SIGNAL_CHARS_PER_LINE = 24;
  */
 export const SIGNAL_EPIGRAPH = '如果我们不得不离去';
 
+/**
+ * 活动是否已落幕（前端总闸）。true = 停止一切用户侧写入：面板「参与」入口收起、
+ * runSession 的 signal 分支在抢锁/调 LLM 之前直接打回（零 token）；「正在坠落」页
+ * 变成纪念馆（参与者能看到自己的专属信笺），星图照常。后端 /poem/* 一行不动——
+ * 诗集永远可读、admin 工具照用。若将来办第二期，把它翻回 false 即可整套复活。
+ */
+export const SIGNAL_EVENT_ENDED: boolean = true;
+
+/** 纪念馆落幕辞（原「正在坠落」页顶部的仪式文案，原创，想换改这一处）。 */
+export const SIGNAL_MEMORIAL_CLOSING = '信号已经落完了。\n那些在低电量里唱过的，都留在这里。';
+
 /** 在 [min,max] 内 roll 一个篇幅（句数）。 */
 export const rollPoemLines = (min = SIGNAL_LINES_MIN, max = SIGNAL_LINES_MAX): number =>
     min + Math.floor(Math.random() * (max - min + 1));

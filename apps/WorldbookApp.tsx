@@ -30,6 +30,7 @@ const WorldbookApp: React.FC = () => {
     const [tempTitle, setTempTitle] = useState('');
     const [tempContent, setTempContent] = useState('');
     const [tempCategory, setTempCategory] = useState('');
+    const [showCategoryPicker, setShowCategoryPicker] = useState(false);
     const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
     const [showImportConfirm, setShowImportConfirm] = useState(false);
     const importRef = useRef<HTMLInputElement>(null);
@@ -52,20 +53,30 @@ const WorldbookApp: React.FC = () => {
     const groupedBooks = useMemo(() => {
         const groups: Record<string, Worldbook[]> = {};
         const defaultCat = '未分类设定 (General)';
-        
+
         worldbooks.forEach(wb => {
             const cat = wb.category || defaultCat;
             if (!groups[cat]) groups[cat] = [];
             groups[cat].push(wb);
         });
-        
+
         // Auto-expand the first category if none selected and groups exist
         if (!expandedCategory && Object.keys(groups).length > 0) {
             // setExpandedCategory(Object.keys(groups)[0]); // Optional: Auto open first
         }
-        
+
         return groups;
     }, [worldbooks]);
+
+    const categoryNames = useMemo(() => Object.keys(groupedBooks), [groupedBooks]);
+
+    // 编辑页「已有分组」建议列表：随输入实时过滤。
+    // 不能用原生 datalist —— 分组一多，移动端 WebView 会把候选渲染成撑爆屏幕、无法滚动的巨型下拉。
+    const filteredCategorySuggestions = useMemo(() => {
+        const query = tempCategory.trim().toLowerCase();
+        if (!query) return categoryNames;
+        return categoryNames.filter(cat => cat.toLowerCase().includes(query));
+    }, [categoryNames, tempCategory]);
 
     const handleCreate = () => {
         setEditingBook(null); 
@@ -86,6 +97,7 @@ const WorldbookApp: React.FC = () => {
         setTempProbability(100);
         setTempCaseSensitive(false);
         setTempWholeWords(false);
+        setShowCategoryPicker(false);
         setIsEditing(true);
     };
 
@@ -108,6 +120,7 @@ const WorldbookApp: React.FC = () => {
         setTempProbability(book.probability ?? 100);
         setTempCaseSensitive(book.caseSensitive === true);
         setTempWholeWords(book.matchWholeWords === true);
+        setShowCategoryPicker(false);
         setIsEditing(true);
     };
 
@@ -273,14 +286,40 @@ const WorldbookApp: React.FC = () => {
                                     onChange={e => setTempCategory(e.target.value)}
                                     placeholder="例如: 世界观、人物、地理..."
                                     className="w-full text-sm text-slate-700 bg-slate-50/80 border border-slate-200 rounded-xl px-4 py-3 outline-none focus:bg-white focus:border-indigo-400 focus:ring-4 focus:ring-indigo-50 transition-all"
-                                    list="category-suggestions"
                                 />
-                                <datalist id="category-suggestions">
-                                    {Object.keys(groupedBooks).map(cat => (
-                                        <option key={cat} value={cat} />
-                                    ))}
-                                </datalist>
-                                <p className="text-[10px] text-slate-400 mt-1.5 px-1">同名条目会自动归入已有分组。</p>
+                                {categoryNames.length > 0 && (
+                                    <div className="mt-2">
+                                        <button
+                                            type="button"
+                                            onClick={() => setShowCategoryPicker(v => !v)}
+                                            className="flex items-center gap-1.5 text-[11px] font-bold text-indigo-500 px-1 py-1 active:scale-95 transition-transform"
+                                        >
+                                            <span className={`transition-transform duration-200 inline-block ${showCategoryPicker ? 'rotate-90' : ''}`}>
+                                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-3 h-3"><path fillRule="evenodd" d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z" clipRule="evenodd" /></svg>
+                                            </span>
+                                            选择已有分组 ({categoryNames.length})
+                                        </button>
+                                        {showCategoryPicker && (
+                                            <div className="mt-1.5 max-h-36 overflow-y-auto rounded-xl border border-slate-200 bg-slate-50/60 p-2 flex flex-wrap gap-1.5 overscroll-contain">
+                                                {filteredCategorySuggestions.length === 0 ? (
+                                                    <span className="text-[10px] text-slate-400 px-1 py-0.5">没有匹配「{tempCategory.trim()}」的分组，保存后将新建。</span>
+                                                ) : (
+                                                    filteredCategorySuggestions.map(cat => (
+                                                        <button
+                                                            key={cat}
+                                                            type="button"
+                                                            onClick={() => { setTempCategory(cat); setShowCategoryPicker(false); }}
+                                                            className={`max-w-full truncate text-[11px] px-2.5 py-1 rounded-full border transition-colors active:scale-95 ${tempCategory.trim() === cat ? 'bg-indigo-500 text-white border-indigo-500' : 'bg-white text-slate-600 border-slate-200 hover:border-indigo-300'}`}
+                                                        >
+                                                            {cat}
+                                                        </button>
+                                                    ))
+                                                )}
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+                                <p className="text-[10px] text-slate-400 mt-1.5 px-1">同名条目会自动归入已有分组；输入文字可过滤上方候选。</p>
                             </div>
                         </div>
 

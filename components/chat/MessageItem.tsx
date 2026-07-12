@@ -2643,6 +2643,50 @@ const MessageItem = React.memo(({
         return commonLayout(card);
     }
 
+    if (m.type === 'novel_card') {
+        const n: any = m.metadata?.novel || {};
+        const bookTitle: string = n.bookTitle || '无题';
+        const isCoauthor = Array.isArray(n.collaboratorNames) && n.collaboratorNames.includes(charName);
+        const coauthors: string[] = Array.isArray(n.collaboratorNames) ? n.collaboratorNames.filter((name: string) => name && name !== charName) : [];
+        const chapters: Array<{ index?: number; summary?: string }> = Array.isArray(n.chapters) ? n.chapters : [];
+        const card = (
+            <div className="w-72">
+                <div
+                    className="rounded-2xl overflow-hidden border border-amber-300/40 shadow-[0_6px_20px_rgba(120,80,20,0.22)]"
+                    style={{ background: 'linear-gradient(155deg,#fdf6e3 0%,#f5e9cf 100%)' }}
+                >
+                    {/* 头部 */}
+                    <div className="px-3.5 pt-3 pb-2.5 flex items-center gap-2.5 border-b border-amber-900/10">
+                        <div className="w-7 h-7 rounded-lg flex items-center justify-center shrink-0" style={{ background: 'linear-gradient(135deg,#d97706,#b45309)' }}>
+                            <svg viewBox="0 0 24 24" fill="none" className="w-4 h-4 text-white"><path d="M12 6.042A8.967 8.967 0 0 0 6 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 0 1 6 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 0 1 6-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0 0 18 18a8.967 8.967 0 0 0-6 2.292m0-14.25v14.25" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"/></svg>
+                        </div>
+                        <div className="flex-1 min-w-0">
+                            <div className="text-[9px] tracking-[0.25em] text-amber-700/70 font-bold uppercase">笔友会 · {isCoauthor ? '一起写的书' : '分享的书'}</div>
+                            <div className="text-[13px] text-amber-950 font-semibold truncate font-serif">《{bookTitle}》{n.subtitle ? <span className="text-amber-800/60 text-[11px] ml-1">{n.subtitle}</span> : null}</div>
+                        </div>
+                    </div>
+                    {/* 章节归档节选 */}
+                    <div className="px-3.5 py-3 space-y-2.5 max-h-60 overflow-hidden">
+                        {chapters.length === 0 && <p className="text-[12px] text-amber-800/60 italic font-serif">一段手稿</p>}
+                        {chapters.slice(0, 3).map((c, i) => (
+                            <div key={i} className="text-[12px] leading-relaxed text-amber-950/85">
+                                <span className="text-amber-700 font-semibold font-serif mr-1">第{c.index ?? '?'}章</span>
+                                <span className="border-l-2 border-amber-600/25 pl-2 block mt-0.5 line-clamp-3 font-serif">{(c.summary || '').trim()}</span>
+                            </div>
+                        ))}
+                        {chapters.length > 3 && <div className="text-[10px] text-amber-700/50 text-center pt-0.5">…共 {chapters.length} 章归档</div>}
+                    </div>
+                    {/* 页脚 */}
+                    <div className="px-3.5 py-2 border-t border-amber-900/10 flex items-center justify-between">
+                        <span className="text-[9px] text-amber-700/60 italic truncate">{isCoauthor ? (coauthors.length ? `与 ${coauthors.join('、')} 合著` : '我们合写的手稿') : '递到你手里的手稿'}</span>
+                        <span className="text-[9px] text-amber-700/90 font-bold tracking-wide shrink-0 ml-2">＋共同回忆</span>
+                    </div>
+                </div>
+            </div>
+        );
+        return commonLayout(card);
+    }
+
     if (m.type === 'news_card') {
         const md: any = m.metadata || {};
         const title: string = md.title || '热点';

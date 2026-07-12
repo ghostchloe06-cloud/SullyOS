@@ -33,6 +33,7 @@ import { Capacitor } from '@capacitor/core';
 import { formatBytes } from '../utils/format';
 import { isEmotionEvalSkipped } from '../utils/devDebug';
 import { toMountedWorldbook } from '../utils/worldbook';
+import { initLocalStorageMirror } from '../utils/lsMirror';
 // 备份用：把存在 localStorage 的本机配置随导出一起带走（键名须与 importFullData 对齐）
 import { exportPostOfficeLocal } from '../utils/vrWorld/postOffice';
 import { exportSignalLocal } from '../utils/vrWorld/signal';
@@ -1096,6 +1097,15 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
         // 接口未授权会直接 reject —— 我们不在乎结果，吞掉异常。
         if (typeof navigator !== 'undefined' && navigator.storage && typeof navigator.storage.persist === 'function') {
             navigator.storage.persist().catch(() => {});
+        }
+
+        // localStorage 镜像回填：部分浏览器/清理工具会只清 localStorage 而留下 IndexedDB，
+        // 导致「主题回初始 / 盲盒收藏册清空 / API 配置丢失」三连。必须在 loadSettings
+        // 读 localStorage 之前完成回填。见 utils/lsMirror.ts。
+        const healedKeys = await initLocalStorageMirror().catch(() => [] as string[]);
+        if (healedKeys.length > 0) {
+            console.warn('[lsMirror] localStorage 疑似被清除，已从 IndexedDB 镜像回填:', healedKeys);
+            setTimeout(() => addToast(`检测到本地设置曾被浏览器清除，已自动恢复 ${healedKeys.length} 项（主题 / API 等）`, 'info'), 2500);
         }
 
         await loadSettings();
@@ -2178,7 +2188,13 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
     // Clear data URI font from LS, keep URL font
     if (lsTheme.customFont && lsTheme.customFont.startsWith('data:')) lsTheme.customFont = '';
 
-    localStorage.setItem('os_theme', JSON.stringify(lsTheme));
+    try {
+        localStorage.setItem('os_theme', JSON.stringify(lsTheme));
+    } catch (e) {
+        // quota 满时静默失败 = 用户这次看着正常、下次启动主题回初始。必须让用户知道。
+        console.warn('[updateTheme] localStorage 写入失败', e);
+        addToast('主题没能保存到本地（存储空间可能已满），重启后可能会还原', 'error');
+    }
   };
   const updateApiConfig = (updates: Partial<APIConfig>) => { const newConfig = { ...apiConfig, ...updates }; setApiConfig(newConfig); localStorage.setItem('os_api_config', JSON.stringify(newConfig)); };
   const updateRealtimeConfig = (updates: Partial<RealtimeConfig>) => { const newConfig = { ...realtimeConfig, ...updates }; setRealtimeConfig(newConfig); localStorage.setItem('os_realtime_config', JSON.stringify(newConfig)); };
@@ -2316,7 +2332,21 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
     return newChar;
   };
   const updateCharacter = async (id: string, updates: Partial<CharacterProfile> | ((prev: CharacterProfile) => Partial<CharacterProfile>)) => { setCharacters(prev => { const updated = prev.map(c => c.id === id ? normalizeCharacterImpression({ ...c, ...(typeof updates === 'function' ? updates(c) : updates) }) : c); const target = updated.find(c => c.id === id); if (target) DB.saveCharacter(target); return updated; }); };
-  const deleteCharacter = async (id: string) => { setCharacters(prev => { const remaining = prev.filter(c => c.id !== id); if (remaining.length > 0 && activeCharacterId === id) { setActiveCharacterId(remaining[0].id); } return remaining; }); await DB.deleteCharacter(id); };
+  const deleteCharacter = async (id: string) => {
+    setCharacters(prev => { const remaining = prev.filter(c => c.id !== id); if (remaining.length > 0 && activeCharacterId === id) { setActiveCharacterId(remaining[0].id); } return remaining; });
+    await DB.deleteCharacter(id);
+    // 表情分类不随角色级联删除会留下「幽灵专属包」：单聊面板被可见性过滤掉（删不掉），
+    // 群聊面板/提示词却还能看到。删完角色顺手按剩余角色清一次残留（详见 DB.cleanupEmojiResidue）。
+    try {
+        const remainingIds = characters.filter(c => c.id !== id).map(c => c.id);
+        const report = await DB.cleanupEmojiResidue(remainingIds);
+        if (report.removedCategories.length > 0) {
+            addToast(`已连带清理 ta 的专属表情分类：${report.removedCategories.map(c => `「${c.name}」`).join('')}`, 'info');
+        }
+    } catch (err) {
+        console.warn('[deleteCharacter] 表情包残留清理失败（不影响角色删除）', err);
+    }
+  };
 
   // 角色分组方法（神经链接"文件夹"）
   const createCharacterGroup = async (name: string): Promise<CharacterGroup | null> => {
@@ -2554,7 +2584,9 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
       try {
           localStorage.setItem('os_theme', JSON.stringify(lsTheme));
       } catch (e) {
+          // 静默跳过 = 预设这次看着已应用、下次启动却回初始主题。必须提示。
           console.warn('[applyAppearancePreset] localStorage 写入失败，已跳过', e);
+          addToast('主题没能保存到本地（存储空间可能已满），重启后可能会还原', 'error');
       }
       applyCustomFont(preset.theme.customFont);
       // Apply custom icons if present

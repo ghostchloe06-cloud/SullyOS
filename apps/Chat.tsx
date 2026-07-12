@@ -2469,14 +2469,10 @@ const Chat: React.FC = () => {
             className={`sully-chat-root ${finalRootClass}`}
             style={finalRootStyle}
         >
-             {/* 白框自定义 CSS：全局默认在前、角色专属在后（后者叠加覆盖）。作用于 .sully-chat-* 各零件。 */}
+             {/* 白框自定义 CSS：全局默认在前、角色专属在后（后者叠加覆盖）。作用于 .sully-chat-* 各零件。
+                 守护样式统一放在气泡主题 customCss 之后（见下），保证对所有用户 CSS 都能兜底。 */}
              {osTheme.chatChromeCustomCss && <style>{osTheme.chatChromeCustomCss}</style>}
              {char.chromeCustomCss && <style>{char.chromeCustomCss}</style>}
-             {/* 守护样式（注在用户 CSS 之后）：保证返回键永远可见可点 —— 防止坏 CSS 把它隐藏/变透明/拦截点击，
-                 让用户在样式写崩时仍能退出聊天（再去「外观→聊天界面→一键还原」清掉坏 CSS）。不锁位置，正常挪位仍可用。 */}
-             {(osTheme.chatChromeCustomCss || char.chromeCustomCss) && (
-               <style>{`.sully-chat-back{visibility:visible!important;opacity:1!important;pointer-events:auto!important;}`}</style>
-             )}
              {/* 角色「登场」过场：切换/进入时以 ta 的头像氛围铺底登场，再推进穿过进入聊天。key 切换即重放。 */}
              {showEntry && char && (
                <CharacterEntryTransition
@@ -2491,6 +2487,19 @@ const Chat: React.FC = () => {
 
              {/* 心象卡片自定义 CSS（per-character）：作用于 .sully-psyche-* 各零件，编辑入口在心象设置弹窗 */}
              {(char as any).thinkingChainCustomCss && <style>{(char as any).thinkingChainCustomCss}</style>}
+
+             {/* 守护样式（注在所有用户 CSS —— 白框全局/角色、气泡主题 customCss、心象卡片 CSS —— 之后）：
+                 保证返回键和输入栏永远可见可点。坏 CSS（常随备份/分享导入）把它们隐藏/变透明/
+                 pointer-events:none 时，用户会遇到「点输入框没反应、键盘唤不起来」或退不出聊天，
+                 且重启、重新导入备份都无解。有了兜底，至少能退出去「外观→聊天界面→还原白框」清掉坏 CSS。
+                 不锁位置与配色，正常美化不受影响。 */}
+             {(osTheme.chatChromeCustomCss || char.chromeCustomCss || activeTheme.customCss || (char as any).thinkingChainCustomCss) && (
+               <style>{`
+                 .sully-chat-back{visibility:visible!important;opacity:1!important;pointer-events:auto!important;}
+                 .sully-chat-inputbar{visibility:visible!important;opacity:1!important;pointer-events:auto!important;}
+                 .sully-chat-inputbar textarea,.sully-chat-inputbar button{pointer-events:auto!important;visibility:visible!important;}
+               `}</style>
+             )}
 
              {/* 动森彩蛋：作用域 CSS 覆盖气泡——奶油 AI 气泡 + 蜜桃用户气泡，暖棕文字，绕开 MessageItem 复杂逻辑 */}
              {acnh && <style>{`

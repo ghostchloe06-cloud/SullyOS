@@ -20,6 +20,8 @@ import { buildMemberTimeline, DEFAULT_MEMBER_TIMELINE_CAP } from '../utils/group
 import { buildEmojiContextStr, buildGroupHistoryBlock, buildDirectorInstruction, buildRoundRobinInstruction, GroupHistoryBlock } from '../utils/groupChat/prompts';
 import { dispatchMemberActions } from '../utils/groupChat/dispatch';
 import { CharacterGroupFilterBar, filterCharactersByGroup, GROUP_FILTER_ALL } from '../components/character/CharacterGroupFilter';
+// 群聊输入区/表情面板已改用共享 ChatInputArea（其表情网格自带 useIncrementalReveal 增量渲染），
+// master 上给旧内联表情抽屉加的增量渲染随旧抽屉一并退役。
 import { UsersThree, Money, GearSix, Image as ImageIcon, ArrowsClockwise, PaintBrush, BellSimpleRinging, Code } from '@phosphor-icons/react';
 import ChatHeaderShell from '../components/chat/ChatHeaderShell';
 import ChatInputArea from '../components/chat/ChatInputArea';
@@ -1781,6 +1783,7 @@ ${memberTimeline || '(暂无互动记录)'}
                             <span className="text-xs font-bold">{activeGroup?.htmlModeEnabled ? 'HTML已开' : 'HTML模式'}</span>
                         </button>
                     </div>
+
                 }
             />
 

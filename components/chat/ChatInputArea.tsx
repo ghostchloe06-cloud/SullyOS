@@ -1,9 +1,10 @@
 import React, { useRef, useState, useEffect } from 'react';
-import { ShareNetwork, Trash, Plus, Smiley, PaperPlaneTilt, Money, BookOpenText, GearSix, Image, Lock, ArrowsClockwise, ChatCircleDots, CalendarBlank, ForkKnife, Coffee, Code, Brain, PencilSimple, BellSimpleRinging, Sparkle } from '@phosphor-icons/react';
+import { ShareNetwork, Trash, Plus, Smiley, PaperPlaneTilt, Money, BookOpenText, GearSix, Image, Lock, ArrowsClockwise, ChatCircleDots, CalendarBlank, ForkKnife, Coffee, Code, Brain, PencilSimple, BellSimpleRinging, Sparkle, CaretDown } from '@phosphor-icons/react';
 import { CharacterProfile, ChatTheme, EmojiCategory, Emoji } from '../../types';
 import { PRESET_THEMES } from './ChatConstants';
 import { AcnhActionTile } from '../os/acnhIcons';
 import { isIOSStandaloneWebApp } from '../../utils/iosStandalone';
+import { useIncrementalReveal } from '../../hooks/useIncrementalReveal';
 
 interface ChatInputAreaProps {
     input: string;
@@ -88,6 +89,10 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
     const [pendingDeleteThemeId, setPendingDeleteThemeId] = useState<string | null>(null);
     const [emojiSelectionMode, setEmojiSelectionMode] = useState(false);
     const [selectedEmojis, setSelectedEmojis] = useState<any[]>([]);
+    // 分组太多时横向拖不动：提供「展开全部分组」网格总览
+    const [showCategoryOverview, setShowCategoryOverview] = useState(false);
+    // 表情网格增量渲染：几百张 base64 图一次性挂载会卡爆，滚动到底再补
+    const { count: visibleEmojiCount, hasMore: hasMoreEmojis, sentinelRef: emojiSentinelRef } = useIncrementalReveal(emojis.length, 48, activeCategory);
     const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
     const startPos = useRef({ x: 0, y: 0 });
     const isLongPressTriggered = useRef(false); // Track if long press action fired
@@ -262,6 +267,7 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
         if (showPanel !== 'emojis') {
             setEmojiSelectionMode(false);
             setSelectedEmojis([]);
+            setShowCategoryOverview(false);
         }
     }, [showPanel]);
 
@@ -482,7 +488,7 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
                                         </button>
                                     ))}
                                     <button onClick={() => onPanelAction('add-category')} className={categoryAddButtonClass}>+</button>
-                                    <div className="w-6 shrink-0 pointer-events-none" />
+                                    <div className="w-14 shrink-0 pointer-events-none" />
                                 </div>
                                 {emojiSelectionMode ? (
                                     <div 
@@ -506,9 +512,22 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
                                         </button>
                                     </div>
                                 ) : (
-                                    <div className="absolute right-0 top-0 bottom-0 z-10 flex items-center justify-end px-3 pointer-events-none">
-                                        <button 
-                                            onClick={(e) => { e.stopPropagation(); setEmojiSelectionMode(true); }} 
+                                    <div className="absolute right-0 top-0 bottom-0 z-10 flex items-center justify-end gap-1.5 px-3 pointer-events-none">
+                                        {categories.length > 1 && (
+                                            <button
+                                                onClick={(e) => { e.stopPropagation(); setShowCategoryOverview(v => !v); }}
+                                                title="展开全部分组"
+                                                className={`w-6 h-6 rounded-full flex items-center justify-center transition-colors shadow-sm pointer-events-auto ${
+                                                    isPixelStyle ? 'bg-[#c99872] text-[#fff7ed] hover:bg-[#b07d57]' :
+                                                    isDiscordStyle ? 'bg-slate-700 text-slate-300 hover:bg-slate-600' :
+                                                    'bg-white/90 text-slate-600 hover:bg-slate-100 backdrop-blur-sm border border-slate-200/50'
+                                                }`}
+                                            >
+                                                <CaretDown className={`w-3.5 h-3.5 transition-transform ${showCategoryOverview ? 'rotate-180' : ''}`} weight="bold" />
+                                            </button>
+                                        )}
+                                        <button
+                                            onClick={(e) => { e.stopPropagation(); setEmojiSelectionMode(true); }}
                                             className={`w-6 h-6 rounded-full flex items-center justify-center transition-colors shadow-sm pointer-events-auto ${
                                                 isPixelStyle ? 'bg-[#c99872] text-[#fff7ed] hover:bg-[#b07d57]' :
                                                 isDiscordStyle ? 'bg-slate-700 text-slate-300 hover:bg-slate-600' :
@@ -520,6 +539,28 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
                                     </div>
                                 )}
                             </div>
+
+                            {/* 分组总览：换行网格 + 限高滚动，分组再多也不用横向拖 */}
+                            {showCategoryOverview && !emojiSelectionMode && (
+                                <div className={`shrink-0 max-h-24 overflow-y-auto overscroll-contain px-3 py-2 flex flex-wrap gap-1.5 border-b ${
+                                    isPixelStyle ? 'bg-[#eadfce] border-[#8f674a]/40' :
+                                    isDiscordStyle ? 'bg-slate-950 border-white/10' :
+                                    'bg-white border-slate-100'
+                                }`}>
+                                    {categories.map(cat => (
+                                        <button
+                                            key={cat.id}
+                                            onClick={() => { onPanelAction('select-category', cat.id); setShowCategoryOverview(false); }}
+                                            className={`px-3 py-1 text-xs rounded-full whitespace-nowrap max-w-full truncate transition-all select-none flex items-center gap-1 ${activeCategory === cat.id ? activeCategoryClass : inactiveCategoryClass}`}
+                                        >
+                                            {cat.name}
+                                            {cat.allowedCharacterIds && cat.allowedCharacterIds.length > 0 && (
+                                                <Lock className="w-3 h-3 opacity-60" weight="bold" />
+                                            )}
+                                        </button>
+                                    ))}
+                                </div>
+                            )}
 
                             <div className="flex-1 overflow-y-auto no-scrollbar p-4">
                                 <div className="grid grid-cols-4 gap-3">
@@ -538,11 +579,11 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
                                     ) : (
                                         <button onClick={() => onPanelAction('emoji-import')} className={emojiImportTileClass}>+</button>
                                     )}
-                                    {emojis.map((e, i) => {
+                                    {emojis.slice(0, visibleEmojiCount).map((e, i) => {
                                         const isSelected = selectedEmojiUrls.has(e.url);
                                         return (
-                                        <button 
-                                            key={i} 
+                                        <button
+                                            key={i}
                                             onClick={(ev) => handleItemClick(ev, e, 'emoji')}
                                             // Long press handlers for Emojis
                                             onTouchStart={(ev) => handleTouchStart(e, 'emoji', ev)}
@@ -556,7 +597,7 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
                                             className={`${emojiTileClass} ${isSelected ? '!border-blue-500' : ''}`}
                                         >
                                             <div className="aspect-square w-full">
-                                                <img src={e.url} className="w-full h-full object-contain pointer-events-none" />
+                                                <img src={e.url} loading="lazy" decoding="async" className="w-full h-full object-contain pointer-events-none" />
                                             </div>
                                             <span className={`text-[9px] truncate w-full text-center mt-0.5 leading-tight pointer-events-none ${emojiLabelClass}`}>{e.name}</span>
                                             {isSelected && <div className="absolute inset-0 bg-blue-500/20 rounded-2xl pointer-events-none border-2 border-blue-500" />}
@@ -564,6 +605,11 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
                                         );
                                     })}
                                 </div>
+                                {hasMoreEmojis && (
+                                    <div ref={emojiSentinelRef} className={`py-3 text-center text-[10px] ${emojiLabelClass}`}>
+                                        加载中... ({visibleEmojiCount}/{emojis.length})
+                                    </div>
+                                )}
                             </div>
                         </>
                     )}

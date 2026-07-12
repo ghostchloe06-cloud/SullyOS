@@ -50,6 +50,7 @@ function summarizeGroupMsgContent(m: Message): string {
         case 'html_card': return '[HTML卡片]';
         case 'news_card': return '[新闻卡片]';
         case 'trpg_card': return `[TRPG游戏片段${meta.trpg?.gameTitle ? '：《' + meta.trpg.gameTitle + '》' : ''}]`;
+        case 'novel_card': return `[笔友会小说章节${meta.novel?.bookTitle ? '：《' + meta.novel.bookTitle + '》' : ''}]`;
         case 'world_card': return `[家园生活记录${meta.worldName ? '：' + meta.worldName : ''}]`;
         case 'sim_card': return `[一段回忆${meta.simCard?.theme ? '：' + meta.simCard.theme : ''}]`;
         case 'phone_card': return `[手机内容${meta.phoneCard?.title ? '：' + meta.phoneCard.title : ''}]`;
@@ -432,8 +433,12 @@ ${uname} 的化身正挂在《彼方》的【${roomName}】${act ? `，状态写
    - 【严禁】在输出中包含时间戳、名字前缀或"[角色名]:"。
    - **【严禁】模仿历史记录中的系统日志格式（如"[你 发送了...]"）。**
    - **发送表情包**: 必须且只能使用命令: \`[[SEND_EMOJI: 表情名称]]\`。
-   - **可用表情库 (按分类)**: 
+   - **可用表情库 (按分类)**:
      ${emojiContextStr}
+   - **理解对方发的表情包**: 你看到的 \`[发送了表情包: xx]\` 只是图的名字。表情包是从有限图库里挑的，名字描述的是**图上画了什么**，不是**ta在做什么**，也不是"ta有这层意思"。按这个顺序读：
+     ① 先接着上文读情绪——它通常是对刚才话题的一个态度（好笑/无语/心虚/敷衍/emo），比如聊到烦心事后发"喝酒"，读作"烦、想摆烂"，而不是ta喝了酒或想喝酒；
+     ② 和上文对不上、也读不出态度的，就当随手斗图/活跃气氛，不要硬找含义，回应图本身的趣味就行；
+     ③ 只有ta的文字和表情互相印证时才按字面理解（说"给自己倒了杯"又发"喝酒"，那就是真在喝）；对你做的直白互动动作（比心/抱抱/戳戳）也直接当作那个动作本身。
 4. **引用功能 (Quote/Reply)**:
    - 如果你想专门回复用户某句具体的话，可以在回复开头使用: \`[[QUOTE: 引用内容]]\`。这会在UI上显示为对该消息的引用。
 5. **环境感知**:
@@ -1120,9 +1125,9 @@ ${userProfile.name} 给你反馈时，别当成约束，当成信任——ta 在
                         content = `${timeStr} [系统卡片]`;
                     }
                 }
-                else if ((m.type as string) === 'trpg_card') {
-                    // TRPG 跑团片段：从游戏多选转发进来的剧情。复用 normalizeMessageContent
-                    // 把完整节选翻成文本，让角色"记得"和用户一起玩游戏时发生了什么。
+                else if ((m.type as string) === 'trpg_card' || (m.type as string) === 'novel_card') {
+                    // TRPG 跑团片段 / 笔友会小说章节：从对应 app 多选转发进来的内容。
+                    // 复用 normalizeMessageContent 翻成完整文本，让角色"记得"一起玩过/写过什么。
                     content = `${timeStr} ${normalizeMessageContent(m, char?.name || '你', userProfile?.name || '用户')}`;
                 }
                 else content = `${timeStr} ${sourceTag} ${content}`;

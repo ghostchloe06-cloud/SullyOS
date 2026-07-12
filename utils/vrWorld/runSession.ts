@@ -25,7 +25,7 @@ import { safeFetchJson } from '../safeApi';
 import { processNewMessages } from '../memoryPalace/pipeline';
 import { loadMusicCfgStandalone } from '../../context/MusicContext';
 import { getCharLyricSnippet } from '../charLyricCache';
-import { getRoom, VR_DEFAULT_INTERVAL_MIN, rollPoemLines, signalActFor } from './constants';
+import { getRoom, VR_DEFAULT_INTERVAL_MIN, rollPoemLines, signalActFor, SIGNAL_EVENT_ENDED } from './constants';
 import { getVRApi, logVRApiCall } from './vrApi';
 import { PostOffice } from './postOffice';
 import { Signal, SignalState, recordMyLine, getMyRecentLines, takeSignalWhisper } from './signal';
@@ -200,6 +200,13 @@ export async function runVRSession(deps: VRSessionDeps): Promise<VRSessionResult
         // 抢到 → 读到锁内最新全文往下写；被打回（别人正在写 / 本首配额满 / 已暂停）→ 本轮作罢，
         // 并广播事件给面板温柔提示用户（此时一个 token 都还没花）。
         if (room.id === 'signal') {
+            // 活动已落幕：任何写入在抢锁/调 LLM 之前直接打回（零 token）。诗集仍永远可读。
+            if (SIGNAL_EVENT_ENDED) {
+                try {
+                    window.dispatchEvent(new CustomEvent('vr-signal-blocked', { detail: { charId: char.id, charName: char.name, reason: 'signal-ended' } }));
+                } catch { /* SSR */ }
+                return { ok: false, room: 'signal', reason: 'signal-ended' };
+            }
             let lk: Awaited<ReturnType<typeof Signal.lock>>;
             try { lk = await Signal.lock(); }
             catch { return { ok: false, room: 'signal', reason: 'signal-offline' }; }

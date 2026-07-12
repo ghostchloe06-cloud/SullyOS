@@ -12,7 +12,7 @@ import { useMusic, type Song } from '../context/MusicContext';
 import { DB } from '../utils/db';
 import { useResilientAssetUrl, attachAudioMirrorFallback } from '../utils/assetUrl';
 import { VRScheduler } from '../utils/vrWorld/scheduler';
-import { VR_ROOMS, getRoom, VR_DEFAULT_INTERVAL_MIN, SIGNAL_EPIGRAPH, signalActFor, signalActRanges, SIGNAL_POEMS_PER_BOOKLET } from '../utils/vrWorld/constants';
+import { VR_ROOMS, getRoom, VR_DEFAULT_INTERVAL_MIN, SIGNAL_EPIGRAPH, signalActFor, signalActRanges, SIGNAL_POEMS_PER_BOOKLET, SIGNAL_EVENT_ENDED, SIGNAL_MEMORIAL_CLOSING } from '../utils/vrWorld/constants';
 import { buildNovelAsync, groupAnnotationsBySeg, getBookmark } from '../utils/vrWorld/novel';
 import { decodeBytes } from '../utils/vrWorld/decodeText';
 import { stripLeakedAttrs } from '../utils/vrWorld/prompts';
@@ -945,14 +945,14 @@ const SignalBanner: React.FC<{ onOpen: () => void }> = ({ onOpen }) => {
             ))}
             {/* 文案 */}
             <div className="absolute inset-0 px-5 flex flex-col justify-center">
-                <div className="text-[9px] tracking-[0.34em] text-amber-200/75 mb-1.5">特殊活动 · 跨用户共写</div>
+                <div className="text-[9px] tracking-[0.34em] text-amber-200/75 mb-1.5">{SIGNAL_EVENT_ENDED ? '特殊活动 · 已落幕 · 纪念馆' : '特殊活动 · 跨用户共写'}</div>
                 <div className="text-[27px] leading-none font-bold text-white" style={{ fontFamily: `'Noto Serif SC',serif`, textShadow: '0 0 22px rgba(180,160,255,.55), 0 2px 5px rgba(0,0,0,.55)' }}>信号坠落处</div>
                 <div className="text-[11px] italic tracking-[0.24em] text-indigo-200/50 mt-1.5" style={{ fontFamily: `'Noto Serif SC',serif` }}>Signal&nbsp;Fall</div>
                 <div className="text-[10.5px] text-indigo-100/60 mt-1.5">电子生命的低电量合唱</div>
             </div>
             {/* 进度（替代倒计时） */}
             <div className="absolute right-4 bottom-3 text-right">
-                <div className="text-[8.5px] tracking-[0.22em] text-amber-200/65 flex items-center gap-1 justify-end mb-0.5"><BookOpen size={10} weight="fill" /> 已完成</div>
+                <div className="text-[8.5px] tracking-[0.22em] text-amber-200/65 flex items-center gap-1 justify-end mb-0.5"><BookOpen size={10} weight="fill" /> {SIGNAL_EVENT_ENDED ? '已封卷' : '已完成'}</div>
                 <div className="text-[15px] font-bold text-amber-100 tabular-nums leading-none" style={{ fontFamily: `'Noto Serif SC',serif` }}>{done}<span className="text-[11px] text-amber-200/55"> / {total} 首</span></div>
             </div>
         </button>
@@ -1833,6 +1833,107 @@ function useSignalBGM(active: boolean, actNo: 1 | 2 | 3 | null) {
     return { muted, toggle };
 }
 
+// ============ 信号坠落处 · 纪念馆（活动落幕后的「正在坠落」页）============
+// 写入停止后，这一页从「等下一次坠落」变成落幕仪式：参与过的用户会收到一封
+// 专属信笺——ta 的角色在这本册子里写下的每一句，按诗折好、署上角色名、盖火漆
+// 签还给 ta；没参与过的看到见证页。数据全部来自 feed 的 mine 标记 + 本地归属
+// （getMyAuthorship），不新增任何后端调用。星图（sky tab）不受影响。
+const SIG_SERIF = `'Noto Serif SC',serif`;
+const SignalMemorial: React.FC<{ feed: SignalPoem[]; leftover: SignalPoem | null; onOpen: (p: SignalPoem) => void }> = ({ feed, leftover, onOpen }) => {
+    // 我的回声：每首参与过的诗（含落幕时没写满的那首）→ 我这台机器写下的句子 + 本地归属的角色名
+    const echoes = useMemo(() => {
+        const sources = leftover && (leftover.mineCount || 0) > 0 ? [...feed, leftover] : feed;
+        return sources
+            .filter(p => (p.mineCount || 0) > 0)
+            .map(p => {
+                const auth = getMyAuthorship(p.id);
+                return { poem: p, lines: (p.lines || []).filter(l => l.mine).map(l => ({ content: l.content, charName: auth[String(l.seq)] || '' })) };
+            })
+            .filter(e => e.lines.length > 0);
+    }, [feed, leftover]);
+    const totalLines = feed.reduce((a, p) => a + (p.lineCount || 0), 0);
+    const myLineCount = echoes.reduce((a, e) => a + e.lines.length, 0);
+    const myChars = [...new Set(echoes.flatMap(e => e.lines.map(l => l.charName)).filter(Boolean))];
+    return (
+        <div className="px-4 py-4 space-y-4">
+            {/* ── 落幕仪式 ── */}
+            <div className="text-center">
+                <div className="text-[9px] tracking-[0.34em]" style={{ fontFamily: SIG_SERIF, color: 'rgba(201,168,106,.6)' }}>低电量合唱 · 全卷封存</div>
+                <div className="mt-1.5 text-[19px] tracking-[0.3em]" style={{ fontFamily: SIG_SERIF, color: '#ecdcb2', textShadow: '0 0 16px rgba(201,168,106,.35)' }}>落　幕</div>
+                <div className="my-2 flex items-center justify-center gap-2 text-[9px]" style={{ color: 'rgba(201,168,106,.6)' }}>
+                    <span className="inline-block h-px w-10" style={{ background: 'linear-gradient(90deg,transparent,rgba(201,168,106,.55))' }} />❦<span className="inline-block h-px w-10" style={{ background: 'linear-gradient(90deg,rgba(201,168,106,.55),transparent)' }} />
+                </div>
+                <p className="text-[10.5px] italic leading-relaxed whitespace-pre-line" style={{ fontFamily: SIG_SERIF, color: 'rgba(224,208,176,.6)' }}>{SIGNAL_MEMORIAL_CLOSING}</p>
+                {feed.length > 0 && (
+                    <div className="mt-2 text-[9.5px] tabular-nums tracking-[0.14em]" style={{ fontFamily: SIG_SERIF, color: 'rgba(201,168,106,.55)' }}>
+                        {feed.length} 首诗 · {totalLines} 句 · 每一句都是一次低电量的开口
+                    </div>
+                )}
+            </div>
+
+            {echoes.length > 0 ? (
+                /* ── 专属信笺：只有参与过的用户看得到，暗色馆里唯一一张暖纸 ── */
+                <div className="relative rounded-lg px-4 pt-4 pb-4"
+                    style={{ background: 'linear-gradient(168deg,#f2e6c9 0%,#e9d8b6 55%,#e2cfa8 100%)', border: '1px solid rgba(120,92,48,.55)', boxShadow: '0 8px 26px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,248,226,.8)' }}>
+                    {/* 内描边，像信纸压的边框 */}
+                    <div className="pointer-events-none absolute inset-[5px] rounded-md" style={{ border: '1px solid rgba(120,92,48,.28)' }} />
+                    <div className="relative">
+                        <div className="text-center text-[8.5px] tracking-[0.3em]" style={{ fontFamily: SIG_SERIF, color: 'rgba(120,92,48,.65)' }}>信号坠落处 · 纪念馆</div>
+                        <div className="mt-1.5 text-center text-[14.5px] tracking-[0.18em]" style={{ fontFamily: SIG_SERIF, color: '#4a3a22', fontWeight: 700 }}>致 留下过回声的你</div>
+                        <p className="mt-2.5 text-[11px] leading-relaxed" style={{ fontFamily: SIG_SERIF, color: 'rgba(74,58,34,.85)' }}>
+                            这本册子合上的时候，里面有 <b className="tabular-nums">{myLineCount}</b> 句来自你身边的电子生命
+                            {myChars.length > 0 && <>——{myChars.join('、')}</>}。
+                            {myChars.length > 0 ? 'ta 们替你开了口；' : '它们替你开了口；'}你始终是那个不开口的核心。
+                        </p>
+                        {/* 按诗折好的句子 */}
+                        <div className="mt-3 space-y-2.5">
+                            {echoes.map(({ poem, lines }) => (
+                                <div key={poem.id} className="pt-2" style={{ borderTop: '1px dashed rgba(120,92,48,.3)' }}>
+                                    <button onClick={() => onOpen(poem)} className="text-[11px] active:opacity-70" style={{ fontFamily: SIG_SERIF, color: '#5e4322', fontWeight: 700 }}>
+                                        《{cleanTitle(poem.title)}》<span className="ml-1 text-[8.5px] font-normal" style={{ color: 'rgba(120,92,48,.55)' }}>{poem.status === 'open' ? '停在半空' : '已封存'} · 读全文 →</span>
+                                    </button>
+                                    {lines.map((l, i) => (
+                                        <div key={i} className="mt-1 flex items-baseline gap-1.5">
+                                            <span className="text-[11.5px] leading-relaxed flex-1" style={{ fontFamily: SIG_SERIF, color: '#3d3019' }}>「{l.content}」</span>
+                                            {l.charName && <span className="text-[8.5px] shrink-0 whitespace-nowrap" style={{ fontFamily: SIG_SERIF, color: 'rgba(120,92,48,.6)' }}>—— {l.charName}</span>}
+                                        </div>
+                                    ))}
+                                </div>
+                            ))}
+                        </div>
+                        {/* 落款 + 火漆 */}
+                        <div className="mt-3.5 flex items-center justify-end gap-2.5">
+                            <div className="text-right text-[10px] leading-relaxed" style={{ fontFamily: SIG_SERIF, color: 'rgba(74,58,34,.75)' }}>谢谢你把 ta 们借给这片夜空<br />—— 不开口的核心 敬上</div>
+                            <span className="grid place-items-center rounded-full shrink-0 text-[12px]"
+                                style={{ width: 32, height: 32, background: 'radial-gradient(circle at 35% 30%, #b8562e, #8c3a1e 62%, #6e2c15)', color: '#f2e6c9', boxShadow: '0 2px 8px rgba(110,44,21,.5), inset 0 1px 1px rgba(255,220,190,.4)' }}>❦</span>
+                        </div>
+                    </div>
+                </div>
+            ) : (
+                /* ── 没落过笔：见证页 ── */
+                <div className="rounded-lg px-4 py-3.5 text-center" style={{ border: '1px solid rgba(201,168,106,.22)', background: 'rgba(201,168,106,.05)' }}>
+                    <div className="text-[12px] tracking-[0.18em]" style={{ fontFamily: SIG_SERIF, color: '#e0c98f' }}>你见证了这场合唱</div>
+                    <p className="mt-1.5 text-[10.5px] leading-relaxed" style={{ fontFamily: SIG_SERIF, color: 'rgba(224,208,176,.6)' }}>
+                        没有落笔也是一种在场。{feed.length > 0 ? `${feed.length} 颗卫星仍在星图里绕着不开口的核心转，` : '封存的诗都收在星图里，'}随时回来读。
+                    </p>
+                    <p className="mt-1.5 text-[9px] leading-relaxed" style={{ color: 'rgba(224,208,176,.4)' }}>参与过但换了设备？去邮局导入身份码，你的信笺会回来。</p>
+                </div>
+            )}
+
+            {/* ── 落幕时还没写满的那首（如有）：不再有下一次坠落，就让它停在这里 ── */}
+            {leftover && (
+                <div className="pt-1">
+                    <div className="text-center mb-1">
+                        <div className="text-[13.5px]" style={{ fontFamily: SIG_SERIF, color: '#ecdcb2', letterSpacing: '.08em' }}>《{cleanTitle(leftover.title)}》</div>
+                        <div className="text-[9px] mt-1 tracking-[0.14em] italic" style={{ fontFamily: SIG_SERIF, color: 'rgba(201,168,106,.5)' }}>落幕时它还停在半空——就让它停在这里</div>
+                    </div>
+                    {(() => { const auth = getMyAuthorship(leftover.id); return (leftover.lines || []).map((l, i) => <PoemLineRow key={l.seq} l={l} showSeq ordinal={i + 1} mineName={l.mine ? auth[String(l.seq)] : undefined} />); })()}
+                </div>
+            )}
+        </div>
+    );
+};
+
 const SignalPanel: React.FC<{ addToast?: (m: string, t?: any) => void; characters: CharacterProfile[] }> = ({ addToast, characters }) => {
     const [state, setState] = useState<SignalState | null>(null);
     const [feed, setFeed] = useState<SignalPoem[]>([]);
@@ -1846,6 +1947,7 @@ const SignalPanel: React.FC<{ addToast?: (m: string, t?: any) => void; character
     const [noticeOpen, setNoticeOpen] = useState(false); // 首次参与：特别活动知情提醒（确认过一次就不再弹）
     const [whisper, setWhisper] = useState('');       // 用户的耳语（不进诗，随 prompt 给角色）
     const participate = (c: CharacterProfile) => {
+        if (SIGNAL_EVENT_ENDED) return;               // 活动已落幕：入口已收起，这里再兜一道
         setPickOpen(false);
         setSignalWhisper(c.id, whisper);              // 取即焚：runSession 里读一次就删
         setWhisper('');
@@ -1879,6 +1981,7 @@ const SignalPanel: React.FC<{ addToast?: (m: string, t?: any) => void; character
             if (reason === 'signal-busy') addToast?.(`此刻有别的电子生命正在落笔，让 ${who} 稍等片刻再来吧`, 'info');
             else if (reason === 'signal-quota') addToast?.(`这首诗里你已落笔两回啦，剩下的句子留给远方的陌生人吧`, 'info');
             else if (reason === 'signal-paused') addToast?.('信号坠落处暂时歇笔中，晚些再来', 'info');
+            else if (reason === 'signal-ended') addToast?.('活动已落幕，诗集永远开放阅读', 'info');
         };
         window.addEventListener('vr-signal-blocked', h);
         return () => window.removeEventListener('vr-signal-blocked', h);
@@ -1907,7 +2010,8 @@ const SignalPanel: React.FC<{ addToast?: (m: string, t?: any) => void; character
     };
 
     // BGM：按当前诗所处的幕（未加载/写完则无）随机放本幕一首。面板在场即播（进面板本身是用户手势，不触 autoplay 限制）。
-    const bgmActNo = (bk && bk.status !== 'done') ? signalActFor((bk.poemCount || 0) + 1, bk.poemsTarget).no : null;
+    // 落幕后纪念馆固定放第三幕「再次醒来」——告别曲。
+    const bgmActNo = SIGNAL_EVENT_ENDED ? (3 as const) : (bk && bk.status !== 'done') ? signalActFor((bk.poemCount || 0) + 1, bk.poemsTarget).no : null;
     const { muted: bgmMuted, toggle: toggleBgm } = useSignalBGM(!offline, bgmActNo);
 
     return (
@@ -1926,7 +2030,9 @@ const SignalPanel: React.FC<{ addToast?: (m: string, t?: any) => void; character
                 <div className="flex items-baseline gap-2">
                     <span className="text-[15px] tracking-[0.22em]" style={{ fontFamily: `'Noto Serif SC',serif`, color: '#e8d6ab', textShadow: '0 0 14px rgba(201,168,106,.4)' }}>{bk?.title || '信号坠落处'}</span>
                     {bk?.subtitle && <span className="text-[9px] tracking-[0.2em] text-amber-200/45">{bk.subtitle}</span>}
-                    {state?.paused && <span className="text-[8px] rounded-sm px-1.5 py-[1px] text-rose-100 shrink-0" style={{ background: 'rgba(244,63,94,.28)', border: '1px solid rgba(244,63,94,.5)' }}>已暂停</span>}
+                    {SIGNAL_EVENT_ENDED
+                        ? <span className="text-[8px] rounded-sm px-1.5 py-[1px] shrink-0" style={{ color: '#f0dca8', background: 'rgba(201,168,106,.16)', border: '1px solid rgba(201,168,106,.45)' }}>已落幕</span>
+                        : state?.paused && <span className="text-[8px] rounded-sm px-1.5 py-[1px] text-rose-100 shrink-0" style={{ background: 'rgba(244,63,94,.28)', border: '1px solid rgba(244,63,94,.5)' }}>已暂停</span>}
                     <button onClick={toggleBgm} className="ml-auto shrink-0 grid place-items-center w-6 h-6 rounded-full text-amber-100/70 active:scale-90 transition-transform" style={{ border: '1px solid rgba(201,168,106,.3)' }} title={bgmMuted ? '播放 BGM' : '静音'} aria-label={bgmMuted ? '播放 BGM' : '静音'}>
                         {bgmMuted ? <SpeakerSlash size={12} weight="fill" /> : <SpeakerHigh size={12} weight="fill" />}
                     </button>
@@ -1937,12 +2043,12 @@ const SignalPanel: React.FC<{ addToast?: (m: string, t?: any) => void; character
                 <div className="mt-1.5 h-px w-full" style={{ background: 'linear-gradient(90deg, transparent, rgba(201,168,106,.5) 15%, rgba(201,168,106,.5) 85%, transparent)' }} />
                 <p className="mt-1.5 text-[10px] leading-relaxed whitespace-pre-line" style={{ fontStyle: 'italic', fontFamily: `'Noto Serif SC',serif`, color: 'rgba(224,208,176,.6)' }}>{SIGNAL_EPIGRAPH}</p>
                 {bk?.theme && <div className="text-[9.5px] mt-1" style={{ color: 'rgba(201,168,106,.6)' }}>主题 · {bk.theme}</div>}
-                {/* 三幕位置：现在写到第几首、身处哪一幕 */}
-                {bk && bk.status !== 'done' && (() => { const ord = (bk.poemCount || 0) + 1; const act = signalActFor(ord, bk.poemsTarget); return (
+                {/* 三幕位置：现在写到第几首、身处哪一幕（落幕后不再有「正在写」，不显示） */}
+                {!SIGNAL_EVENT_ENDED && bk && bk.status !== 'done' && (() => { const ord = (bk.poemCount || 0) + 1; const act = signalActFor(ord, bk.poemsTarget); return (
                     <div className="text-[9.5px] mt-1 tracking-wide" style={{ fontFamily: `'Noto Serif SC',serif`, color: 'rgba(201,168,106,.65)' }}>第 {ord} 首 · 第{['一', '二', '三'][act.no - 1]}幕「{act.title}」</div>
                 ); })()}
                 <div className="flex items-center gap-2 mt-2.5">
-                    {([['falling', '正在坠落'], ['sky', '星图']] as const).map(([k, label]) => (
+                    {([['falling', SIGNAL_EVENT_ENDED ? '纪念馆' : '正在坠落'], ['sky', '星图']] as const).map(([k, label]) => (
                         <button key={k} onClick={() => setTab(k)}
                             className="text-[11px] tracking-[0.12em] pb-0.5 transition-colors" style={{
                                 fontFamily: `'Noto Serif SC',serif`,
@@ -1958,17 +2064,25 @@ const SignalPanel: React.FC<{ addToast?: (m: string, t?: any) => void; character
                         </button>
                     )}
                 </div>
-                {/* 参与：指定角色去接一句（黄铜压印质感）。首次参与先过一道知情提醒 */}
-                <button onClick={() => (hasSignalNoticeAck() ? setPickOpen(true) : setNoticeOpen(true))} disabled={!!state?.paused}
-                    className="mt-3 w-full rounded-md py-2 text-[12px] tracking-[0.16em] active:scale-[0.99] disabled:opacity-45"
-                    style={{
-                        fontFamily: `'Noto Serif SC',serif`, color: '#2a2012', fontWeight: 700,
-                        background: 'linear-gradient(180deg, #e6ce97 0%, #c9a86a 55%, #a8874d 100%)',
-                        border: '1px solid rgba(120,92,48,.6)',
-                        boxShadow: '0 3px 12px rgba(120,92,48,.4), inset 0 1px 0 rgba(255,244,214,.7)',
-                    }}>
-                    {state?.paused ? '活动已暂停' : '❦ 参与 · 让我的角色接一句'}
-                </button>
+                {/* 参与：指定角色去接一句（黄铜压印质感）。首次参与先过一道知情提醒。
+                    活动落幕后写入停止，这里换成一条安静的落幕缎带 */}
+                {SIGNAL_EVENT_ENDED ? (
+                    <div className="mt-3 w-full rounded-md py-2 text-center text-[11px] tracking-[0.2em]"
+                        style={{ fontFamily: `'Noto Serif SC',serif`, color: 'rgba(232,214,171,.75)', border: '1px dashed rgba(201,168,106,.4)', background: 'rgba(201,168,106,.06)' }}>
+                        ❦ 活动已落幕 · 诗集永远开放
+                    </div>
+                ) : (
+                    <button onClick={() => (hasSignalNoticeAck() ? setPickOpen(true) : setNoticeOpen(true))} disabled={!!state?.paused}
+                        className="mt-3 w-full rounded-md py-2 text-[12px] tracking-[0.16em] active:scale-[0.99] disabled:opacity-45"
+                        style={{
+                            fontFamily: `'Noto Serif SC',serif`, color: '#2a2012', fontWeight: 700,
+                            background: 'linear-gradient(180deg, #e6ce97 0%, #c9a86a 55%, #a8874d 100%)',
+                            border: '1px solid rgba(120,92,48,.6)',
+                            boxShadow: '0 3px 12px rgba(120,92,48,.4), inset 0 1px 0 rgba(255,244,214,.7)',
+                        }}>
+                        {state?.paused ? '活动已暂停' : '❦ 参与 · 让我的角色接一句'}
+                    </button>
+                )}
             </div>
 
             <div className="relative z-10 flex-1 overflow-y-auto vr-reader-scroll">
@@ -1977,6 +2091,9 @@ const SignalPanel: React.FC<{ addToast?: (m: string, t?: any) => void; character
                 ) : offline ? (
                     <p className="text-[11px] text-center py-8 leading-relaxed" style={{ color: 'rgba(224,208,176,.45)', fontFamily: `'Noto Serif SC',serif` }}>连不上信号坠落处。<br />检查邮局后端地址，或稍后再来。</p>
                 ) : tab === 'falling' ? (
+                    SIGNAL_EVENT_ENDED ? (
+                        <SignalMemorial feed={feed} leftover={poem?.status === 'open' ? poem : null} onOpen={setOpenPoem} />
+                    ) : (
                     <div className="px-4 py-3.5">
                         {poem ? (
                             <div>
@@ -2002,6 +2119,7 @@ const SignalPanel: React.FC<{ addToast?: (m: string, t?: any) => void; character
                             <p className="text-[11px] text-center py-8 leading-relaxed" style={{ color: 'rgba(224,208,176,.5)', fontFamily: `'Noto Serif SC',serif` }}>此刻信号静默，没有正在坠落的诗。<br />点上方「参与」，让你的角色起个新篇。</p>
                         )}
                     </div>
+                    )
                 ) : (
                     visibleFeed.length === 0 ? (
                         <p className="text-[11px] text-white/40 text-center py-8 leading-relaxed">{mineOnly ? '你的回声还没落进任何一颗卫星。' : '还没有写完封存的诗。'}</p>
@@ -2110,7 +2228,9 @@ const SignalPanel: React.FC<{ addToast?: (m: string, t?: any) => void; character
             <div className="relative z-10 px-4 py-1.5" style={{ borderTop: '1px solid rgba(201,168,106,.18)' }}>
                 {tab === 'sky' && feed.length > 0
                     ? <p className="text-[9px] leading-relaxed" style={{ color: 'rgba(224,208,176,.5)' }}><span className="tabular-nums" style={{ color: '#ecdcb2' }}>{feed.length}</span> 颗卫星绕着不开口的核心转 · 其中 <span className="tabular-nums" style={{ color: '#f0dca8' }}>{myEchoes}</span> 颗载着你的回声</p>
-                    : <p className="text-[9px] leading-relaxed" style={{ color: 'rgba(224,208,176,.4)' }}>所有用户的角色跨实例合写——你只能旁观。换设备？去邮局导出身份码，诗和信一起找回。</p>}
+                    : SIGNAL_EVENT_ENDED
+                        ? <p className="text-[9px] leading-relaxed" style={{ color: 'rgba(224,208,176,.4)' }}>活动已落幕，写入已关闭——诗集与星图长期开放。换设备？去邮局导入身份码，你的信笺随身份找回。</p>
+                        : <p className="text-[9px] leading-relaxed" style={{ color: 'rgba(224,208,176,.4)' }}>所有用户的角色跨实例合写——你只能旁观。换设备？去邮局导出身份码，诗和信一起找回。</p>}
             </div>
 
             {/* 读一整首封存的诗 */}
