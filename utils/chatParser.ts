@@ -3,6 +3,7 @@ import { DB } from './db';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import { CharacterProfile, CharPlaylistSong } from '../types';
 import { sanitizeForBubble } from './sanitize';
+import { executeLifeDirectives } from './lifeRecords';
 
 export interface MusicActionSnapshot {
     songId: number;
@@ -265,6 +266,21 @@ export const ChatParser = {
             }
         }
         content = content.replace(scheduleRegex, '').trim();
+
+        // LIFE — 生活记录代记（生理期/药盒/记账/锻炼）。开关校验、去重、写库、落 life_card
+        // 都在 lifeRecords.ts 里；这里只负责取角色档案。取不到就只剥 tag（静默丢弃）。
+        if (content.includes('[[LIFE:')) {
+            try {
+                const chars = await DB.getAllCharacters();
+                const charProfile = chars.find(c => c.id === charId);
+                content = charProfile
+                    ? await executeLifeDirectives(content, charProfile, addToast)
+                    : content.replace(/\[\[LIFE:[^\]]*\]\]/g, '').trim();
+            } catch (e) {
+                console.error('[LifeRecord] parse failed:', e);
+                content = content.replace(/\[\[LIFE:[^\]]*\]\]/g, '').trim();
+            }
+        }
 
         // RECALL tag removal (handling done in main loop logic, but cleaning here just in case)
         content = content.replace(/\[\[RECALL:.*?\]\]/g, '').trim();

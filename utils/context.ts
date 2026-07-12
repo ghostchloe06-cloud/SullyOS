@@ -214,6 +214,14 @@ export const ContextBuilder = {
             context += `- 最近观察到的变化: ${imp.observed_changes ? imp.observed_changes.map(c => typeof c === 'string' ? c : (c as any)?.description ? `[${(c as any).period}] ${(c as any).description}` : JSON.stringify(c)).join('; ') : '无'}\n\n`;
         }
 
+        // 4b. 底色认知（记忆宫殿门牌）— 常驻语义层
+        // 与召回记忆不同：这是每轮都在的"你早已知道的背景"，不走相似度抽取。
+        // 必须用 memoryPalaceEnabled 把关，理由同下方 5b：注入字段会被 saveCharacter
+        // 持久化，宫殿关闭后 injectMemoryPalace 不再刷新它，不校验就会注入残留。
+        if (char.memoryPalaceEnabled && char.roomPlatesInjection && char.roomPlatesInjection.trim()) {
+            context += `${char.roomPlatesInjection}\n`;
+        }
+
         // 5. 记忆库 (Memory Bank)
         context += `### 记忆系统 (Memory Bank)\n`;
         let memoryContent = "";

@@ -6,6 +6,8 @@ import { DB } from '../../utils/db';
 import DateSettings from './DateSettings';
 import ObserveHUD from './ObserveHUD';
 import { extractObservation, hasObservation } from '../../utils/datePrompts';
+import { pickDateFallbackSprite } from '../../utils/dateSprites';
+import { isBlobRef } from '../../utils/blobRef';
 import { clearDateResumeAttempt } from '../../utils/dateSessionRecovery';
 import { cleanTextForTts, VALID_EMOTIONS } from '../../utils/minimaxTts';
 import { synthesizeSpeech, characterHasVoice } from '../../utils/ttsRouter';
@@ -353,7 +355,9 @@ const DateSession: React.FC<DateSessionProps> = ({
             // Resume — 防御性回填：老快照 / 落库竞态可能缺字段，缺数组兜底成 []，
             // 否则后续 dialogueQueue.length 等取值会抛异常连累整个会话渲染。
             setBgImage(initialState.bgImage || '');
-            setCurrentSprite(initialState.currentSprite || '');
+            // 老快照可能存了 blobref 令牌当立绘（chibi 误兜底期间落库的），不能直接喂 <img>，洗成头像
+            const resumedSprite = initialState.currentSprite || '';
+            setCurrentSprite(isBlobRef(resumedSprite) ? (char.avatar || '') : resumedSprite);
             setCurrentText(initialState.currentText || '');
             setDisplayedText(initialState.currentText || '');
             setDialogueQueue(Array.isArray(initialState.dialogueQueue) ? initialState.dialogueQueue : []);
@@ -368,13 +372,7 @@ const DateSession: React.FC<DateSessionProps> = ({
                 }
                 return char.sprites;
             })();
-            let initSprite = s?.['normal'] || s?.['default'];
-            if (!initSprite && s) {
-                const fallbackKey = dateEmotionKeys.find(k => s[k]);
-                initSprite = fallbackKey ? s[fallbackKey] : Object.values(s).find(v => v) || char.avatar;
-            }
-            if (!initSprite) initSprite = char.avatar;
-            setCurrentSprite(initSprite);
+            setCurrentSprite(pickDateFallbackSprite(s, dateEmotionKeys, char.avatar) || '');
             
             // Parse Peek Status as opening — 先剥出观测块（开了 OBSERVE 才有）
             const startText = peekStatus || "Waiting for connection...";

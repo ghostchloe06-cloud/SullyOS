@@ -3,7 +3,8 @@ import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { useOS, DEFAULT_WALLPAPER } from '../context/OSContext';
 import { OSTheme, DesktopDecoration, AppearancePreset, Toast } from '../types';
 import { INSTALLED_APPS, Icons } from '../constants';
-import { processImage } from '../utils/file';
+import { processImage, processImageToBlob } from '../utils/file';
+import { putImageBlob } from '../utils/blobRef';
 import { DB } from '../utils/db';
 import { isStatusBarHidden } from '../utils/iosStandalone';
 import { confirmExportSafety } from '../utils/exportGuard';
@@ -140,6 +141,8 @@ const CHAT_LAYOUT_COMBOS: { name: string; desc: string; config: Partial<OSTheme>
 const ACNH_WALLPAPER = 'linear-gradient(180deg, #F8F4E8 0%, #F3EFDD 58%, #E6EECE 100%)';
 // 手游主题壁纸：近白底 + 极淡薰衣草/粉光晕（照搬原创参考图，整体偏白不发紫）。
 const MOBILEGAME_WALLPAPER = 'radial-gradient(95% 55% at 85% 0%, #fdeef7 0%, transparent 50%), radial-gradient(85% 55% at 6% 10%, #f6f2fc 0%, transparent 55%), linear-gradient(180deg, #fdfbff 0%, #f9f6fd 55%, #f4f0fa 100%)';
+// 电子宠物主题壁纸：薰衣草奶油（照抄参考稿——柔紫底衬奶油卡片与紫描边）。
+const TAMAGOTCHI_WALLPAPER = 'radial-gradient(85% 50% at 80% 0%, #e6dcf8 0%, transparent 55%), radial-gradient(75% 45% at 12% 10%, #f4edfb 0%, transparent 55%), linear-gradient(180deg, #ded4f4 0%, #d6cbf0 55%, #cfc3ec 100%)';
 
 const DESKTOP_SKINS: { id: string; name: string; desc: string; swatch: string; config: Partial<OSTheme> }[] = [
   {
@@ -172,6 +175,23 @@ const DESKTOP_SKINS: { id: string; name: string; desc: string; swatch: string; c
       chatAvatarShape: 'circle', chatAvatarSize: 'medium',
       chatBubbleStyle: 'modern', chatMessageSpacing: 'default',
       chatHeaderStyle: 'gradient', chatInputStyle: 'rounded',
+      chatChromeStyle: 'soft', chatBackgroundStyle: 'paper',
+      chatShowTimestamp: 'hover',
+    },
+  },
+  {
+    id: 'tamagotchi',
+    name: '电子宠物 · 小小窝',
+    desc: '桌面就是一台养成机 · 角色住在自己的小屋里 · 薰衣草奶油',
+    swatch: 'linear-gradient(135deg,#ded4f4 0%,#fdf9f2 52%,#f2a7bb 100%)',
+    config: {
+      skin: 'tamagotchi',
+      hue: 258, saturation: 42, lightness: 66,
+      contentColor: '#7a6cb8',
+      wallpaper: TAMAGOTCHI_WALLPAPER,
+      chatAvatarShape: 'rounded', chatAvatarSize: 'medium',
+      chatBubbleStyle: 'modern', chatMessageSpacing: 'default',
+      chatHeaderStyle: 'default', chatInputStyle: 'rounded',
       chatChromeStyle: 'soft', chatBackgroundStyle: 'paper',
       chatShowTimestamp: 'hover',
     },
@@ -760,9 +780,10 @@ const Appearance: React.FC = () => {
   const handleWallpaperUpload = async (file: File) => {
       try {
           addToast('正在处理壁纸 (原画质)...', 'info');
-          // Use skipCompression to keep original quality
-          const dataUrl = await processImage(file, { skipCompression: true });
-          updateTheme({ wallpaper: dataUrl });
+          // 改存 Blob：原画质不重绘，二进制进 blob_assets，字段只存 blobref 令牌（省 ~33% 空间、不占 JS 堆）。
+          const blob = await processImageToBlob(file, { skipCompression: true });
+          const ref = await putImageBlob(blob);
+          updateTheme({ wallpaper: ref });
           addToast('壁纸更新成功', 'success');
       } catch (e: any) {
           addToast(e.message, 'error');

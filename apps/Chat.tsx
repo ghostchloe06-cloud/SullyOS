@@ -11,8 +11,10 @@ import TheaterPlayer from '../components/schedule/TheaterPlayer';
 import { formatMessageWithTime, normalizeMessageContent } from '../utils/messageFormat';
 import { getRoomLabel } from '../utils/memoryPalace/types';
 import { XhsMcpClient, extractNotesFromMcpData, normalizeNote } from '../utils/xhsMcpClient';
-import { extractWebpageContent, detectFirstUrl, isXhsUrl, expandShortUrl } from '../utils/webpageExtractor';
+import { extractWebpageContent, detectFirstUrl, isXhsUrl, expandShortUrl, type ExtractedWebpage } from '../utils/webpageExtractor';
+import { isVideoShareUrl, parseVideoShareUrl } from '../utils/videoParser';
 import { isDevDebugAvailable } from '../utils/devDebug';
+import { resolveLifeRecordCard } from '../utils/lifeRecords';
 import { isMcdConfigured } from '../utils/mcdMcpClient';
 import { isMcdActivatedInMessages, MCD_ACTIVATE_TRIGGER, MCD_DEACTIVATE_TRIGGER } from '../utils/mcdToolBridge';
 import { isLuckinConfigured } from '../utils/luckinMcpClient';
@@ -23,6 +25,7 @@ import LuckinMiniApp from '../components/luckin/LuckinMiniApp';
 import LuckinLocationModal from '../components/luckin/LuckinLocationModal';
 import LuckinHelpModal from '../components/luckin/LuckinHelpModal';
 import { PRESET_THEMES, DEFAULT_ARCHIVE_PROMPTS } from '../components/chat/ChatConstants';
+import { resolveChatTheme } from '../utils/groupChat/theme';
 import ChatHeader from '../components/chat/ChatHeaderShell';
 import CharacterEntryTransition from '../components/chat/CharacterEntryTransition';
 import ChromeCssEditor from '../components/chat/ChromeCssEditor';
@@ -42,6 +45,7 @@ import { isInstantConfigReady, loadInstantConfig } from '../utils/instantPushCli
 import { resolveActiveSound, playWhiteboxSound, unlockWhiteboxAudio, parseWhiteboxSound, upsertWhiteboxSound, stripWhiteboxSoundDirective, WhiteboxSound } from '../utils/whiteboxSound';
 import WhiteboxSoundEditor from '../components/chat/WhiteboxSoundEditor';
 import { normalizeTranslationLangLabel } from '../utils/translationLang';
+import { CharacterGroupFilterBar, filterCharactersByGroup, GROUP_FILTER_ALL } from '../components/character/CharacterGroupFilter';
 
 const VOICE_LANG_LABELS: Record<string, string> = { en: 'English', ja: '日本語', ko: '한국어', fr: 'Français', es: 'Español' };
 type InstantToolUiStatus = {
@@ -53,7 +57,7 @@ type InstantToolUiStatus = {
 };
 
 const Chat: React.FC = () => {
-    const { characters, activeCharacterId, setActiveCharacterId, updateCharacter, apiConfig, apiPresets, addApiPreset, closeApp, customThemes, removeCustomTheme, addToast, showError, userProfile, lastMsgTimestamp, groups, clearUnread, unreadMessages, realtimeConfig, memoryPalaceConfig, syncEmotionApiToAllCharacters, theme: osTheme, proactiveComposingChars, openDateWithChar } = useOS();
+    const { characters, activeCharacterId, setActiveCharacterId, updateCharacter, apiConfig, apiPresets, addApiPreset, closeApp, customThemes, removeCustomTheme, addToast, showError, userProfile, lastMsgTimestamp, groups, characterGroups, clearUnread, unreadMessages, realtimeConfig, memoryPalaceConfig, syncEmotionApiToAllCharacters, theme: osTheme, proactiveComposingChars, openDateWithChar } = useOS();
     const isProactiveComposing = !!(activeCharacterId && proactiveComposingChars[activeCharacterId]);
 
     // 记忆宫殿高水位（用于清空聊天时的安全检查）
@@ -160,17 +164,11 @@ const Chat: React.FC = () => {
     const char = characters.find(c => c.id === activeCharacterId) || characters[0];
     charRef.current = char; // Keep ref in sync for async callbacks
     const currentThemeId = char?.bubbleStyle || 'default';
-    const activeTheme = useMemo(() => {
-        const fallback = PRESET_THEMES.default;
-        const found = customThemes.find(t => t.id === currentThemeId) || PRESET_THEMES[currentThemeId] || fallback;
-        // Defensive: legacy/imported themes may be missing `user` or `ai`, which would
-        // crash MessageItem when reading styleConfig.borderRadius. Fill from default.
-        return {
-            ...found,
-            user: { ...fallback.user, ...(found.user || {}) },
-            ai: { ...fallback.ai, ...(found.ai || {}) },
-        };
-    }, [currentThemeId, customThemes]);
+    // 解析逻辑抽到 utils/groupChat/theme.ts（群聊共用），行为不变
+    const activeTheme = useMemo(
+        () => resolveChatTheme(currentThemeId, customThemes, PRESET_THEMES),
+        [currentThemeId, customThemes],
+    );
     const draftKey = `chat_draft_${activeCharacterId}`;
 
     // Filter categories and emojis by active character's visibility (used for both AI prompt and UI)
@@ -927,11 +925,13 @@ const Chat: React.FC = () => {
         if (type === 'text') {
             let xhsCardCreated = false;
             let webpageCardCreated = false;
-            const xhsFullMatch = text.match(/xiaohongshu\.com\/(?:discovery\/item|explore)\/([a-f0-9]{24})/);
-            const xhsShortMatch = text.match(/(?:https?:\/\/)?xhslink\.com\/[A-Za-z0-9/]+/i);
+            const xhsFullMatch = text.match(/xiaohongshu\.com\/(?:discovery\/item|explore|item)\/([a-f0-9]{24})/i);
+            // 路径宽松接收 '-' / '_'，兼容小红书后续调整短链格式；尾部中文标点不吞入 URL。
+            const xhsShortMatch = text.match(/(?:https?:\/\/)?(?:www\.)?xhslink\.com\/[A-Za-z0-9/_-]+/i);
             if (xhsFullMatch || xhsShortMatch) {
                 let noteId = xhsFullMatch?.[1] || '';
                 let xsecToken = text.match(/xsec_token=([^&\s]+)/)?.[1];
+                let shortLinkError = '';
                 // 短链（xhslink.com）不含 id/token —— 先经 sfworker 展开成真实链接再提取。
                 if (!noteId && xhsShortMatch) {
                     try {
@@ -943,13 +943,15 @@ const Chat: React.FC = () => {
                         if (isDevDebugAvailable()) console.log('[卡片调试] 小红书短链展开 →', finalUrl, '| noteId =', noteId);
                     } catch (e) {
                         console.warn('xhslink 短链展开失败:', e);
+                        shortLinkError = e instanceof Error ? e.message : '短链展开失败';
                     }
                 }
                 // 文案标题形如「【标题 | 小红书 …】」，剥掉 "| 小红书…" 后缀（短链文案常无此块）。
                 const titleFromText = (text.match(/【(.+?)】/)?.[1] || '')
                     .replace(/\s*[|｜]\s*小红书.*$/, '').trim();
 
-                // 拿不到 noteId（短链展开失败/被挡）就不建空卡，保留原文给用户。
+                // 拿不到 noteId（短链展开失败/被挡）就不建空卡，保留原文给用户，并明确
+                // 告诉用户如何排查。此前这里完全静默，表现就是“角色能分享、用户分享不了”。
                 if (noteId) {
                     // 基础卡数据来自分享文案，零后端依赖。
                     let note: any = {
@@ -983,9 +985,13 @@ const Chat: React.FC = () => {
                                     likes: c.likeCount || c.like_count || c.likes || 0,
                                 })).filter((c: any) => c.content).slice(0, 15);
                                 if (comments.length) note.comments = comments;
+                            } else if (!result.success) {
+                                // 基础卡仍然可以发送，只提示详情读取失败，避免误以为整次分享失败。
+                                addToast(`小红书正文读取失败，已发送基础卡片。请尝试开启/关闭科学上网、切换 Wi‑Fi/流量，或检查 Lite 配置。${result.error ? `（${result.error}）` : ''}`, 'info');
                             }
                         } catch (e) {
                             console.warn('XHS link fetch via MCP failed (已用文案兜底):', e);
+                            addToast('小红书正文读取失败，已发送基础卡片。请尝试开启/关闭科学上网、切换 Wi‑Fi/流量，或检查 Lite 配置。', 'info');
                         }
                     }
 
@@ -1005,16 +1011,36 @@ const Chat: React.FC = () => {
                         ));
                     }
                     xhsCardCreated = true;
+                } else {
+                    addToast(`小红书链接解析失败，原消息已保留。通常是网络或代理导致短链无法展开：请尝试开启/关闭科学上网、切换 Wi‑Fi/流量，并检查网络代理与小红书 Lite 配置。${shortLinkError ? `（${shortLinkError}）` : ''}`, 'error');
                 }
             }
 
             // 通用网页分享：检测到普通 http(s) 链接 → 抓取正文存成 webpage_card，
             // 让角色"看见"网页内容。跳过 XHS 链接（上面已有专门的 MCP 卡片路径）。
+            // 视频平台链接（抖音/B站/快手…）Jina 基本抓不到东西（SPA+登录墙），
+            // 优先走 apizero 视频解析拿标题/作者/封面/热度；失败降级回通用网页抓取。
             const sharedUrl = detectFirstUrl(text);
             if (sharedUrl && !isXhsUrl(sharedUrl) && !(xhsFullMatch || xhsShortMatch)) {
-                try {
-                    addToast('正在读取网页内容…', 'info');
-                    const webpage = await extractWebpageContent(sharedUrl);
+                let webpage: ExtractedWebpage | null = null;
+                if (isVideoShareUrl(sharedUrl)) {
+                    try {
+                        addToast('正在解析视频链接…', 'info');
+                        webpage = await parseVideoShareUrl(sharedUrl);
+                    } catch (e) {
+                        console.warn('Video parse failed, fallback to webpage fetch:', e);
+                    }
+                }
+                if (!webpage) {
+                    try {
+                        addToast('正在读取网页内容…', 'info');
+                        webpage = await extractWebpageContent(sharedUrl);
+                    } catch (e: any) {
+                        console.warn('Webpage fetch failed:', e);
+                        addToast(`网页抓取失败：${e?.message || '可能被这个站点拦截了，换个链接或稍后再试。'}`, 'error');
+                    }
+                }
+                if (webpage) {
                     await DB.saveMessage({
                         charId: char.id,
                         role: 'user',
@@ -1031,9 +1057,6 @@ const Chat: React.FC = () => {
                         ));
                     }
                     webpageCardCreated = true;
-                } catch (e: any) {
-                    console.warn('Webpage fetch failed:', e);
-                    addToast(`网页抓取失败：${e?.message || '可能被这个站点拦截了，换个链接或稍后再试。'}`, 'error');
                 }
             }
 
@@ -1080,6 +1103,22 @@ const Chat: React.FC = () => {
         });
         await reloadMessages(visibleCountRef.current);
     }, [char, reloadMessages]);
+
+    // 用户点「生活记录」代记卡选择确认 / 否决：
+    // 否决 → 记录标记 rejected（不再计入注入摘要）+ 回滚银行流水（expense）+
+    // 给代记角色挂一条一次性反馈，下一轮 system prompt 会告诉角色它弄错了。
+    const handleResolveLifeRecord = useCallback(async (msg: Message, action: 'confirmed' | 'rejected') => {
+        if (!char) return;
+        // 只处理仍待复核的卡片，避免重复点击。
+        if (msg.metadata?.reviewStatus && msg.metadata.reviewStatus !== 'active') return;
+        try {
+            await resolveLifeRecordCard(msg, action);
+            addToast(action === 'confirmed' ? '已确认记录' : '已否决，记录撤销', action === 'confirmed' ? 'success' : 'info');
+        } catch (e) {
+            console.error('[LifeRecord] resolve failed:', e);
+        }
+        await reloadMessages(visibleCountRef.current);
+    }, [char, reloadMessages, addToast]);
 
     // 顶栏 ⚡ 手动触发。instant 模式下给"上一条 assistant 之后的所有 user 消息"打上"准备中"
     // 三个点（从写入 DB 到 SSE POST 入队之间），由 onInstantPosted 清除 ——
@@ -2241,6 +2280,7 @@ const Chat: React.FC = () => {
 
     // --- Forward Chat Records ---
     const [showForwardModal, setShowForwardModal] = useState(false);
+    const [forwardGroupId, setForwardGroupId] = useState(GROUP_FILTER_ALL); // 转发弹窗的角色分组筛选
 
     const handleForwardSelected = () => {
         if (selectedMsgIds.size === 0) return;
@@ -2453,14 +2493,10 @@ const Chat: React.FC = () => {
             className={`sully-chat-root ${finalRootClass}`}
             style={finalRootStyle}
         >
-             {/* 白框自定义 CSS：全局默认在前、角色专属在后（后者叠加覆盖）。作用于 .sully-chat-* 各零件。 */}
+             {/* 白框自定义 CSS：全局默认在前、角色专属在后（后者叠加覆盖）。作用于 .sully-chat-* 各零件。
+                 守护样式统一放在气泡主题 customCss 之后（见下），保证对所有用户 CSS 都能兜底。 */}
              {osTheme.chatChromeCustomCss && <style>{osTheme.chatChromeCustomCss}</style>}
              {char.chromeCustomCss && <style>{char.chromeCustomCss}</style>}
-             {/* 守护样式（注在用户 CSS 之后）：保证返回键永远可见可点 —— 防止坏 CSS 把它隐藏/变透明/拦截点击，
-                 让用户在样式写崩时仍能退出聊天（再去「外观→聊天界面→一键还原」清掉坏 CSS）。不锁位置，正常挪位仍可用。 */}
-             {(osTheme.chatChromeCustomCss || char.chromeCustomCss) && (
-               <style>{`.sully-chat-back{visibility:visible!important;opacity:1!important;pointer-events:auto!important;}`}</style>
-             )}
              {/* 角色「登场」过场：切换/进入时以 ta 的头像氛围铺底登场，再推进穿过进入聊天。key 切换即重放。 */}
              {showEntry && char && (
                <CharacterEntryTransition
@@ -2472,6 +2508,22 @@ const Chat: React.FC = () => {
              )}
 
              {activeTheme.customCss && <style>{activeTheme.customCss}</style>}
+
+             {/* 心象卡片自定义 CSS（per-character）：作用于 .sully-psyche-* 各零件，编辑入口在心象设置弹窗 */}
+             {(char as any).thinkingChainCustomCss && <style>{(char as any).thinkingChainCustomCss}</style>}
+
+             {/* 守护样式（注在所有用户 CSS —— 白框全局/角色、气泡主题 customCss、心象卡片 CSS —— 之后）：
+                 保证返回键和输入栏永远可见可点。坏 CSS（常随备份/分享导入）把它们隐藏/变透明/
+                 pointer-events:none 时，用户会遇到「点输入框没反应、键盘唤不起来」或退不出聊天，
+                 且重启、重新导入备份都无解。有了兜底，至少能退出去「外观→聊天界面→还原白框」清掉坏 CSS。
+                 不锁位置与配色，正常美化不受影响。 */}
+             {(osTheme.chatChromeCustomCss || char.chromeCustomCss || activeTheme.customCss || (char as any).thinkingChainCustomCss) && (
+               <style>{`
+                 .sully-chat-back{visibility:visible!important;opacity:1!important;pointer-events:auto!important;}
+                 .sully-chat-inputbar{visibility:visible!important;opacity:1!important;pointer-events:auto!important;}
+                 .sully-chat-inputbar textarea,.sully-chat-inputbar button{pointer-events:auto!important;visibility:visible!important;}
+               `}</style>
+             )}
 
              {/* 动森彩蛋：作用域 CSS 覆盖气泡——奶油 AI 气泡 + 蜜桃用户气泡，暖棕文字，绕开 MessageItem 复杂逻辑 */}
              {acnh && <style>{`
@@ -2784,6 +2836,9 @@ const Chat: React.FC = () => {
                 if (r.selfInsights.length) groups.push({ key: 'insights', label: '自我领悟', icon: '💡', accent: '#f59e0b', items: r.selfInsights.map(t => ({ content: t })) });
                 if (r.selfConfused.length) groups.push({ key: 'confused', label: '新的自我困惑', icon: '🌀', accent: '#6366f1', items: r.selfConfused.map(e => ({ content: e.content })) });
                 if (r.synthesizedUser.length) groups.push({ key: 'synth', label: '用户认知整合', icon: '👤', accent: '#0ea5e9', items: r.synthesizedUser.map(e => ({ content: e.content, sub: e.category })) });
+                if (r.worries?.length) groups.push({ key: 'worries', label: '回看引发的担忧', icon: '😟', accent: '#f97316', items: r.worries.map(e => ({ content: e.content })) });
+                if (r.aspirations?.length) groups.push({ key: 'aspirations', label: '新的期盼', icon: '🌟', accent: '#eab308', items: r.aspirations.map(e => ({ content: e.content })) });
+                if (r.distilled?.length) groups.push({ key: 'distilled', label: '沉淀到门牌', icon: '🚪', accent: '#a855f7', items: r.distilled.map(e => ({ content: e.content })) });
                 if (r.fulfilled.length) groups.push({ key: 'fulfilled', label: '期盼实现', icon: '✨', accent: '#22c55e', items: r.fulfilled.map(e => ({ content: e.content })) });
                 if (r.disappointed.length) groups.push({ key: 'disappointed', label: '期盼落空', icon: '🍂', accent: '#94a3b8', items: r.disappointed.map(e => ({ content: e.content })) });
                 if (r.faded.length) groups.push({ key: 'faded', label: '淡忘', icon: '🌫️', accent: '#cbd5e1', items: r.faded.map(e => ({ content: e.content })) });
@@ -2964,6 +3019,7 @@ const Chat: React.FC = () => {
                             onMcdSendCart={handleMcdSendCart}
                             onMcdCandidate={handleMcdCandidate}
                             onResolveTransfer={handleResolveTransfer}
+                            onResolveLifeRecord={handleResolveLifeRecord}
                             thinkingChainOptions={thinkingChainOptions}
                         />
                         </div>
@@ -3167,6 +3223,7 @@ const Chat: React.FC = () => {
                             text: (char as any).thinkingChainCustomColors?.text || '#f1f5f9',
                         },
                         customPrompt: (char as any).thinkingChainCustomPrompt || '',
+                        customCss: (char as any).thinkingChainCustomCss || '',
                     }}
                     onChange={(next) => {
                         const patch: any = {};
@@ -3174,6 +3231,7 @@ const Chat: React.FC = () => {
                         if (next.styleId !== undefined) patch.thinkingChainStyle = next.styleId;
                         if (next.customColors !== undefined) patch.thinkingChainCustomColors = next.customColors;
                         if (next.customPrompt !== undefined) patch.thinkingChainCustomPrompt = next.customPrompt;
+                        if (next.customCss !== undefined) patch.thinkingChainCustomCss = next.customCss;
                         if (Object.keys(patch).length) updateCharacter(char.id, patch as any);
                     }}
                 />
@@ -3311,26 +3369,33 @@ const Chat: React.FC = () => {
 
             {/* Forward Modal */}
             <Modal isOpen={showForwardModal} title="转发聊天记录" onClose={() => setShowForwardModal(false)}>
-                <div className="space-y-2 max-h-64 overflow-y-auto">
-                    <p className="text-xs text-slate-400 mb-3">选择要转发给的角色 (已选 {selectedMsgIds.size} 条消息)</p>
-                    {characters.filter(c => c.id !== activeCharacterId).map(c => (
-                        <button
-                            key={c.id}
-                            onClick={() => handleForwardToCharacter(c.id)}
-                            className="w-full flex items-center gap-3 p-3 rounded-2xl bg-slate-50 hover:bg-slate-100 active:scale-[0.98] transition-all border border-slate-100"
-                        >
-                            <img src={c.avatar} className="w-10 h-10 rounded-xl object-cover" />
-                            <div className="flex-1 text-left">
-                                <div className="font-bold text-sm text-slate-700">{c.name}</div>
-                                <div className="text-[10px] text-slate-400 truncate">{c.description}</div>
-                            </div>
-                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4 h-4 text-slate-300"><path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" /></svg>
-                        </button>
-                    ))}
-                    {characters.filter(c => c.id !== activeCharacterId).length === 0 && (
-                        <div className="text-center text-xs text-slate-400 py-8">没有其他角色可以转发</div>
-                    )}
-                </div>
+                {(() => {
+                    const forwardCandidates = characters.filter(c => c.id !== activeCharacterId);
+                    const forwardChars = filterCharactersByGroup(forwardCandidates, characterGroups, forwardGroupId);
+                    return (
+                        <div className="space-y-2 max-h-64 overflow-y-auto">
+                            <p className="text-xs text-slate-400 mb-3">选择要转发给的角色 (已选 {selectedMsgIds.size} 条消息)</p>
+                            <CharacterGroupFilterBar characters={forwardCandidates} groups={characterGroups} value={forwardGroupId} onChange={setForwardGroupId} className="mb-2 -mx-1 px-1" />
+                            {forwardChars.map(c => (
+                                <button
+                                    key={c.id}
+                                    onClick={() => handleForwardToCharacter(c.id)}
+                                    className="w-full flex items-center gap-3 p-3 rounded-2xl bg-slate-50 hover:bg-slate-100 active:scale-[0.98] transition-all border border-slate-100"
+                                >
+                                    <img src={c.avatar} className="w-10 h-10 rounded-xl object-cover" />
+                                    <div className="flex-1 text-left">
+                                        <div className="font-bold text-sm text-slate-700">{c.name}</div>
+                                        <div className="text-[10px] text-slate-400 truncate">{c.description}</div>
+                                    </div>
+                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4 h-4 text-slate-300"><path strokeLinecap="round" strokeLinejoin="round" d="m8.25 4.5 7.5 7.5-7.5 7.5" /></svg>
+                                </button>
+                            ))}
+                            {forwardChars.length === 0 && (
+                                <div className="text-center text-xs text-slate-400 py-8">{forwardCandidates.length === 0 ? '没有其他角色可以转发' : '该分组下没有角色'}</div>
+                            )}
+                        </div>
+                    );
+                })()}
             </Modal>
         </div>
     );

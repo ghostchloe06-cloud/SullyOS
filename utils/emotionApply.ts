@@ -1,5 +1,6 @@
 import { DB } from './db';
 import type { CharacterProfile, CharacterBuff } from '../types';
+import { landAmbientEventFromEval } from './roomAmbient';
 
 // 角色「最后一次内心独白(InnerState)」的轻量缓存（localStorage）。
 // innerState 是瞬时产物，这里在情绪评估落地的共用点顺手缓存一份，供别处（如查手机首页）读取，
@@ -360,6 +361,11 @@ export async function applyEmotionEvalRaw(
         if (innerStateOut) {
             try { localStorage.setItem(lastInnerStateKey(charData.id), innerStateOut); } catch { /* ignore */ }
         }
+
+        // 小屋生活动态（可选顺风车产出，见 utils/roomAmbient.ts）：落 room_card 进私聊。
+        // 本函数是在线 / instant(worker) 两条路径的共用落点，所以在这里接。
+        // 与情绪主链路完全解耦——失败只丢这条动态，不影响 buff。
+        await landAmbientEventFromEval(result, charData);
 
         if (!result.changed) {
             console.log('🎭 [Emotion] No change detected, skipping buff update');

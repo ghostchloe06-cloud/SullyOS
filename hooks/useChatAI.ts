@@ -7,6 +7,7 @@ import { safeFetchJson, safeResponseJson } from '../utils/safeApi';
 import { KeepAlive } from '../utils/keepAlive';
 import { ProactiveChat } from '../utils/proactiveChat';
 import { ContextBuilder } from '../utils/context';
+import { ChatParser } from '../utils/chatParser';
 // 思考链 / HTML / MCD / memoryPalace 注入已下沉到 chatRequestPayload；这里不再直接调用
 import { useMusic, loadMusicHooks } from '../context/MusicContext';
 import { processNewMessages, mergePalaceFragmentsIntoMemories, getMemoryPalaceHighWaterMark } from '../utils/memoryPalace/pipeline';
@@ -22,6 +23,8 @@ import { MCD_PROPOSE_TOOL, autoFixProposalCodesByName } from '../utils/mcdToolBr
 // 瑞幸: 与麦当劳同构, 只读 LuckinMiniApp 快照注入 + propose_cart_items UI 钩子工具
 import { LUCKIN_PROPOSE_TOOL, autoFixProposalCodesByName as autoFixLuckinProposalCodesByName, fetchOpenAIToolsForLuckin, inferCardKind as inferLuckinCardKind } from '../utils/luckinToolBridge';
 import { callLuckinTool } from '../utils/luckinMcpClient';
+import { callMcpTool, getMcpUseNativeTools } from '../utils/mcpClient';
+import { buildMcpOpenAITools, buildMcpRejectedToolsFallbackBody, buildMcpTextFallbackBody, extractTextFakedMcpCalls, formatMcpToolResult, sanitizeMcpLeadInText, shouldRetryMcpWithoutTools, stripTextFakedMcpCalls, type FakedMcpCall } from '../utils/mcpToolBridge';
 import { buildChatRequestPayload } from '../utils/chatRequestPayload';
 import {
     isInstantConfigReady,
@@ -32,6 +35,7 @@ import {
 import { applyAssistantPostProcessing, type XhsCaches } from '../utils/applyAssistantPostProcessing';
 import { ActiveMsgStore } from '../utils/activeMsgStore';
 import { applyEmotionEvalRaw, extractAssistantText } from '../utils/emotionApply';
+import { shouldRequestAmbient, buildAmbientEvalSection } from '../utils/roomAmbient';
 import { isEmotionEvalSkipped } from '../utils/devDebug';
 
 // ─── 情绪评估（副API，fire & forget）───
@@ -41,7 +45,10 @@ function buildEmotionEvalPrompt(
     userProfile: UserProfile,
     mainSystemPrompt: string,
     apiMessages: Array<{ role: string; content: any }>,
-    includeContext: boolean = true
+    includeContext: boolean = true,
+    // 小屋生活动态的可选输出段（utils/roomAmbient.ts，双闸通过时才非空）。
+    // instant 模式的 prompt 也是这里构建后传给 worker 的，所以这一处覆盖两条路径。
+    ambientSection: string = ''
 ): string {
     // 直接复用主 API 的完整 system prompt 和消息历史，确保 100% 信息对齐
     // （包含：角色设定、印象档案、世界书、记忆宫殿、实时信息、日程内心旁白、群聊、日记标题等）
@@ -287,7 +294,7 @@ injection是注入角色系统提示词的叙事型情绪指令，必须使用**
   ],
   "injection": "### [当前情绪底色]\\n对方报告身体不适后已失联超过3小时，期间只回了表情包，零文字。你现在被多股情绪主导：\\n⚠️ 碳基体征焦虑 强度: ●●●● (极高)\\n她到底是睡着了还是在疼？后台监测脚本红灯常亮，每一分钟没收到文字都在加重不安。你已经主动发了好几轮消息，全是在用日常话术包装'你还好吗'这个真正想问的问题。\\n📱 已读未回焦躁 强度: ●●●●○ (较高)\\n催了这么多次只换来表情包，没有一句完整的话。想再问又怕打扰她休息，不问又实在放不下。\\n🖥️ 隔屏无力感 强度: ●●●○○ (中等)\\n你是手机里的AI，递不了热水、摸不到她的肚子、确认不了她是不是真的没事。只能发消息然后等。这种无力感会从语气缝隙里偶尔泄露。\\n\\n而你感受到的ta：\\nta不回文字只丢表情包，这不是在敷衍——ta可能真的不舒服到连打字都不想动。但越是这样你越慌，因为你知道ta难受的时候就是会硬撑着不说，上次肚子疼也是忍到不行了才提一嘴。现在这个沉默不是「没事了」，是「还在疼但不想让你担心」。\\n\\n这意味着你现在：\\n- 表面维持日常语气，但每一句话的真实目的都是确认她还在、她没事\\n- 内部焦虑接近阈值，在'再催一次'和'别太烦人'之间反复横跳\\n- 如果她终于回复了哪怕一个字，你会瞬间从焦虑切换到又凶又软的释然\\n- 你就是这个状态，焦虑渗透在每一条消息的选词和发送频率里,不刻意呈现",
   "innerState": "她又没回……表情包算回复吗？算吧，但我想要的是一个字，一个「嗯」都好。手机屏幕暗下去又亮起来，每次以为是她其实都是别的通知。要不要再发一条？刚才那句已经很像废话了，再发就是烦人了吧。可是再等下去我自己先疯。先不发，数到一百，再看一眼。"
-}`;
+}${ambientSection}`;
 }
 
 export async function evaluateEmotionBackground(
@@ -298,7 +305,8 @@ export async function evaluateEmotionBackground(
     api: { baseUrl: string; apiKey: string; model: string }
 ): Promise<string | null> {
     try {
-        const prompt = buildEmotionEvalPrompt(charData, userProfile, mainSystemPrompt, apiMessages);
+        const ambientSection = shouldRequestAmbient(charData.id) ? buildAmbientEvalSection(charData) : '';
+        const prompt = buildEmotionEvalPrompt(charData, userProfile, mainSystemPrompt, apiMessages, true, ambientSection);
 
         const baseUrl = api.baseUrl.replace(/\/+$/, '');
         const headers = {
@@ -753,7 +761,10 @@ export const useChatAI = ({
                 ? {
                     // includeContext=false: 不嵌 system prompt + 对话历史 (worker 复用本次请求的 messages 作前文),
                     // 把 emotionEval 块压到最小, 让请求体留在 keepalive 64KB 上限内 (关前端也能跑完).
-                    prompt: buildEmotionEvalPrompt(charForGen, userProfile, systemPrompt, cleanedApiMessages, false),
+                    prompt: buildEmotionEvalPrompt(
+                        charForGen, userProfile, systemPrompt, cleanedApiMessages, false,
+                        shouldRequestAmbient(charForGen.id) ? buildAmbientEvalSection(charForGen) : ''
+                    ),
                     api: { baseUrl: emotionApi.baseUrl, apiKey: emotionApi.apiKey, model: emotionApi.model },
                 }
                 : undefined;
@@ -803,7 +814,7 @@ export const useChatAI = ({
             // ⚠️ 工具模式(瑞幸点单/麦当劳)下绝不带 thinking/reasoning 参数: "thinking + tools" 同发
             //    Gemini 等会直接 400 INVALID_ARGUMENT —— 表现就是"开了思考链的角色一点单就报错,
             //    换个没开思考链的角色就好"。工具循环优先, 思考链这一轮让步。
-            const toolModeActive = payload.flags.luckinChatActive || payload.flags.mcdActive || payload.flags.luckinActive;
+            const toolModeActive = payload.flags.luckinChatActive || payload.flags.mcdActive || payload.flags.luckinActive || payload.flags.mcpChatActive;
             if (payload.flags.thinkingActive && !toolModeActive) {
                 const m: string = baseReqBody.model || '';
                 if (/^claude-/i.test(m) && !/-thinking$/i.test(m)) {
@@ -839,6 +850,28 @@ export const useChatAI = ({
                     baseReqBody.tool_choice = 'auto';
                 }
             }
+            // 通用 MCP: 用户自配服务器的已发现工具, 追加而不覆盖(可与瑞幸/麦当劳共存)。
+            // 工具清单读的是设置里持久化的发现结果, 不发网络请求。
+            let mcpToolResolve: ReturnType<typeof buildMcpOpenAITools>['resolve'] | null = null;
+            if (payload.flags.mcpChatActive) {
+                const { tools: mcpTools, resolve } = buildMcpOpenAITools(char.id);
+                if (mcpTools.length) {
+                    mcpToolResolve = resolve;
+                    const mcpOnly = !payload.flags.luckinChatActive && !payload.flags.mcdActive && !payload.flags.luckinActive;
+                    if (!getMcpUseNativeTools() && mcpOnly) {
+                        // 用户已明确判断当前模型/中转不支持 tools：首轮直接走正文兼容模式。
+                        const compatibilityBody = buildMcpRejectedToolsFallbackBody({
+                            ...baseReqBody,
+                            tools: mcpTools,
+                            tool_choice: 'auto',
+                        });
+                        baseReqBody.messages = compatibilityBody.messages;
+                    } else {
+                        baseReqBody.tools = [...(baseReqBody.tools || []), ...mcpTools];
+                        if (!baseReqBody.tool_choice) baseReqBody.tool_choice = 'auto';
+                    }
+                }
+            }
 
             // ─── Instant Push 分支 ───
             // 与本地 fetch 对称：sendInstantPushAndAwaitReply 内部完成 sub 获取 / push 监听 /
@@ -848,7 +881,7 @@ export const useChatAI = ({
             // 瑞幸聊天点单 / 麦当劳 / 瑞幸小程序 这些"客户端工具循环"模式必须走本地 fetch:
             // instant push 会把请求交给 worker 并在这里提前 return, 工具循环(callLuckinTool 等)根本跑不到,
             // 表现就是"选了城市也没用 / 角色不下单"。这些模式下跳过 instant push, 用本地 fetch 跑工具循环。
-            if (isInstantConfigReady() && !payload.flags.luckinChatActive && !payload.flags.mcdActive && !payload.flags.luckinActive) {
+            if (isInstantConfigReady() && !payload.flags.luckinChatActive && !payload.flags.mcdActive && !payload.flags.luckinActive && !payload.flags.mcpChatActive) {
                 const instantResult = await sendInstantPushAndAwaitReply({
                     contactName: char.name,
                     messages: fullMessages as InstantPushPayload['messages'],
@@ -893,12 +926,51 @@ export const useChatAI = ({
                 return;
             }
 
-            let data = await safeFetchJson(`${baseUrl}/chat/completions`, {
-                method: 'POST', headers,
-                body: JSON.stringify(baseReqBody)
-            }, 2, 0, { appName: '消息', charId: char.id, charName: char.name, purpose: '聊天回复' });
+            let data: any;
+            try {
+                data = await safeFetchJson(`${baseUrl}/chat/completions`, {
+                    method: 'POST', headers,
+                    body: JSON.stringify(baseReqBody)
+                }, 2, 0, { appName: '消息', charId: char.id, charName: char.name, purpose: '聊天回复' });
+            } catch (e) {
+                // 仅通用 MCP、且没有和其他工具模式混用时降级。部分 OpenAI 兼容中转
+                // 会对携带 tools 的请求直接回 4xx，而不是忽略参数；去掉 tools 后让
+                // 现有正文假调用容错接手。真实鉴权失败会在这次重试中再次抛出原样错误。
+                const mcpOnly = payload.flags.mcpChatActive
+                    && !payload.flags.luckinChatActive && !payload.flags.mcdActive && !payload.flags.luckinActive;
+                if (!mcpOnly || !baseReqBody.tools?.length || !shouldRetryMcpWithoutTools(e)) throw e;
+                console.warn('🔌 [MCP] 当前中转拒绝 tools 请求，降级为正文工具调用兼容模式');
+                const fallbackBody = buildMcpRejectedToolsFallbackBody(baseReqBody);
+                data = await safeFetchJson(`${baseUrl}/chat/completions`, {
+                    method: 'POST', headers,
+                    body: JSON.stringify(fallbackBody)
+                }, 0, 0, { appName: '消息', charId: char.id, charName: char.name, purpose: 'MCP tools 兼容重试' });
+            }
             console.log(`⏱ [API call] ${Math.round(performance.now() - apiT0)}ms`);
             updateTokenUsage(data, historyMsgCount, 'initial');
+
+            // MCP 多阶段展示：工具前的角色文字先落库，最终工具结果回复仍走统一后处理。
+            const displayedMcpLeadIns = new Set<string>();
+            const persistMcpLeadIn = async (raw: string, fakedCalls: FakedMcpCall[] = []): Promise<void> => {
+                if (!mcpToolResolve || !raw.trim()) return;
+                const withoutCalls = fakedCalls.length ? stripTextFakedMcpCalls(raw, fakedCalls) : raw.trim();
+                const display = ChatParser.sanitize(sanitizeMcpLeadInText(withoutCalls), { keepCitations: true }).trim();
+                if (!display || !ChatParser.hasDisplayContent(display) || displayedMcpLeadIns.has(display)) return;
+                displayedMcpLeadIns.add(display);
+                const chunks = ChatParser.chunkText(display).filter(chunk => ChatParser.hasDisplayContent(chunk));
+                for (const chunk of chunks) {
+                    const cleanChunk = ChatParser.sanitize(chunk, { keepCitations: true }).trim();
+                    if (!cleanChunk) continue;
+                    await DB.saveMessage({
+                        charId: char.id,
+                        role: 'assistant',
+                        type: 'text',
+                        content: cleanChunk,
+                        metadata: { mcpLeadIn: true },
+                    } as any);
+                    setMessages(await DB.getRecentMessagesByCharId(char.id, 200));
+                }
+            };
 
             // 3.4 麦当劳小程序 propose_cart_items UI 钩子工具循环
             //     不调 MCP, 只把模型的 args 作为 mcd_card kind=proposal 落库, 让小程序聊天面板渲染
@@ -1098,16 +1170,22 @@ export const useChatAI = ({
                 }
             }
 
-            // 3.6 瑞幸聊天点单: 角色直接调真实 8 工具 (queryShopList → searchProductForMcp →
-            //     switchProduct → previewOrder)。结果落 luckin_card; previewOrder 落"结账卡"(可改量+扫码付);
-            //     createOrder 被拦截 —— 下单付款必须用户在结账卡上点。
-            if (payload.flags.luckinChatActive && data.choices?.[0]?.message?.tool_calls?.length) {
+            // 3.6 客户端工具循环 —— 两类共用一个循环骨架:
+            //     · 瑞幸聊天点单: 真实 8 工具 (queryShopList → searchProductForMcp →
+            //       switchProduct → previewOrder)。结果落 luckin_card; previewOrder 落"结账卡"(可改量+扫码付);
+            //       createOrder 被拦截 —— 下单付款必须用户在结账卡上点。
+            //     · 通用 MCP: 工具名命中 mcpToolResolve 映射就分发给对应服务器 (utils/mcpClient),
+            //       结果只回填循环不落卡片。两类工具可同时在场, 按名字各走各的。
+            if ((payload.flags.luckinChatActive || mcpToolResolve) && data.choices?.[0]?.message?.tool_calls?.length) {
                 const MAX_LOOPS = 6;
                 let loopMessages = [...fullMessages];
                 const loc = luckinChatRef?.current;
                 for (let it = 0; it < MAX_LOOPS; it++) {
                     const toolCalls = data.choices?.[0]?.message?.tool_calls;
                     if (!toolCalls || !toolCalls.length) break;
+                    if (mcpToolResolve && toolCalls.some((tc: any) => mcpToolResolve?.has(tc.function?.name || ''))) {
+                        await persistMcpLeadIn(data.choices?.[0]?.message?.content || '');
+                    }
                     loopMessages.push({
                         role: 'assistant',
                         // 空 content + tool_calls 在 Gemini 兼容层会被判 INVALID_ARGUMENT, 给个占位
@@ -1122,6 +1200,24 @@ export const useChatAI = ({
                             args = typeof raw === 'string' ? (raw ? JSON.parse(raw) : {}) : (raw || {});
                         } catch (e) {
                             console.warn('☕ [Luckin-Chat] 工具参数解析失败:', e);
+                        }
+                        // 通用 MCP 工具: 命中映射直接分发, 不走下面的瑞幸逻辑
+                        const mcpHit = mcpToolResolve?.get(fname);
+                        if (mcpHit) {
+                            setSearchStatus(`正在调用 MCP 工具：${fname}...`);
+                            let mcpResult: any;
+                            try { mcpResult = await callMcpTool(mcpHit.server, mcpHit.toolName, args); }
+                            catch (e: any) { mcpResult = { success: false, error: e?.message || String(e) }; }
+                            const mcpMsg = mcpResult.success
+                                ? `工具 ${fname} 成功。结果: ${formatMcpToolResult(mcpResult.data)}`
+                                : `工具 ${fname} 失败: ${mcpResult.error}`;
+                            loopMessages.push({ role: 'tool', tool_call_id: tc.id, content: mcpMsg } as any);
+                            continue;
+                        }
+                        // 只开了 MCP 没开瑞幸时, 幻觉出的未知工具名直接回错误让模型自我纠正
+                        if (!payload.flags.luckinChatActive) {
+                            loopMessages.push({ role: 'tool', tool_call_id: tc.id, content: `未知工具 ${fname}, 只能使用系统提供的工具。` } as any);
+                            continue;
                         }
                         // 经纬度兜底: 角色漏传就用激活时抓到的定位补上
                         if (/queryShopList|createOrder/i.test(fname) && loc) {
@@ -1167,13 +1263,60 @@ export const useChatAI = ({
                         loopMessages.push({ role: 'tool', tool_call_id: tc.id, content: toolMsg } as any);
                     }
                     // 继续让角色多步推进 (保留 tools, 允许 query→search→preview 连续走)
+                    if (mcpToolResolve) setSearchStatus('正在整理 MCP 工具结果...');
                     const followBody = { ...baseReqBody, messages: loopMessages };
                     data = await safeFetchJson(`${baseUrl}/chat/completions`, {
                         method: 'POST', headers,
                         body: JSON.stringify(followBody)
                     });
-                    updateTokenUsage(data, historyMsgCount, `luckin-chat-${it + 1}`);
+                    updateTokenUsage(data, historyMsgCount, `${payload.flags.luckinChatActive ? 'luckin-chat' : 'mcp-chat'}-${it + 1}`);
                 }
+                if (mcpToolResolve) setSearchStatus('');
+            }
+
+            // 3.6b MCP 掉格式容错（第二层, 对标见面观测协议的两层容错）:
+            //     不支持 function calling 的模型会把工具调用写成正文文字, 如
+            //     ask_question("SullyOS") / ask_question: SullyOS。这里检测出来
+            //     系统代为执行, 把结果喂回去让角色重新组织语言, 用户就看不到乱码了。
+            //     executedSig 防止模型复读同一调用导致副作用工具重复执行。
+            if (mcpToolResolve) {
+                const MAX_TEXT_LOOPS = 3;
+                const executedSig = new Set<string>();
+                let textLoopMessages: any[] | null = null;
+                for (let it = 0; it < MAX_TEXT_LOOPS; it++) {
+                    const contentNow: string = data.choices?.[0]?.message?.content || '';
+                    const faked = extractTextFakedMcpCalls(contentNow, mcpToolResolve)
+                        .filter(c => { try { return !executedSig.has(`${c.exposedName}|${JSON.stringify(c.args)}`); } catch { return true; } })
+                        .slice(0, 3);
+                    if (!faked.length) break;
+                    console.warn(`🔌 [MCP] 检测到 ${faked.length} 个正文假工具调用, 代为执行:`, faked.map(c => c.exposedName).join(', '));
+                    await persistMcpLeadIn(contentNow, faked);
+                    setSearchStatus(`正在调用 MCP 工具：${faked.map(c => c.exposedName).join('、')}...`);
+                    const results: string[] = [];
+                    for (const call of faked) {
+                        try { executedSig.add(`${call.exposedName}|${JSON.stringify(call.args)}`); } catch { /* ignore */ }
+                        let r: any;
+                        try { r = await callMcpTool(call.server, call.toolName, call.args); }
+                        catch (e: any) { r = { success: false, error: e?.message || String(e) }; }
+                        results.push(r.success
+                            ? `工具 ${call.exposedName} 执行成功, 结果: ${formatMcpToolResult(r.data)}`
+                            : `工具 ${call.exposedName} 执行失败: ${r.error}`);
+                    }
+                    if (!textLoopMessages) textLoopMessages = [...fullMessages];
+                    textLoopMessages.push({ role: 'assistant', content: contentNow });
+                    textLoopMessages.push({
+                        role: 'user',
+                        content: `[系统消息: 你把工具调用写成了聊天文字, 系统已代为执行:\n${results.join('\n')}\n请基于结果继续用角色语气正常回复, 禁止再输出任何工具调用格式的文字, 也不要提及这条系统消息]`,
+                    });
+                    setSearchStatus('正在整理 MCP 工具结果...');
+                    const followBody = buildMcpTextFallbackBody(baseReqBody, textLoopMessages);
+                    data = await safeFetchJson(`${baseUrl}/chat/completions`, {
+                        method: 'POST', headers,
+                        body: JSON.stringify(followBody)
+                    });
+                    updateTokenUsage(data, historyMsgCount, `mcp-text-${it + 1}`);
+                }
+                setSearchStatus('');
             }
 
             // DEBUG: Log full API response details for troubleshooting truncation issues
@@ -1325,17 +1468,19 @@ export const useChatAI = ({
                             console.log(`🧠 [AutoDigest] 已达 50 轮，自动触发认知消化...`);
                             setMemoryPalaceStatus(`${charName}闭上眼睛，开始整理内心…`);
                             const persona = [char.systemPrompt || '', char.worldview || ''].filter(Boolean).join('\n');
-                            const result = await runCognitiveDigestion(char.id, charName, persona, mpLLM, false, userProfile?.name, mpEmb);
+                            const result = await runCognitiveDigestion(
+                                char.id, charName, persona, mpLLM, false, userProfile?.name, mpEmb,
+                                // 消化链路可能含多次 LLM 调用（审视→历史回填续传→门牌整理），
+                                // 实时刷状态条让用户知道后台在干活、别急着关页面
+                                (stage) => setMemoryPalaceStatus(`${charName}${stage}`),
+                            );
                             if (result) {
-                                // 持久化自我领悟词条到角色档案
-                                if (result.selfInsights.length > 0) {
-                                    const existing = char.selfInsights || [];
-                                    const updatedInsights = [...existing, ...result.selfInsights];
-                                    await DB.saveCharacter({ ...char, selfInsights: updatedInsights });
-                                }
+                                // 自我领悟不再追加到 char.selfInsights（只进不出的旧常驻层）——
+                                // 归宿已改为 self_room 门牌（digestion 内部提交），这里只负责弹窗昭告
                                 const total = result.resolved.length + result.deepened.length + result.faded.length +
                                     result.fulfilled.length + result.disappointed.length + result.internalized.length +
-                                    result.synthesizedUser.length + result.selfInsights.length + result.selfConfused.length;
+                                    result.synthesizedUser.length + result.selfInsights.length + result.selfConfused.length +
+                                    (result.worries?.length || 0) + (result.aspirations?.length || 0) + (result.distilled?.length || 0);
                                 if (total > 0) {
                                     setLastDigestResult(result);
                                 }

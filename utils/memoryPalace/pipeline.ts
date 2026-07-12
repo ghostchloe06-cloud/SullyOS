@@ -928,7 +928,7 @@ function getEmbeddingConfig(charEmbeddingConfig?: any): EmbeddingConfig | null {
 }
 
 export async function injectMemoryPalace(
-    char: { memoryPalaceEnabled?: boolean; embeddingConfig?: any; activeBuffs?: any[]; personalityStyle?: string; ruminationTendency?: number; id: string; memoryPalaceInjection?: string },
+    char: { memoryPalaceEnabled?: boolean; embeddingConfig?: any; activeBuffs?: any[]; personalityStyle?: string; ruminationTendency?: number; id: string; memoryPalaceInjection?: string; roomPlatesInjection?: string },
     recentMessages?: Message[],
     queryHint?: string,
     userName?: string,
@@ -946,6 +946,16 @@ export async function injectMemoryPalace(
         if (!resolvedUserName) {
             try { resolvedUserName = (await DB.getUserProfile())?.name || undefined; } catch {}
         }
+
+        // 门牌（常驻语义层）：纯 IDB 读 + 格式化，不调 LLM。
+        // 无条件赋值（包括 ''）—— 门牌被清空/删除后，persist 过的旧注入必须被冲掉。
+        try {
+            const { buildRoomPlatesInjection } = await import('./roomPlates');
+            char.roomPlatesInjection = await buildRoomPlatesInjection(char.id, resolvedUserName);
+        } catch {
+            char.roomPlatesInjection = '';
+        }
+
         const context = await retrieveMemories(
             msgs, char.id, embeddingConfig,
             currentMood,

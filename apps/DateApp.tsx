@@ -14,9 +14,10 @@ import DateSession from '../components/date/DateSession';
 import DateSettings from '../components/date/DateSettings';
 import { armDateResumeAttempt, clearDateResumeAttempt, takeCrashedDateResume } from '../utils/dateSessionRecovery';
 import { BookOpen, Sparkle, CaretLeft, GearSix } from '@phosphor-icons/react';
+import { CharacterGroupFilterBar, filterCharactersByGroup, GROUP_FILTER_ALL } from '../components/character/CharacterGroupFilter';
 
 const DateApp: React.FC = () => {
-    const { closeApp, openApp, characters, activeCharacterId, setActiveCharacterId, apiConfig, addToast, updateCharacter, virtualTime, userProfile, memoryPalaceConfig, dateAutoStartCharId, consumeDateAutoStart } = useOS();
+    const { closeApp, openApp, characters, activeCharacterId, setActiveCharacterId, apiConfig, addToast, updateCharacter, virtualTime, userProfile, memoryPalaceConfig, dateAutoStartCharId, consumeDateAutoStart, characterGroups } = useOS();
 
     // 是否由聊天「见面」按钮进入：为真时，退出见面流程回到聊天而非见面选择页/桌面。
     // 用本地 state（而非 context）承载：DateApp 切走即卸载，标记随之消失，不会泄漏到
@@ -44,6 +45,7 @@ const DateApp: React.FC = () => {
     const SELECT_PAGE_SIZE = 6;
     const pagerRef = useRef<HTMLDivElement>(null);
     const [selectPage, setSelectPage] = useState(0);
+    const [selectGroupId, setSelectGroupId] = useState(GROUP_FILTER_ALL); // 选择页的分组筛选
     const onPagerScroll = () => {
         const el = pagerRef.current;
         if (!el || el.clientWidth === 0) return;
@@ -565,115 +567,127 @@ const DateApp: React.FC = () => {
     // --- Render ---
 
     if (mode === 'select' || !char) {
-        // 6 个角色一页，横向翻页
+        // 6 个角色一页，横向翻页（先按分组筛选，再切页）
+        const selectChars = filterCharactersByGroup(characters, characterGroups, selectGroupId);
         const pages: CharacterProfile[][] = [];
-        for (let i = 0; i < characters.length; i += SELECT_PAGE_SIZE) pages.push(characters.slice(i, i + SELECT_PAGE_SIZE));
+        for (let i = 0; i < selectChars.length; i += SELECT_PAGE_SIZE) pages.push(selectChars.slice(i, i + SELECT_PAGE_SIZE));
         if (pages.length === 0) pages.push([]);
-        // 星点装饰（固定坐标，避免每帧抖动）
-        const stars = [
-            { top: '8%', left: '12%', s: 3, d: 0 }, { top: '14%', left: '82%', s: 2, d: 0.6 },
-            { top: '22%', left: '46%', s: 2, d: 1.2 }, { top: '30%', left: '8%', s: 2, d: 0.3 },
-            { top: '6%', left: '64%', s: 4, d: 0.9 }, { top: '40%', left: '90%', s: 2, d: 1.5 },
-            { top: '52%', left: '4%', s: 3, d: 0.2 }, { top: '60%', left: '72%', s: 2, d: 1.1 },
-            { top: '70%', left: '20%', s: 2, d: 0.7 }, { top: '78%', left: '88%', s: 3, d: 1.4 },
-            { top: '86%', left: '40%', s: 2, d: 0.5 }, { top: '12%', left: '34%', s: 2, d: 1.8 },
-            { top: '46%', left: '56%', s: 2, d: 0.4 }, { top: '64%', left: '48%', s: 3, d: 1.0 },
+        // 浅色主题（参考「小屋 · 小小窝」房间）：薰衣草浅背景 + 柔星点 + 衬线标题 + 罗盘环角色卡
+        const th = {
+            pageBg: 'linear-gradient(180deg,#efe9f7 0%,#f4eff9 45%,#f7f2fb 100%)',
+            stars: 'radial-gradient(1.5px 1.5px at 14% 16%,rgba(190,160,225,.45),transparent),radial-gradient(1px 1px at 80% 12%,rgba(220,190,235,.5),transparent),radial-gradient(1.5px 1.5px at 42% 28%,rgba(180,200,240,.4),transparent),radial-gradient(1px 1px at 86% 42%,rgba(200,175,230,.4),transparent),radial-gradient(1px 1px at 22% 66%,rgba(210,185,235,.35),transparent),radial-gradient(1px 1px at 66% 80%,rgba(200,210,240,.35),transparent)',
+            title: '#6a5790', titleShadow: 'rgba(170,150,220,.4)', line: 'rgba(150,120,190,.5)',
+            cardBorder: 'rgba(170,140,210,.3)', cardShadow: '0 8px 22px rgba(150,120,200,.18)',
+            inner: 'rgba(170,140,210,.22)', gem: 'rgba(190,160,220,.85)',
+            tick: 'rgba(170,140,210,.16)', halo: 'rgba(200,175,235,.3)',
+            ring1: 'rgba(180,150,215,.5)', ring2: 'rgba(180,150,215,.25)', avGlow: 'rgba(190,160,235,.4)',
+        };
+        // 每张卡片按序循环的柔色底——粉/薰衣草/浅蓝渐变（同小小窝浅色卡）
+        const CARD_TINTS = [
+            'linear-gradient(180deg,rgba(250,212,228,.85),rgba(242,228,246,.8))',
+            'linear-gradient(180deg,rgba(232,228,248,.85),rgba(242,238,250,.8))',
+            'linear-gradient(180deg,rgba(226,216,246,.85),rgba(238,230,249,.8))',
+            'linear-gradient(180deg,rgba(212,230,247,.85),rgba(234,240,250,.8))',
+            'linear-gradient(180deg,rgba(226,212,245,.85),rgba(238,228,249,.8))',
+            'linear-gradient(180deg,rgba(234,231,242,.88),rgba(242,240,247,.82))',
         ];
         return (
-            <div className="h-full w-full relative overflow-hidden flex flex-col font-light"
-                 style={{ background: 'linear-gradient(170deg,#241d4a 0%,#352c66 38%,#473b7e 68%,#5b4d94 100%)' }}>
-                {/* 星空装饰层 */}
-                <div className="pointer-events-none absolute inset-0 overflow-hidden">
-                    <div className="absolute -top-24 -right-20 w-72 h-72 rounded-full" style={{ background: 'radial-gradient(circle, rgba(190,170,255,0.25), transparent 70%)' }} />
-                    <div className="absolute top-1/3 -left-16 w-56 h-56 rounded-full" style={{ background: 'radial-gradient(circle, rgba(244,180,255,0.14), transparent 70%)' }} />
-                    {stars.map((st, i) => (
-                        <span key={i} className="absolute rounded-full bg-white animate-pulse"
-                              style={{ top: st.top, left: st.left, width: st.s, height: st.s, opacity: 0.5, animationDelay: `${st.d}s`, boxShadow: '0 0 6px rgba(255,255,255,0.8)' }} />
-                    ))}
-                    <Sparkle size={16} weight="fill" className="absolute top-[18%] left-[24%] text-violet-200/40" />
-                    <Sparkle size={12} weight="fill" className="absolute top-[55%] right-[16%] text-fuchsia-200/40" />
-                    <Sparkle size={14} weight="fill" className="absolute bottom-[10%] left-[14%] text-cyan-100/30" />
-                </div>
+            <div className="h-full w-full relative overflow-hidden flex flex-col font-light" style={{ background: th.pageBg }}>
+                {/* 柔星点氛围 */}
+                <div className="absolute inset-0 pointer-events-none opacity-70" style={{ backgroundImage: th.stars }} />
 
                 {/* 顶栏 + 标题 */}
-                <div className="relative z-10 shrink-0" style={{ paddingTop: 'var(--safe-top)' }}>
-                    <div className="flex items-center justify-between px-5 pt-3">
-                        <button onClick={() => { if (cameFromChat) { returnToChat(); } else { closeApp(); } }} className="w-10 h-10 rounded-full bg-white/12 backdrop-blur-md border border-white/25 flex items-center justify-center text-white active:scale-90 transition-transform shadow-lg">
-                            <CaretLeft size={20} weight="bold" />
+                <div className="relative z-10 shrink-0" style={{ paddingTop: 'max(1.25rem, var(--safe-top))' }}>
+                    <div className="relative flex items-center justify-center px-5 pt-2">
+                        <button onClick={() => { if (cameFromChat) { returnToChat(); } else { closeApp(); } }}
+                                className="absolute left-4 w-9 h-9 rounded-full flex items-center justify-center active:scale-90 transition-all"
+                                style={{ color: '#8f7bb5', background: 'rgba(255,255,255,0.6)', boxShadow: '0 2px 8px rgba(150,120,200,0.15)' }}>
+                            <CaretLeft size={19} weight="bold" />
                         </button>
-                        <div className="w-10" />
+                        <div className="text-center">
+                            <h1 className="text-[26px] tracking-[0.14em]" style={{ fontFamily: `'Noto Serif SC',serif`, color: th.title, textShadow: `0 2px 18px ${th.titleShadow}` }}>选择见面对象</h1>
+                            <div className="flex items-center justify-center gap-2 mt-1.5">
+                                <span className="h-px w-10" style={{ background: `linear-gradient(90deg,transparent,${th.line})` }} />
+                                <span className="text-[9px] tracking-[0.4em] font-bold" style={{ color: 'rgba(150,120,190,0.75)' }}>✦ CHOOSE CHARACTER ✦</span>
+                                <span className="h-px w-10" style={{ background: `linear-gradient(270deg,transparent,${th.line})` }} />
+                            </div>
+                        </div>
                     </div>
-                    <div className="text-center mt-1 mb-3 px-6">
-                        <h1 className="text-[27px] font-bold text-white font-serif tracking-[0.12em] drop-shadow-[0_2px_14px_rgba(180,150,255,0.65)]">选择见面对象</h1>
-                        <div className="text-[9px] tracking-[0.5em] text-violet-200/60 mt-1.5">CHOOSE CHARACTER</div>
-                    </div>
+                    {/* 分组筛选（没建分组时不渲染）。切组后回到第一页 */}
+                    <CharacterGroupFilterBar characters={characters} groups={characterGroups} dark
+                        value={selectGroupId}
+                        onChange={(id) => { setSelectGroupId(id); setSelectPage(0); pagerRef.current?.scrollTo({ left: 0 }); }}
+                        className="px-4 mb-3" />
                 </div>
 
                 {/* 分页卡片区 */}
-                {characters.length === 0 ? (
-                    <div className="relative z-10 flex-1 flex flex-col items-center justify-center text-violet-200/60 gap-3">
+                {selectChars.length === 0 ? (
+                    <div className="relative z-10 flex-1 flex flex-col items-center justify-center gap-3" style={{ color: 'rgba(150,120,190,0.7)' }}>
                         <Sparkle size={40} weight="light" />
-                        <span className="text-xs tracking-wider">还没有可见面的角色</span>
+                        <span className="text-xs tracking-wider">{characters.length ? '该分组下没有角色' : '还没有可见面的角色'}</span>
                     </div>
                 ) : (
                     <div ref={pagerRef} onScroll={onPagerScroll}
                          className="relative z-10 flex-1 min-h-0 flex overflow-x-auto snap-x snap-mandatory no-scrollbar"
                          style={{ scrollSnapType: 'x mandatory' }}>
                         {pages.map((page, pi) => (
-                            <div key={pi} className="w-full shrink-0 snap-start h-full overflow-y-auto no-scrollbar px-4">
-                                <div className="grid grid-cols-2 gap-3.5 pb-6">
-                                    {page.map(c => (
+                            <div key={pi} className="w-full shrink-0 snap-start h-full overflow-y-auto no-scrollbar px-5 pt-4">
+                                <div className="grid grid-cols-2 gap-4 pb-6">
+                                    {page.map((c, idx) => {
+                                        const tint = CARD_TINTS[(pi * SELECT_PAGE_SIZE + idx) % CARD_TINTS.length];
+                                        return (
                                         <div key={c.id} onClick={() => handleCharClick(c)}
-                                             className="relative rounded-[26px] p-3 pt-4 flex flex-col items-center active:scale-95 transition-transform"
-                                             style={{
-                                                 background: 'linear-gradient(160deg, rgba(255,255,255,0.17), rgba(196,176,255,0.10))',
-                                                 border: '1px solid rgba(255,255,255,0.28)',
-                                                 boxShadow: '0 10px 26px rgba(50,32,96,0.32), inset 0 1px 0 rgba(255,255,255,0.45)',
-                                                 backdropFilter: 'blur(10px)', WebkitBackdropFilter: 'blur(10px)',
-                                             }}>
+                                             className="group relative rounded-2xl px-3 pt-8 pb-5 flex flex-col items-center active:scale-95 transition-all overflow-hidden"
+                                             style={{ background: tint, border: `1px solid ${th.cardBorder}`, boxShadow: th.cardShadow }}>
+                                            {/* 内描框 + 四角宝石 */}
+                                            <div className="absolute inset-[7px] rounded-xl pointer-events-none" style={{ border: `1px solid ${th.inner}` }} />
+                                            <span className="absolute top-[10px] left-[10px] w-1.5 h-1.5 rotate-45" style={{ background: th.gem }} />
+                                            <span className="absolute top-[10px] right-[10px] w-1.5 h-1.5 rotate-45" style={{ background: th.gem }} />
+                                            <span className="absolute bottom-[10px] left-[10px] w-1.5 h-1.5 rotate-45" style={{ background: th.gem }} />
+                                            <span className="absolute bottom-[10px] right-[10px] w-1.5 h-1.5 rotate-45" style={{ background: th.gem }} />
                                             {/* 在线徽标 */}
-                                            <div className="absolute top-2.5 left-2.5 flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-emerald-400/20 border border-emerald-300/40 z-10">
+                                            <div className="absolute top-2.5 left-2.5 flex items-center gap-1 px-1.5 py-0.5 rounded-full z-10"
+                                                 style={{ background: 'rgba(255,255,255,0.8)', border: '1px solid rgba(120,200,160,0.4)', boxShadow: '0 1px 4px rgba(120,90,170,0.12)' }}>
                                                 <span className="relative flex h-1.5 w-1.5">
-                                                    <span className="absolute inline-flex h-full w-full rounded-full bg-emerald-300 opacity-70 animate-ping" />
-                                                    <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-400" />
+                                                    <span className="absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-60 animate-ping" />
+                                                    <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500" />
                                                 </span>
-                                                <span className="text-[8px] font-bold text-emerald-50 tracking-wider">在线</span>
+                                                <span className="text-[8px] font-bold text-emerald-600 tracking-wider">在线</span>
                                             </div>
                                             {/* 设置 / 记录（竖排） */}
                                             <div className="absolute top-2 right-2 flex flex-col gap-1 z-20">
                                                 <button onClick={(e) => { e.stopPropagation(); openSettings(c); }} title="布置场景 / 设定立绘 / 观测"
-                                                        className="w-7 h-7 rounded-xl bg-white/85 text-violet-500 shadow-md flex items-center justify-center hover:bg-white active:scale-90 transition-all">
-                                                    <GearSix size={16} weight="fill" />
+                                                        className="w-7 h-7 rounded-lg text-purple-500 flex items-center justify-center active:scale-90 transition-all"
+                                                        style={{ background: 'rgba(255,255,255,0.88)', boxShadow: '0 1px 5px rgba(120,90,170,0.2)' }}>
+                                                    <GearSix size={15} weight="fill" />
                                                 </button>
                                                 <button onClick={(e) => { e.stopPropagation(); openHistory(c); }} title="见面记录"
-                                                        className="w-7 h-7 rounded-xl bg-white/85 text-violet-500 shadow-md flex items-center justify-center hover:bg-white active:scale-90 transition-all">
-                                                    <BookOpen size={16} weight="fill" />
+                                                        className="w-7 h-7 rounded-lg text-purple-500 flex items-center justify-center active:scale-90 transition-all"
+                                                        style={{ background: 'rgba(255,255,255,0.88)', boxShadow: '0 1px 5px rgba(120,90,170,0.2)' }}>
+                                                    <BookOpen size={15} weight="fill" />
                                                 </button>
                                             </div>
-                                            {/* 头像 + 光环 */}
-                                            <div className="relative mt-4 mb-2">
-                                                <div className="absolute -inset-1.5 rounded-full opacity-70" style={{ background: 'conic-gradient(from 120deg, #a78bfa, #f0abfc, #7dd3fc, #a78bfa)', filter: 'blur(6px)' }} />
-                                                <img src={c.avatar} className="relative w-[68px] h-[68px] rounded-full object-cover ring-2 ring-white/70 shadow-lg" />
+                                            {/* 头像 + 罗盘环 + 双层环 + 光晕 */}
+                                            <div className="relative w-[92px] h-[92px] flex items-center justify-center mt-1">
+                                                <div className="absolute w-[124px] h-[124px] rounded-full" style={{ background: `repeating-conic-gradient(from 0deg, ${th.tick} 0deg 2.4deg, transparent 2.4deg 9deg)`, WebkitMaskImage: 'radial-gradient(circle, transparent 40%, #000 44%, #000 50%, transparent 55%)', maskImage: 'radial-gradient(circle, transparent 40%, #000 44%, #000 50%, transparent 55%)' }} />
+                                                <div className="absolute w-[110px] h-[110px] rounded-full" style={{ background: `radial-gradient(circle, ${th.halo}, transparent 62%)` }} />
+                                                <div className="absolute inset-[8px] rounded-full" style={{ border: `1px solid ${th.ring1}` }} />
+                                                <div className="absolute inset-[12px] rounded-full" style={{ border: `1px solid ${th.ring2}` }} />
+                                                <div className="w-[70px] h-[70px] rounded-full overflow-hidden" style={{ boxShadow: `0 0 18px ${th.avGlow}` }}>
+                                                    <img src={c.avatar} className="w-full h-full object-cover" alt={c.name} />
+                                                </div>
                                                 {c.savedDateState && (
-                                                    <span title="有存档" className="absolute -bottom-0.5 -right-0.5 w-5 h-5 rounded-full bg-amber-400 border-2 border-white/90 flex items-center justify-center shadow">
-                                                        <Sparkle size={10} weight="fill" className="text-white" />
-                                                    </span>
+                                                    <div title="有存档" className="absolute bottom-0 right-1.5 w-[22px] h-[22px] rounded-full flex items-center justify-center" style={{ background: '#fbbf24', boxShadow: '0 1px 5px rgba(180,120,20,0.4)' }}>
+                                                        <Sparkle size={12} weight="fill" className="text-white" />
+                                                    </div>
                                                 )}
                                             </div>
-                                            {/* 名字 + 花纹 */}
-                                            <div className="flex items-center gap-1.5 max-w-full">
-                                                <span className="text-violet-200/60 text-[10px]">✦</span>
-                                                <span className="font-bold text-white text-[15px] truncate drop-shadow-[0_1px_4px_rgba(80,50,140,0.5)]">{c.name}</span>
-                                                <span className="text-violet-200/60 text-[10px]">✦</span>
-                                            </div>
-                                            {/* 一句话简介 */}
-                                            {c.description && (
-                                                <div className="mt-1.5 px-2.5 py-1 rounded-full bg-white/12 border border-white/15 max-w-full">
-                                                    <span className="block text-[10px] text-violet-50/80 truncate">{c.description}</span>
-                                                </div>
-                                            )}
+                                            {/* 名字 + 简介 */}
+                                            <span className="mt-3 text-[14px] font-semibold tracking-wide truncate max-w-full" style={{ color: '#4b3b6b', fontFamily: `'Noto Serif SC',serif` }}>{c.name}</span>
+                                            <span className="mt-0.5 text-[10px] truncate max-w-full" style={{ color: c.description ? 'rgba(120,95,160,0.78)' : 'rgba(150,130,185,0.6)' }}>{c.description || '走过去见 ta'}</span>
                                         </div>
-                                    ))}
+                                        );
+                                    })}
                                 </div>
                             </div>
                         ))}
@@ -685,7 +699,8 @@ const DateApp: React.FC = () => {
                     <div className="relative z-10 shrink-0 flex justify-center items-center gap-2 py-3">
                         {pages.map((_, pi) => (
                             <button key={pi} onClick={() => goSelectPage(pi)} aria-label={`第 ${pi + 1} 页`}
-                                    className={`h-2 rounded-full transition-all ${pi === selectPage ? 'w-6 bg-white' : 'w-2 bg-white/40 hover:bg-white/60'}`} />
+                                    className="h-2 rounded-full transition-all"
+                                    style={{ width: pi === selectPage ? 24 : 8, background: pi === selectPage ? '#a78bd6' : 'rgba(170,140,210,0.35)' }} />
                         ))}
                     </div>
                 )}

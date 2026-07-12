@@ -1,11 +1,13 @@
 
-import React, { useRef } from 'react';
+import React, { useRef, useState } from 'react';
 import { useOS } from '../context/OSContext';
 import { processImage } from '../utils/file';
+import LifeRecordPanel from '../components/lifeRecord/LifeRecordPanel';
 
 const UserApp: React.FC = () => {
     const { closeApp, userProfile, updateUserProfile, addToast } = useOS();
     const fileInputRef = useRef<HTMLInputElement>(null);
+    const [tab, setTab] = useState<'profile' | 'life'>('profile');
 
     const handleAvatarChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
@@ -32,9 +34,25 @@ const UserApp: React.FC = () => {
                     </button>
                     <h1 className="text-lg font-bold text-slate-700 tracking-wide">个人档案</h1>
                 </div>
+                {/* Tab：我的档案 / 生活记录 */}
+                <div className="flex gap-1.5 px-4 pb-2.5">
+                    {([['profile', '我的档案'], ['life', '生活记录']] as const).map(([key, label]) => (
+                        <button
+                            key={key}
+                            onClick={() => setTab(key)}
+                            className={`px-4 py-1.5 rounded-full text-xs font-bold transition-colors ${
+                                tab === key ? 'bg-primary text-white shadow-sm' : 'bg-slate-100 text-slate-400'
+                            }`}
+                        >
+                            {label}
+                        </button>
+                    ))}
+                </div>
             </div>
 
             <div className="flex-1 overflow-y-auto px-5 pb-10 pt-5 space-y-5">
+                {tab === 'life' && <LifeRecordPanel />}
+                {tab === 'profile' && <>
 
                 {/* Profile name card */}
                 <div className="bg-white rounded-[1.75rem] shadow-[0_10px_30px_-12px_rgba(80,70,120,0.25)] border border-slate-100 overflow-hidden">
@@ -97,6 +115,7 @@ const UserApp: React.FC = () => {
                         placeholder="描述你自己..."
                     />
                 </div>
+                </>}
             </div>
         </div>
     );

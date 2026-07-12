@@ -34,8 +34,10 @@ export const CARD_STRIPPED_FIELDS = [
   'thinkingChainStyle',
   'thinkingChainCustomColors',
   'thinkingChainCustomPrompt',
+  'thinkingChainCustomCss',
 
-  // 3) 语言 / 语音本地偏好
+  // 3) 语言 / 语音 / 组织类本地偏好
+  'groupId',                 // 角色分组是发卡人自己的整理方式，指向的分组 id 在接收方本地也不存在
   'chatVoiceLang',
   'dateVoiceLang',
   'callVoiceLang',
@@ -53,6 +55,7 @@ export const CARD_STRIPPED_FIELDS = [
   'dreamLogs',
   'specialMomentRecords',
   'vrState',
+  'chibiStudio',
 ] as const;
 
 /**

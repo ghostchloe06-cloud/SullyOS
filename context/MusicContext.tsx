@@ -96,11 +96,12 @@ export const MUSIC_DEFAULT_CFG: MusicCfg = {
 /* ───────────── 工具 ───────────── */
 // worker 地址迁移：把"非自定义"的存量地址一律视为"没单独设过" → 跟随中心 worker。
 //   1. 旧的 sully-n.qegj567.workers.dev 默认（国内超时，早就该弃用）；
-//   2. 停在公共默认实例（= 中心配置的默认值）上的——中心没改时这是 no-op，
+//   2. 旧公共域名 sullymeow.ccwu213.cc（注册已过期、DNS 无法解析，2026-07 起）；
+//   3. 停在公共默认实例（= 中心配置的默认值）上的——中心没改时这是 no-op，
 //      中心换成自部署 worker 后，音乐自动跟着切过去。
 // 只有用户在播放器里手填的、跟默认不一样的地址才原样保留。读到需要改写时落盘一次。
 const normalizeHost = (u: string): string => u.trim().replace(/\/+$/, '').toLowerCase();
-const FOLLOW_CENTRAL_HOSTS = [/sully-n\.qegj567\.workers\.dev/i];
+const FOLLOW_CENTRAL_HOSTS = [/sully-n\.qegj567\.workers\.dev/i, /sullymeow\.ccwu213\.cc/i];
 const migrateWorkerUrl = (url: string | undefined): string => {
   const central = musicDefaultWorker();
   if (!url) return central;

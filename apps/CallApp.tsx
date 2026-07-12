@@ -17,6 +17,7 @@ import { DB } from '../utils/db';
 import { ChatPrompts } from '../utils/chatPrompts';
 import { Message, ChatTheme, AppID } from '../types';
 import { PRESET_THEMES } from '../components/chat/ChatConstants';
+import { CharacterGroupFilterBar, filterCharactersByGroup, GROUP_FILTER_ALL } from '../components/character/CharacterGroupFilter';
 type CallState = 'idle' | 'connecting' | 'listening' | 'thinking' | 'speaking' | 'ended' | 'error';
 type ViewMode = 'role-select' | 'in-call' | 'history' | 'record-detail';
 type CallBubble = { id: string; dbId?: number; role: 'user' | 'assistant'; text: string; time: string; audioUrl?: string; timestamp: number };
@@ -285,11 +286,12 @@ ${getVoicePromptOverride(getTtsProvider()) ?? (getTtsProvider() === 'fishaudio' 
   return [coreContext, timeContext, callPrompt, voiceLangPrompt].filter(Boolean).join('\n\n');
 };
 const CallApp: React.FC = () => {
-  const { closeApp, openApp, characters, activeCharacterId, addToast, apiConfig, userProfile, customThemes, suspendCall, suspendedCall, clearSuspendedCall, updateCharacter } = useOS();
+  const { closeApp, openApp, characters, activeCharacterId, addToast, apiConfig, userProfile, customThemes, suspendCall, suspendedCall, clearSuspendedCall, updateCharacter, characterGroups } = useOS();
 
   const [viewMode, setViewMode] = useState<ViewMode>('role-select');
   const [selectedCharId, setSelectedCharId] = useState<string>(activeCharacterId || characters[0]?.id || '');
   const ROLES_PER_PAGE = 6;
+  const [roleGroupId, setRoleGroupId] = useState<string>(GROUP_FILTER_ALL); // 选人页的分组筛选
   const [rolePage, setRolePage] = useState<number>(() => {
     const i = characters.findIndex(c => c.id === (activeCharacterId || characters[0]?.id));
     return i > 0 ? Math.floor(i / 6) : 0;
@@ -1109,9 +1111,10 @@ const CallApp: React.FC = () => {
     }
   };
   if (viewMode === 'role-select') {
-    const totalPages = Math.max(1, Math.ceil(characters.length / ROLES_PER_PAGE));
+    const groupChars = filterCharactersByGroup(characters, characterGroups, roleGroupId);
+    const totalPages = Math.max(1, Math.ceil(groupChars.length / ROLES_PER_PAGE));
     const page = Math.min(rolePage, totalPages - 1);
-    const pagedChars = characters.slice(page * ROLES_PER_PAGE, page * ROLES_PER_PAGE + ROLES_PER_PAGE);
+    const pagedChars = groupChars.slice(page * ROLES_PER_PAGE, page * ROLES_PER_PAGE + ROLES_PER_PAGE);
     return (
       <div className="relative h-full w-full bg-gradient-to-b from-[#140d28] via-[#0a0613] to-[#05030c] text-white flex flex-col overflow-hidden">
         {/* floating sparkles */}
@@ -1140,6 +1143,10 @@ const CallApp: React.FC = () => {
             <p className="text-sm text-white/45 mt-1">选一个人，拨过去吧。</p>
           </div>
 
+          {/* 分组筛选（没建分组时不渲染） */}
+          <CharacterGroupFilterBar characters={characters} groups={characterGroups} dark
+            value={roleGroupId} onChange={(id) => { setRoleGroupId(id); setRolePage(0); }} className="mt-4 shrink-0" />
+
           {/* character cards (6 / page) */}
           <div className="mt-5 flex-1 min-h-0 overflow-y-auto no-scrollbar space-y-2.5">
             {pagedChars.map(char => {
@@ -1164,8 +1171,8 @@ const CallApp: React.FC = () => {
                 </button>
               );
             })}
-            {!characters.length && (
-              <div className="text-center py-10 text-white/40 text-sm">还没有角色，先去创建一个吧</div>
+            {!groupChars.length && (
+              <div className="text-center py-10 text-white/40 text-sm">{characters.length ? '该分组下没有角色' : '还没有角色，先去创建一个吧'}</div>
             )}
           </div>
 
