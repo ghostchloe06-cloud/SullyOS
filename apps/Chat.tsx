@@ -1876,16 +1876,21 @@ const Chat: React.FC = () => {
 
             while (round < MAX_ROUNDS) {
                 round++;
+                // 角色已切走就中断：Chat 是单实例复用、这些是共享 state，继续跑会把旧角色的进度串到新角色 UI 上。
+                // 向量化基于高水位、可续跑，下次进这个角色再点会接着来。
+                if (char.id !== activeCharIdRef.current) break;
                 const hwm = getMemoryPalaceHighWaterMark(char.id);
                 // 用 pipeline 的真实缓冲区口径（排除热区），与 processNewMessages(force) 实际会处理的量一致，
                 // 循环才能正确收敛，进度条数也不会骗人。
                 const remaining = await getMemoryPalaceUnprocessedBufferCount(char.id);
+                if (char.id !== activeCharIdRef.current) break;
                 if (remaining < 10) break; // 剩余太少，停止
                 setVectorizeProgress(`第 ${round} 轮 · 剩余 ${remaining} 条`);
                 setVectorizePendingCount(remaining);
 
                 // processNewMessages 内部直接从 DB 加载并按缓冲区口径取批，忽略首个参数，传 [] 即可
                 const pipelineResult = await processNewMessages([], char.id, char.name, mpEmb, mpLLM, userProfile?.name || '', true);
+                if (char.id !== activeCharIdRef.current) break;
 
                 // 软跳过：缓冲区还没到阈值 / 热区还没被挤出 / 已有任务在跑 —— 不是 LLM 失败
                 if (pipelineResult?.skipReason) {
@@ -1931,15 +1936,18 @@ const Chat: React.FC = () => {
                 } as any);
             }
 
-            // 跑完刷新按钮上的待处理条数
-            try {
-                setVectorizePendingCount(await getMemoryPalaceUnprocessedBufferCount(char.id));
-            } catch { /* 忽略：刷新失败不影响结果提示 */ }
+            // 仅当仍停在这个角色时刷新按钮 + 弹结果提示，避免串台到刚切过去的新角色
+            if (char.id === activeCharIdRef.current) {
+                // 跑完刷新按钮上的待处理条数
+                try {
+                    setVectorizePendingCount(await getMemoryPalaceUnprocessedBufferCount(char.id));
+                } catch { /* 忽略：刷新失败不影响结果提示 */ }
 
-            if (totalProcessed > 0) {
-                addToast(`✅ 向量化完成：${round} 轮处理了约 ${totalProcessed} 条消息`, 'success');
-            } else {
-                addToast('所有聊天记录都已处理完毕，无需操作', 'info');
+                if (totalProcessed > 0) {
+                    addToast(`✅ 向量化完成：${round} 轮处理了约 ${totalProcessed} 条消息`, 'success');
+                } else {
+                    addToast('所有聊天记录都已处理完毕，无需操作', 'info');
+                }
             }
         } catch (e: any) {
             addToast(`❌ 向量化失败：${e.message}`, 'error');
