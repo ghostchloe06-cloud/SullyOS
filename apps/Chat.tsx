@@ -122,6 +122,9 @@ const Chat: React.FC = () => {
     const [settingsHtmlModeCustomPrompt, setSettingsHtmlModeCustomPrompt] = useState('');
     const [preserveContext, setPreserveContext] = useState(true);
     const [isVectorizing, setIsVectorizing] = useState(false);
+    // 记忆宫殿「一键存入」：打开设置弹窗时算出待处理条数（排除热区的真实口径），处理中显示逐轮进度
+    const [vectorizePendingCount, setVectorizePendingCount] = useState<number | null>(null);
+    const [vectorizeProgress, setVectorizeProgress] = useState('');
     const [selectedMessage, setSelectedMessage] = useState<Message | null>(null);
     const [selectedEmoji, setSelectedEmoji] = useState<Emoji | null>(null);
     const [selectedCategory, setSelectedCategory] = useState<EmojiCategory | null>(null); // For deletion modal
@@ -1828,6 +1831,26 @@ const Chat: React.FC = () => {
         setModalType('none');
     };
 
+    // 打开「聊天设置」弹窗且开了记忆宫殿时，算一次待处理条数显示在「一键存入」按钮上。
+    // 口径与 pipeline 一致（getMemoryPalaceUnprocessedBufferCount 已排除热区 200 条）。
+    useEffect(() => {
+        if (modalType !== 'chat-settings' || !char?.memoryPalaceEnabled) {
+            setVectorizePendingCount(null);
+            return;
+        }
+        let cancelled = false;
+        (async () => {
+            try {
+                const { getMemoryPalaceUnprocessedBufferCount } = await import('../utils/memoryPalace/pipeline');
+                const n = await getMemoryPalaceUnprocessedBufferCount(char.id);
+                if (!cancelled) setVectorizePendingCount(n);
+            } catch {
+                // 算不出就不显示条数，不影响按钮可用
+            }
+        })();
+        return () => { cancelled = true; };
+    }, [modalType, char?.id, char?.memoryPalaceEnabled]);
+
     const handleForceVectorize = async () => {
         if (!char || !char.memoryPalaceEnabled || isVectorizing) return;
         const mpEmb = memoryPalaceConfig?.embedding;
@@ -1838,13 +1861,12 @@ const Chat: React.FC = () => {
         }
 
         setIsVectorizing(true);
-        setModalType('none');
+        // 留在「聊天设置」弹窗里，按钮原地转成逐轮进度，跑完才收
+        setVectorizeProgress('准备中...');
         addToast('🏰 开始向量化所有聊天记录...', 'info');
 
         try {
-            const { processNewMessages, getMemoryPalaceHighWaterMark, mergePalaceFragmentsIntoMemories } = await import('../utils/memoryPalace/pipeline');
-            const BATCH_PROCESS_RATIO = 0.85;
-            const BATCH_SIZE = 170; // 200 * 0.85
+            const { processNewMessages, getMemoryPalaceHighWaterMark, getMemoryPalaceUnprocessedBufferCount, mergePalaceFragmentsIntoMemories } = await import('../utils/memoryPalace/pipeline');
             let totalProcessed = 0;
             let round = 0;
             const MAX_ROUNDS = 50; // 安全上限
@@ -1855,20 +1877,15 @@ const Chat: React.FC = () => {
             while (round < MAX_ROUNDS) {
                 round++;
                 const hwm = getMemoryPalaceHighWaterMark(char.id);
-                const allMessages = await DB.getMessagesByCharId(char.id, true);
-                const textMessages = allMessages
-                    .filter(m => m.type === 'text' && m.content?.trim())
-                    .sort((a, b) => a.id - b.id);
+                // 用 pipeline 的真实缓冲区口径（排除热区），与 processNewMessages(force) 实际会处理的量一致，
+                // 循环才能正确收敛，进度条数也不会骗人。
+                const remaining = await getMemoryPalaceUnprocessedBufferCount(char.id);
+                if (remaining < 10) break; // 剩余太少，停止
+                setVectorizeProgress(`第 ${round} 轮 · 剩余 ${remaining} 条`);
+                setVectorizePendingCount(remaining);
 
-                // 计算未处理的消息
-                const unprocessed = textMessages.filter(m => m.id > hwm);
-                if (unprocessed.length < 10) break; // 剩余太少，停止
-
-                // 取一批处理
-                const batch = unprocessed.slice(0, BATCH_SIZE);
-                console.log(`🏰 [ForceVectorize] 第 ${round} 轮：处理 ${batch.length} 条消息（hwm=${hwm}，剩余 ${unprocessed.length}）`);
-
-                const pipelineResult = await processNewMessages(batch, char.id, char.name, mpEmb, mpLLM, userProfile?.name || '', true);
+                // processNewMessages 内部直接从 DB 加载并按缓冲区口径取批，忽略首个参数，传 [] 即可
+                const pipelineResult = await processNewMessages([], char.id, char.name, mpEmb, mpLLM, userProfile?.name || '', true);
 
                 // 软跳过：缓冲区还没到阈值 / 热区还没被挤出 / 已有任务在跑 —— 不是 LLM 失败
                 if (pipelineResult?.skipReason) {
@@ -1878,7 +1895,7 @@ const Chat: React.FC = () => {
                     break;
                 }
 
-                totalProcessed += batch.length;
+                totalProcessed += pipelineResult?.processedMessages || 0;
 
                 // 累积自动归档，统一在循环结束后 updateCharacter
                 // 避免每轮 setState 触发 char 对象重建进而 dep 失效
@@ -1914,6 +1931,11 @@ const Chat: React.FC = () => {
                 } as any);
             }
 
+            // 跑完刷新按钮上的待处理条数
+            try {
+                setVectorizePendingCount(await getMemoryPalaceUnprocessedBufferCount(char.id));
+            } catch { /* 忽略：刷新失败不影响结果提示 */ }
+
             if (totalProcessed > 0) {
                 addToast(`✅ 向量化完成：${round} 轮处理了约 ${totalProcessed} 条消息`, 'success');
             } else {
@@ -1923,6 +1945,7 @@ const Chat: React.FC = () => {
             addToast(`❌ 向量化失败：${e.message}`, 'error');
         } finally {
             setIsVectorizing(false);
+            setVectorizeProgress('');
         }
     };
 
@@ -2754,6 +2777,8 @@ const Chat: React.FC = () => {
                 onToggleScheduleFeature={handleToggleScheduleFeature}
                 isMemoryPalaceEnabled={!!char.memoryPalaceEnabled}
                 isVectorizing={isVectorizing}
+                vectorizePendingCount={vectorizePendingCount}
+                vectorizeProgress={vectorizeProgress}
                 onForceVectorize={handleForceVectorize}
                 apiPresets={apiPresets}
                 onAddApiPreset={addApiPreset}

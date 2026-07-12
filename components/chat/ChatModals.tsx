@@ -117,6 +117,10 @@ interface ChatModalsProps {
     // Memory Palace force vectorize
     isMemoryPalaceEnabled?: boolean;
     isVectorizing?: boolean;
+    /** 待处理条数（排除热区的真实缓冲区口径）：null=未算出/未开弹窗，0=已全同步 */
+    vectorizePendingCount?: number | null;
+    /** 处理中的逐轮进度文案，如「第 2 轮 · 剩余 340 条」 */
+    vectorizeProgress?: string;
     onForceVectorize?: () => void;
     // Emotion (embedded under schedule modal, synced on/off with scheduleStyle)
     apiPresets?: ApiPreset[];
@@ -231,7 +235,7 @@ const ChatModals: React.FC<ChatModalsProps> = ({
     scheduleData, isScheduleGenerating, onScheduleEdit, onScheduleDelete, onScheduleReroll, onScheduleCoverChange,
     onScheduleStyleChange, onPlayTheater,
     isScheduleFeatureEnabled, onToggleScheduleFeature,
-    isMemoryPalaceEnabled, isVectorizing, onForceVectorize,
+    isMemoryPalaceEnabled, isVectorizing, vectorizePendingCount, vectorizeProgress, onForceVectorize,
     apiPresets, onAddApiPreset, onSaveEmotion, onClearBuffs,
 }) => {
     const bgInputRef = useRef<HTMLInputElement>(null);
@@ -510,13 +514,20 @@ const ChatModals: React.FC<ChatModalsProps> = ({
                              <button
                                  onClick={onForceVectorize}
                                  disabled={isVectorizing}
-                                 className="w-full py-3 bg-emerald-50 text-emerald-600 font-bold rounded-2xl border border-emerald-200 active:scale-95 transition-transform flex items-center justify-center gap-2"
+                                 className="w-full py-3 bg-emerald-50 text-emerald-600 font-bold rounded-2xl border border-emerald-200 active:scale-95 transition-transform flex items-center justify-center gap-2 disabled:opacity-70"
                              >
-                                 {isVectorizing ? '🏰 存进记忆宫殿中...' : '🏰 一键把所有聊天存进记忆宫殿'}
+                                 {isVectorizing
+                                     ? `🏰 ${vectorizeProgress || '存进记忆宫殿中...'}`
+                                     : (vectorizePendingCount != null && vectorizePendingCount > 0)
+                                         ? `🏰 一键存进记忆宫殿 · 待处理 ${vectorizePendingCount} 条`
+                                         : (vectorizePendingCount === 0)
+                                             ? '🏰 记忆宫殿已同步 · 无待处理'
+                                             : '🏰 一键把所有聊天存进记忆宫殿'}
                              </button>
                              <p className="text-[10px] text-slate-400 mt-2 text-center leading-relaxed">
-                                 将所有未处理的聊天记录交给记忆宫殿处理，完成后可安全清空聊天。<br/>
-                                 <span className="text-slate-300">看不懂这是什么的话不需要操作此按钮。</span>
+                                 {isVectorizing
+                                     ? '正在分批交给副 API 处理，保持应用打开、先别切走～完成前请勿清空聊天。'
+                                     : <>将所有未处理的聊天记录交给记忆宫殿处理，完成后可安全清空聊天。<br/><span className="text-slate-300">看不懂这是什么的话不需要操作此按钮。</span></>}
                              </p>
                          </div>
                      )}

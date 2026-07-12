@@ -19,6 +19,7 @@
 
 import type { Message } from '../../types';
 import type { EmbeddingConfig, PersonalityStyle, RemoteVectorConfig, ScoredMemory } from './types';
+import { countUnprocessedBufferMessages } from './bufferCount';
 
 /** 从 localStorage 读取远程向量配置（避免在每个调用点都传参） */
 function getRemoteVectorConfig(): RemoteVectorConfig | undefined {
@@ -1149,17 +1150,8 @@ const PROCESS_RATIO = 0.85;
  */
 export async function getMemoryPalaceUnprocessedBufferCount(charId: string): Promise<number> {
     const allMessages = await DB.getMessagesByCharId(charId, true);
-    const semantic = allMessages
-        .filter(m => isMessageSemanticallyRelevant(m))
-        .sort((a, b) => a.id - b.id);
-    if (semantic.length <= HOT_ZONE_SIZE) return 0;
-    const hotZoneStartId = semantic[semantic.length - HOT_ZONE_SIZE].id;
-    const hwm = getLastProcessedId(charId);
-    let count = 0;
-    for (const m of semantic) {
-        if (m.id > hwm && m.id < hotZoneStartId) count++;
-    }
-    return count;
+    const semantic = allMessages.filter(m => isMessageSemanticallyRelevant(m));
+    return countUnprocessedBufferMessages(semantic, getLastProcessedId(charId), HOT_ZONE_SIZE);
 }
 
 /** 并发锁：防止多次 AI 回复同时触发 processNewMessages 产生竞态 */
