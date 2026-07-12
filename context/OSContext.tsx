@@ -20,6 +20,7 @@ import { safeFetchJson } from '../utils/safeApi';
 import { recordApiCall, setApiCallAmbientContext } from '../utils/apiCallLog';
 import { rewriteStaleWorkerUrl } from '../utils/proxyWorker';
 import { INSTALLED_APPS } from '../constants';
+import { markBackupDone } from '../utils/backupReminder';
 import { normalizeCharacterImpression, normalizeCharacterDefaults } from '../utils/impression';
 import { isScheduleFeatureOn } from '../utils/scheduleGenerator';
 import { evaluateEmotionBackground } from '../hooks/useChatAI';
@@ -3311,6 +3312,8 @@ export const OSProvider: React.FC<{ children: React.ReactNode }> = ({ children }
           );
 
           setSysOperation({ status: 'idle', message: '', progress: 100 });
+          // 备份成功 → 推进「该备份啦」提醒的计时（本地导出 / 云备份都走这里，一处覆盖两条路径）
+          markBackupDone();
           return content;
 
       } catch (e: any) {

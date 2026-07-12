@@ -25,6 +25,7 @@ import VersionInfo from '../components/settings/VersionInfo';
 import { isPushVapidReady } from '../utils/pushVapid';
 import ApiCallLogModal from '../components/settings/ApiCallLogModal';
 import { DB } from '../utils/db';
+import { getBackupReminderState, setBackupReminderIntervalDays, daysSinceLastBackup, BACKUP_REMINDER_MIN_DAYS, BACKUP_REMINDER_MAX_DAYS } from '../utils/backupReminder';
 
 // hot_news（orz.ai）可选热榜平台。key 必须与 API 的 ?platform= 完全一致。
 const HOTNEWS_PLATFORM_OPTIONS: { key: string; label: string }[] = [
@@ -338,6 +339,10 @@ const Settings: React.FC = () => {
   const [cloudBackupFiles, setCloudBackupFiles] = useState<import('../types').CloudBackupFile[]>([]);
   const [cloudTestResult, setCloudTestResult] = useState<string>('');
   const [cloudTesting, setCloudTesting] = useState(false);
+
+  // 「该备份啦」提醒频率（1~30 天）。改动即落 localStorage（backupReminder 模块自管持久化）。
+  const [backupReminderDays, setBackupReminderDays] = useState<number>(() => getBackupReminderState().intervalDays);
+  const backupDaysAgo = daysSinceLastBackup();
 
   // Cloud backup local config state (WebDAV)
   const [cbUrl, setCbUrl] = useState(cloudBackupConfig.webdavUrl);
@@ -1264,7 +1269,38 @@ const Settings: React.FC = () => {
                 • <b>媒体与美化素材</b>: 导出相册、表情包、聊天图片、头像、主题气泡、壁纸、图标等图片资源和外观配置。<br/>
                 • 兼容旧版 JSON 备份文件的导入。
             </p>
-            
+
+            {/* 备份提醒频率：糯米机数据只在本机，隔 N 天没导出会弹一次提醒 */}
+            <div className="mb-4 p-3.5 bg-gradient-to-br from-rose-50 to-orange-50 border border-rose-100 rounded-xl">
+                <div className="flex items-center justify-between mb-1">
+                    <span className="text-xs font-bold text-slate-600">备份提醒频率</span>
+                    <span className="text-xs font-bold text-rose-500">每 {backupReminderDays} 天</span>
+                </div>
+                <input
+                    type="range"
+                    min={BACKUP_REMINDER_MIN_DAYS}
+                    max={BACKUP_REMINDER_MAX_DAYS}
+                    step={1}
+                    value={backupReminderDays}
+                    onChange={e => {
+                        const v = parseInt(e.target.value, 10);
+                        setBackupReminderDays(v);
+                        setBackupReminderIntervalDays(v);
+                    }}
+                    className="w-full h-2 bg-rose-100 rounded-full appearance-none accent-rose-500"
+                />
+                <div className="flex justify-between text-[9px] text-slate-400 mt-1 px-0.5">
+                    <span>{BACKUP_REMINDER_MIN_DAYS} 天</span>
+                    <span>{BACKUP_REMINDER_MAX_DAYS} 天</span>
+                </div>
+                <p className="text-[10px] text-slate-400 mt-2 leading-relaxed">
+                    超过这个天数没有导出，就会弹窗提醒一次。
+                    {backupDaysAgo == null
+                        ? ' 你还没有导出过备份，记得留一份哦。'
+                        : ` 上次备份是在 ${backupDaysAgo} 天前。`}
+                </p>
+            </div>
+
             <button onClick={handleCleanupResidue} disabled={isCleaningResidue} className="w-full py-3 mb-2 bg-amber-50 border border-amber-100 text-amber-600 rounded-xl text-xs font-bold flex items-center justify-center gap-2 active:scale-95 transition-all disabled:opacity-50">
                 {isCleaningResidue ? '正在扫描…' : '一键清理表情包残留'}
             </button>

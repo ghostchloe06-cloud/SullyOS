@@ -130,6 +130,8 @@ setAppPayloadWarmer((id: AppID) => { const c = APP_BY_ID[id]; if (c) warmLazy(c)
 import { Like520Controller, shouldShowLike520Popup } from './Like520Event';
 import { UpdateNotificationController, shouldShowUpdateNotification } from './UpdateNotificationEvent';
 import { WorkerUpdateReminderController, shouldShowWorkerUpdateReminder } from './WorkerUpdateReminderEvent';
+import { BackupReminderController } from './BackupReminderEvent';
+import { shouldShowBackupReminder, markBackupReminderShown } from '../utils/backupReminder';
 import { formatBytes } from '../utils/format';
 import { AppID } from '../types';
 import { shellHandlesSafeArea } from '../utils/safeAreaApps';
@@ -589,6 +591,24 @@ const PhoneShell: React.FC = () => {
     if (shouldShowWorkerUpdateReminder()) setShowWorkerUpdateReminder(true);
   }, [showDisclaimer, showImportRecoveryPrompt, showAuthorLetter, showUpdateNotification, showLike520Popup, isDataLoaded]);
 
+  // 「该备份啦」提醒 — local-first 数据只在本机，隔 N 天（默认 7，可在设置里改）没导出就弹一次
+  const [showBackupReminder, setShowBackupReminder] = useState(false);
+  useEffect(() => {
+    if (showDisclaimer || showImportRecoveryPrompt || showAuthorLetter || showUpdateNotification || showLike520Popup || showWorkerUpdateReminder) return;
+    if (!isDataLoaded || isLocked) return;
+    if (shouldShowBackupReminder()) setShowBackupReminder(true);
+  }, [showDisclaimer, showImportRecoveryPrompt, showAuthorLetter, showUpdateNotification, showLike520Popup, showWorkerUpdateReminder, isDataLoaded, isLocked]);
+
+  const dismissBackupReminder = () => {
+    markBackupReminderShown();
+    setShowBackupReminder(false);
+  };
+  const goBackupFromReminder = () => {
+    markBackupReminderShown();
+    setShowBackupReminder(false);
+    openApp(AppID.Settings);
+  };
+
   // Capacitor Native Handling
   useEffect(() => {
     const initNative = async () => {
@@ -924,6 +944,14 @@ const PhoneShell: React.FC = () => {
        {!showDisclaimer && !showImportRecoveryPrompt && !showAuthorLetter && !showUpdateNotification && !showLike520Popup && showWorkerUpdateReminder && (
          <WorkerUpdateReminderController
            onClose={() => setShowWorkerUpdateReminder(false)}
+         />
+       )}
+
+       {/* 「该备份啦」提醒（local-first 数据只在本机，隔 N 天没导出弹一次） */}
+       {!showDisclaimer && !showImportRecoveryPrompt && !showAuthorLetter && !showUpdateNotification && !showLike520Popup && !showWorkerUpdateReminder && showBackupReminder && (
+         <BackupReminderController
+           onDismiss={dismissBackupReminder}
+           onGoBackup={goBackupFromReminder}
          />
        )}
     </div>
