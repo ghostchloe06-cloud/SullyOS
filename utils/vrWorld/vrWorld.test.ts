@@ -5,6 +5,7 @@ import { rollPoemLines, SIGNAL_LINES_MIN, SIGNAL_LINES_MAX, signalActFor } from 
 import { maskPen } from './postOffice';
 import { decodeBytes } from './decodeText';
 import { VRScheduler } from './scheduler';
+import { rollRoom } from './runSession';
 
 // scheduler 的 attachListeners 会访问 document/window（node 环境下没有），补最简 stub。
 const g = globalThis as any;
@@ -128,6 +129,12 @@ describe('parseMusicOutput', () => {
         expect(out.review).toBeUndefined();
         expect(out.behavior).toBe('靠在角落放空');
         expect(out.activity).toBe('没什么想点的');
+    });
+});
+
+describe('彼方手动指定房间', () => {
+    it('手动点听歌房时，即使角色没有歌单且房间没在放歌也不会随机跳走', () => {
+        expect(rollRoom({} as any, [], null, 'music')).toBe('music');
     });
 });
 

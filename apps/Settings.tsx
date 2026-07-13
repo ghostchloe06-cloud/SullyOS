@@ -103,7 +103,7 @@ const SettingsSection: React.FC<{
  * 以 function-calling 注入，详见 docs/mcp-client.md。
  */
 const McpServersCard: React.FC<{ addToast: (msg: string, type?: any) => void }> = ({ addToast }) => {
-    const { characters } = useOS();
+    const { characters, groups } = useOS();
     const [servers, setServers] = useState<McpServerConfig[]>(() => loadMcpServers());
     const [expandedId, setExpandedId] = useState<string | null>(null);
     const [testingId, setTestingId] = useState<string | null>(null);
@@ -117,8 +117,8 @@ const McpServersCard: React.FC<{ addToast: (msg: string, type?: any) => void }> 
 
     const update = (id: string, patch: Partial<McpServerConfig>) => {
         persist(servers.map(s => s.id === id ? { ...s, ...patch, updatedAt: Date.now() } : s));
-        // URL / token / 代理变了，旧 session 不能再用
-        if (patch.url !== undefined || patch.token !== undefined || patch.proxyUrl !== undefined || patch.proxyKey !== undefined) {
+        // URL / 鉴权头 / 代理变了，旧 session 不能再用
+        if (patch.url !== undefined || patch.token !== undefined || patch.customHeaders !== undefined || patch.proxyUrl !== undefined || patch.proxyKey !== undefined) {
             resetMcpSession(id);
         }
     };
@@ -185,7 +185,7 @@ const McpServersCard: React.FC<{ addToast: (msg: string, type?: any) => void }> 
                         <button className="flex-1 text-left min-w-0" onClick={() => setExpandedId(expandedId === server.id ? null : server.id)}>
                             <div className="text-xs font-bold text-slate-700 truncate">{server.name || '(未命名)'}</div>
                             <div className="text-[10px] text-slate-400 truncate">
-                                {server.url || '未填 URL'}{server.tools?.length ? ` · ${server.tools.length} 个工具` : ' · 未获取工具'}{server.charIds?.length ? ` · 绑定 ${server.charIds.length} 角色` : ''}
+                                {server.url || '未填 URL'}{server.tools?.length ? ` · ${server.tools.length} 个工具` : ' · 未获取工具'}{server.charIds?.length ? ` · 绑定 ${server.charIds.length} 个聊天` : ''}
                             </div>
                         </button>
                         <label className="relative inline-flex items-center cursor-pointer shrink-0">
@@ -214,6 +214,45 @@ const McpServersCard: React.FC<{ addToast: (msg: string, type?: any) => void }> 
                                 <input type="password" value={server.token || ''} onChange={e => update(server.id, { token: e.target.value.trim() })} className="w-full bg-white/80 border border-violet-200 rounded-xl px-3 py-2 text-sm font-mono" placeholder="服务器要求鉴权时填" />
                             </div>
                             <div>
+                                <div className="flex items-center justify-between gap-2 mb-1">
+                                    <label className="text-[10px] font-bold text-slate-400 uppercase">自定义请求头（可选）</label>
+                                    <button
+                                        type="button"
+                                        onClick={() => update(server.id, { customHeaders: [...(server.customHeaders || []), { name: '', value: '' }] })}
+                                        className="text-[10px] font-bold text-violet-600"
+                                    >+ 添加请求头</button>
+                                </div>
+                                {(server.customHeaders || []).map((header, index) => (
+                                    <div key={index} className="flex gap-1.5 mb-1.5">
+                                        <input
+                                            type="text"
+                                            value={header.name}
+                                            onChange={e => update(server.id, { customHeaders: (server.customHeaders || []).map((item, i) => i === index ? { ...item, name: e.target.value } : item) })}
+                                            className="min-w-0 flex-[0.9] bg-white/80 border border-violet-200 rounded-xl px-2.5 py-2 text-xs font-mono"
+                                            placeholder="XBY-APIKEY"
+                                            aria-label={`自定义请求头 ${index + 1} 名称`}
+                                        />
+                                        <input
+                                            type="password"
+                                            value={header.value}
+                                            onChange={e => update(server.id, { customHeaders: (server.customHeaders || []).map((item, i) => i === index ? { ...item, value: e.target.value } : item) })}
+                                            className="min-w-0 flex-1 bg-white/80 border border-violet-200 rounded-xl px-2.5 py-2 text-xs font-mono"
+                                            placeholder="请求头的值"
+                                            aria-label={`自定义请求头 ${index + 1} 值`}
+                                        />
+                                        <button
+                                            type="button"
+                                            onClick={() => update(server.id, { customHeaders: (server.customHeaders || []).filter((_, i) => i !== index) })}
+                                            className="w-9 shrink-0 rounded-xl bg-red-50 text-red-500 text-base"
+                                            aria-label={`删除自定义请求头 ${index + 1}`}
+                                        >×</button>
+                                    </div>
+                                ))}
+                                <p className="text-[10px] text-slate-400 leading-relaxed">
+                                    用于 X-API-Key、XBY-APIKEY 等非 Bearer 鉴权；名称或值留空的行不会发送。
+                                </p>
+                            </div>
+                            <div>
                                 <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">代理 URL（可选，留空 = 直连）</label>
                                 <input type="text" value={server.proxyUrl || ''} onChange={e => update(server.id, { proxyUrl: e.target.value.trim() })} className="w-full bg-white/80 border border-violet-200 rounded-xl px-3 py-2 text-sm font-mono" placeholder="http://localhost:18061 或你的 Worker 地址" />
                             </div>
@@ -224,13 +263,16 @@ const McpServersCard: React.FC<{ addToast: (msg: string, type?: any) => void }> 
                                 </div>
                             )}
                             <div>
-                                <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">可用角色</label>
+                                <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">可用聊天</label>
                                 <div className="flex flex-wrap gap-1.5">
                                     <button
                                         type="button"
                                         onClick={() => update(server.id, { charIds: [] })}
                                         className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-colors ${!server.charIds?.length ? 'bg-violet-500 text-white' : 'bg-white/80 border border-violet-200 text-slate-500'}`}
-                                    >通用（所有角色）</button>
+                                    >通用（所有私聊和群聊）</button>
+                                </div>
+                                {characters.length > 0 && <div className="text-[10px] text-slate-400 mt-2 mb-1">角色</div>}
+                                <div className="flex flex-wrap gap-1.5">
                                     {characters.map(c => {
                                         const bound = !!server.charIds?.includes(c.id);
                                         return (
@@ -246,12 +288,29 @@ const McpServersCard: React.FC<{ addToast: (msg: string, type?: any) => void }> 
                                         );
                                     })}
                                 </div>
+                                {groups.length > 0 && <div className="text-[10px] text-slate-400 mt-2 mb-1">群聊</div>}
+                                <div className="flex flex-wrap gap-1.5">
+                                    {groups.map(group => {
+                                        const bound = !!server.charIds?.includes(group.id);
+                                        return (
+                                            <button
+                                                key={group.id}
+                                                type="button"
+                                                onClick={() => {
+                                                    const cur = server.charIds || [];
+                                                    update(server.id, { charIds: bound ? cur.filter(id => id !== group.id) : [...cur, group.id] });
+                                                }}
+                                                className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-colors ${bound ? 'bg-violet-500 text-white' : 'bg-white/80 border border-violet-200 text-slate-500'}`}
+                                            >{group.name}</button>
+                                        );
+                                    })}
+                                </div>
                                 <p className="text-[10px] text-slate-400 mt-1 leading-relaxed">
-                                    通用 = 所有角色都能用；点角色名切换绑定，绑定后只有选中的角色能看到这批工具（比如记忆库只交给某一个角色）。
+                                    通用 = 所有私聊和群聊都能用；绑定后只有选中的角色或群聊能看到这批工具。
                                 </p>
-                                {!!server.charIds?.length && server.charIds.some(id => !characters.some(c => c.id === id)) && (
+                                {!!server.charIds?.length && server.charIds.some(id => !characters.some(c => c.id === id) && !groups.some(g => g.id === id)) && (
                                     <p className="text-[10px] text-amber-600 mt-1">
-                                        ⚠️ 绑定里有已删除的角色，对应绑定不再生效，可重新点选清理。
+                                        ⚠️ 绑定里有已删除的角色或群聊，对应绑定不再生效，可重新点选清理。
                                     </p>
                                 )}
                             </div>
@@ -276,7 +335,7 @@ const McpServersCard: React.FC<{ addToast: (msg: string, type?: any) => void }> 
                 </div>
             ))}
             <p className="text-[10px] text-violet-700/60 leading-relaxed bg-violet-100/40 rounded-lg px-2 py-1.5">
-                ⚠️ 开启 MCP 工具后聊天会走本地请求（跳过 Instant Push），且本轮思考链会让位给工具调用；涉及真实副作用的工具（发布/下单/删除）角色会先跟你确认。Token 与配置<b>只存本机、不上传</b>；走代理时请求会经过你自己配置的代理。
+                ⚠️ 开启 MCP 工具后聊天会走本地请求（跳过 Instant Push），且本轮思考链会让位给工具调用；涉及真实副作用的工具（发布/下单/删除）角色会先跟你确认。Token、自定义请求头与配置<b>只存本机、不上传</b>；走代理时请求会经过你自己配置的代理。
             </p>
         </div>
     );

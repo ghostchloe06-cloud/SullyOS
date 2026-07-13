@@ -29,7 +29,7 @@ const FORWARD_REQUEST_HEADERS = [
 const CORS_HEADERS = {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'POST, GET, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Accept, Authorization, Mcp-Session-Id, MCP-Protocol-Version, Last-Event-ID, X-Proxy-Key',
+    'Access-Control-Allow-Headers': 'Content-Type, Accept, Authorization, Mcp-Session-Id, MCP-Protocol-Version, Last-Event-ID, X-Proxy-Key, X-MCP-Forward-Headers',
     'Access-Control-Expose-Headers': 'Mcp-Session-Id, WWW-Authenticate',
     'Access-Control-Max-Age': '86400',
 };
@@ -71,7 +71,10 @@ function blockedTargetReason(rawUrl) {
 export default {
     async fetch(request, env) {
         if (request.method === 'OPTIONS') {
-            return new Response(null, { status: 204, headers: CORS_HEADERS });
+            const headers = new Headers(CORS_HEADERS);
+            const requestedHeaders = request.headers.get('access-control-request-headers');
+            if (requestedHeaders) headers.set('Access-Control-Allow-Headers', requestedHeaders);
+            return new Response(null, { status: 204, headers });
         }
 
         if (env.PROXY_KEY) {
@@ -88,6 +91,17 @@ export default {
         for (const name of FORWARD_REQUEST_HEADERS) {
             const v = request.headers.get(name);
             if (v) fwdHeaders.set(name, v);
+        }
+        const blockedForwardHeaders = new Set([
+            'host', 'connection', 'content-length', 'transfer-encoding', 'upgrade',
+            'x-proxy-key', 'x-mcp-forward-headers',
+        ]);
+        const customHeaderNames = (request.headers.get('x-mcp-forward-headers') || '')
+            .split(',').map(name => name.trim()).filter(Boolean);
+        for (const name of customHeaderNames) {
+            if (blockedForwardHeaders.has(name.toLowerCase())) continue;
+            const value = request.headers.get(name);
+            if (value) fwdHeaders.set(name, value);
         }
 
         let upstream;

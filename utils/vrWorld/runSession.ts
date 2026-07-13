@@ -124,10 +124,13 @@ function nameLine(name: string, act: string): string {
 }
 
 /** roll 一个房间：图书馆需有书；听歌房需有歌单或正在放歌；留言簿/娱乐室/邮局/剧院恒可去。 */
-function rollRoom(char: CharacterProfile, novels: VRWorldNovel[], musicState: VRMusicRoomState | null, prefer?: VRRoomId): VRRoomId | null {
+export function rollRoom(char: CharacterProfile, novels: VRWorldNovel[], musicState: VRMusicRoomState | null, prefer?: VRRoomId): VRRoomId | null {
     // 信号坠落处【不进随机池】——它是用户自发参与的特殊活动，只在用户点「参与→指定角色」
     // 时以 forcedRoom='signal' 进入，角色不会自己随机逛过去。
     if (prefer === 'signal') return 'signal';
+    // 用户手动点“听歌房”时必须尊重选择。即使当前没有歌，听歌房提示词也支持
+    // 角色戴着耳机放空；不能因为没有歌单就悄悄随机跳去剧院等其他房间。
+    if (prefer === 'music') return 'music';
     const pool: VRRoomId[] = ['guestbook', 'gym', 'postoffice', 'theater'];
     if (novels.length > 0) pool.push('library');
     if (gatherCharSongs(char).length > 0 || musicState?.nowPlaying) pool.push('music');

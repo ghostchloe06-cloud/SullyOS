@@ -43,7 +43,7 @@ const PREWARM_ENABLED = !args.includes('--no-prewarm');
 const CORS_HEADERS = {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'POST, GET, DELETE, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Accept, Mcp-Session-Id, Authorization, MCP-Protocol-Version, Last-Event-ID',
+    'Access-Control-Allow-Headers': 'Content-Type, Accept, Mcp-Session-Id, Authorization, MCP-Protocol-Version, Last-Event-ID, X-MCP-Forward-Headers',
     'Access-Control-Expose-Headers': 'Mcp-Session-Id',
     'Access-Control-Max-Age': '86400',
 };
@@ -131,7 +131,12 @@ function isReplyCommentCall(parsed) {
 createServer((req, res) => {
     // CORS preflight
     if (req.method === 'OPTIONS') {
-        res.writeHead(204, CORS_HEADERS);
+        // 自定义 MCP 鉴权头的名字由用户配置，预检时原样允许浏览器请求的头名。
+        const requestedHeaders = req.headers['access-control-request-headers'];
+        res.writeHead(204, {
+            ...CORS_HEADERS,
+            ...(requestedHeaders ? { 'Access-Control-Allow-Headers': requestedHeaders } : {}),
+        });
         res.end();
         return;
     }
@@ -158,13 +163,25 @@ createServer((req, res) => {
             targetUrl = incomingUrl;
         }
 
-        // Forward headers (keep Mcp-Session-Id, Content-Type, Accept, Authorization)
+        // 固定协议头 + 前端明确声明的自定义 MCP 头。控制头和代理密钥不透传上游。
         const fwdHeaders = {};
         if (req.headers['content-type']) fwdHeaders['Content-Type'] = req.headers['content-type'];
         if (req.headers['accept']) fwdHeaders['Accept'] = req.headers['accept'];
         if (req.headers['mcp-session-id']) fwdHeaders['Mcp-Session-Id'] = req.headers['mcp-session-id'];
         if (req.headers['authorization']) fwdHeaders['Authorization'] = req.headers['authorization'];
         if (req.headers['mcp-protocol-version']) fwdHeaders['MCP-Protocol-Version'] = req.headers['mcp-protocol-version'];
+        const blockedForwardHeaders = new Set([
+            'host', 'connection', 'content-length', 'transfer-encoding', 'upgrade',
+            'x-proxy-key', 'x-mcp-forward-headers',
+        ]);
+        const customHeaderNames = String(req.headers['x-mcp-forward-headers'] || '')
+            .split(',').map(name => name.trim()).filter(Boolean);
+        for (const name of customHeaderNames) {
+            const lower = name.toLowerCase();
+            if (blockedForwardHeaders.has(lower)) continue;
+            const value = req.headers[lower];
+            if (value !== undefined) fwdHeaders[name] = value;
+        }
 
         // 检测是否需要 SPA 预热
         if (PREWARM_ENABLED && body.length > 0) {

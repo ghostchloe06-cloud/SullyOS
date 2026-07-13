@@ -19,6 +19,7 @@ import { messageLogText } from '../utils/groupChat/format';
 import { buildMemberTimeline, DEFAULT_MEMBER_TIMELINE_CAP } from '../utils/groupChat/timeline';
 import { buildEmojiContextStr, buildGroupHistoryBlock, buildDirectorInstruction, buildRoundRobinInstruction, GroupHistoryBlock } from '../utils/groupChat/prompts';
 import { dispatchMemberActions } from '../utils/groupChat/dispatch';
+import { completeGroupChatWithMcp } from '../utils/groupChat/mcp';
 import { CharacterGroupFilterBar, filterCharactersByGroup, GROUP_FILTER_ALL } from '../components/character/CharacterGroupFilter';
 // 群聊输入区/表情面板已改用共享 ChatInputArea（其表情网格自带 useIncrementalReveal 增量渲染），
 // master 上给旧内联表情抽屉加的增量渲染随旧抽屉一并退役。
@@ -372,6 +373,7 @@ const GroupChat: React.FC = () => {
     const [visibleCount, setVisibleCount] = useState(MESSAGE_PAGE_SIZE);
     const [input, setInput] = useState('');
     const [isTyping, setIsTyping] = useState(false);
+    const [mcpStatus, setMcpStatus] = useState('');
     /** 群公共话题盒整理状态——非空时显示顶部胶囊状态条 */
     const [groupPalaceStatus, setGroupPalaceStatus] = useState<string>('');
 
@@ -1206,21 +1208,20 @@ ${memberTimeline || '(暂无互动记录)'}
                 : '';
             const prompt = `${context}\n\n${buildDirectorInstruction(history, emojiContextStr)}${htmlPromptExt}\n`;
 
-            const response = await fetch(`${apiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
-                method: 'POST',
+            const data = await completeGroupChatWithMcp({
+                url: `${apiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`,
                 headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiConfig.apiKey}` },
-                body: JSON.stringify({
+                body: {
                     model: apiConfig.model,
                     messages: [{ role: "user", content: buildUserMessageContent(prompt, history) }],
                     temperature: 0.9, // High creativity for banter
                     max_tokens: 8000
-                }),
-                signal: abort.signal
+                },
+                groupId: activeGroup.id,
+                userName: userProfile.name,
+                signal: abort.signal,
+                onStatus: setMcpStatus,
             });
-
-            if (!response.ok) throw new Error(`API 返回 ${response.status}`);
-
-            const data = await safeResponseJson(response);
 
             // Token 统计：从导演响应里读 usage（兼容 OpenAI 兼容接口的标准字段）
             if (data.usage?.total_tokens) {
@@ -1267,6 +1268,7 @@ ${memberTimeline || '(暂无互动记录)'}
             }
         } finally {
             setIsTyping(false);
+            setMcpStatus('');
             abortRef.current = null;
             runGroupTopicArchive();
         }
@@ -1307,20 +1309,20 @@ ${memberTimeline || '(暂无互动记录)'}
                         : '';
                     const prompt = `${header}${memberBlock}\n\n${buildRoundRobinInstruction(member.name, history, emojiContextStr)}${htmlPromptExt}\n`;
 
-                    const response = await fetch(`${apiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
-                        method: 'POST',
+                    const data = await completeGroupChatWithMcp({
+                        url: `${apiConfig.baseUrl.replace(/\/+$/, '')}/chat/completions`,
                         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiConfig.apiKey}` },
-                        body: JSON.stringify({
+                        body: {
                             model: apiConfig.model,
                             messages: [{ role: "user", content: buildUserMessageContent(prompt, history) }],
                             temperature: 0.9,
                             max_tokens: 2000
-                        }),
-                        signal: abort.signal
+                        },
+                        groupId: activeGroup.id,
+                        userName: userProfile.name,
+                        signal: abort.signal,
+                        onStatus: status => setMcpStatus(status ? `${member.name}：${status}` : ''),
                     });
-
-                    if (!response.ok) throw new Error(`API 返回 ${response.status}`);
-                    const data = await safeResponseJson(response);
 
                     // Token 统计：整轮累加显示
                     if (data.usage?.total_tokens) {
@@ -1379,6 +1381,7 @@ ${memberTimeline || '(暂无互动记录)'}
             }
         } finally {
             setIsTyping(false);
+            setMcpStatus('');
             abortRef.current = null;
             runGroupTopicArchive();
         }
@@ -1598,7 +1601,7 @@ ${memberTimeline || '(暂无互动记录)'}
                             <div className="w-6 h-6 rounded-full bg-slate-300 border-2 border-white"></div>
                             <div className="w-6 h-6 rounded-full bg-slate-200 border-2 border-white"></div>
                         </div>
-                        <span className="text-xs text-slate-400 font-medium">成员正在输入...</span>
+                        <span className="text-xs text-slate-400 font-medium">{mcpStatus || '成员正在输入...'}</span>
                     </div>
                 )}
             </div>
