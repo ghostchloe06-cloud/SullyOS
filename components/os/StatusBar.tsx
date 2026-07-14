@@ -2,6 +2,7 @@
 import React, { useEffect, useState } from 'react';
 import { useOS } from '../../context/OSContext';
 import Modal from './Modal';
+import { isStatusBarHidden } from '../../utils/iosStandalone';
 
 // TypeScript definition for Web Battery API
 interface BatteryManager extends EventTarget {
@@ -26,6 +27,7 @@ const StatusBar: React.FC = () => {
 
   // Use content color from theme
   const textColor = theme.contentColor || '#ffffff';
+  const acnh = theme.skin === 'animalcrossing'; // 动森彩蛋：电量条用叶绿色
 
   useEffect(() => {
     const initBattery = async () => {
@@ -59,13 +61,20 @@ const StatusBar: React.FC = () => {
 
   const hasError = systemLogs.length > 0;
 
+  // 时钟/电量条是否隐藏：外观「隐藏顶部时间栏」开关 + 平台默认（iOS 全屏 PWA 系统已有状态栏，默认隐藏避免双显）。
+  // 仅隐藏下面这条时钟/电量条；错误指示器 + 系统调试终端与本开关无关，始终独立渲染。virtualTime 实为真实时间，隐藏不丢信息。
+  const hideOsStatusBar = isStatusBarHidden(theme.hideStatusBar);
+
   return (
     <>
-      <div 
+      {/* safe-area-B 解法：iOS 全屏 PWA 下系统状态栏（真实时间/电量）删不掉，隐掉 SullyOS 自己这条避免双显。
+         非 iOS standalone（安卓/桌面浏览器无系统状态栏）仍渲染，作为虚拟手机自己的状态栏。 */}
+      {!hideOsStatusBar && (
+      <div
           className="w-full flex justify-between items-start px-6 text-[11px] font-bold z-50 absolute top-0 left-0 bg-transparent transition-colors duration-500 select-none pointer-events-none"
-          style={{ 
+          style={{
               color: textColor,
-              paddingTop: 'max(4px, env(safe-area-inset-top))',
+              paddingTop: 'max(4px, var(--safe-top))',
               height: 'auto',
               minHeight: '2rem'
           }}
@@ -83,8 +92,8 @@ const StatusBar: React.FC = () => {
           <div className="flex items-center gap-1">
             <span>{batteryLevel}%</span>
             <div className="w-5 h-2.5 border border-current rounded-[3px] p-[1px] relative opacity-80 flex items-center">
-              <div 
-                  className={`h-full rounded-[1px] ${isCharging ? 'bg-green-400' : 'bg-current'}`} 
+              <div
+                  className={`h-full rounded-[1px] ${isCharging ? 'bg-green-400' : acnh ? 'bg-[#7cba4c]' : 'bg-current'}`}
                   style={{ width: `${batteryLevel}%` }}
               ></div>
               {isCharging && (
@@ -98,13 +107,14 @@ const StatusBar: React.FC = () => {
           </div>
         </div>
       </div>
+      )}
 
       {/* Independent Error Indicator - Floating below status bar */}
       {hasError && (
           <button 
               onClick={() => setShowLogModal(true)} 
               className="fixed left-1/2 -translate-x-1/2 z-[60] bg-red-500/90 text-white rounded-full px-4 py-1.5 text-[10px] font-bold shadow-lg animate-pulse flex items-center gap-1.5 backdrop-blur-md border border-white/20 pointer-events-auto"
-              style={{ top: 'calc(env(safe-area-inset-top) + 2.5rem)' }}
+              style={{ top: 'calc(var(--chrome-top) + 1rem)' }}
           >
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-3 h-3">
                   <path fillRule="evenodd" d="M18 10a8 8 0 1 1-16 0 8 8 0 0 1 16 0Zm-8-5a.75.75 0 0 1 .75.75v4.5a.75.75 0 0 1-1.5 0v-4.5A.75.75 0 0 1 10 5Zm0 10a1 1 0 1 0 0-2 1 1 0 0 0 0 2Z" clipRule="evenodd" />

@@ -135,13 +135,13 @@ const GameHeader: React.FC<{
 }> = ({ title, subtitle, onBack, affinity, charAvatar }) => (
     <div className="shrink-0 relative">
         {/* Decorative spiral dots */}
-        <div className="absolute left-1 top-0 bottom-0 flex flex-col items-center justify-center gap-1.5 z-10">
+        <div className="absolute left-1 top-0 bottom-0 flex flex-col items-center justify-center gap-1.5 z-10" style={{ paddingTop: 'var(--safe-top)' }}>
             {[0, 1, 2, 3, 4].map(i => (
                 <div key={i} className="w-2 h-2 rounded-full" style={{ background: 'rgba(180,165,170,0.4)', border: '1px solid rgba(160,145,150,0.2)' }} />
             ))}
         </div>
         <div className="flex items-center gap-2.5 pl-5 pr-3 py-2.5"
-            style={{ background: 'linear-gradient(135deg, rgba(200,185,190,0.3) 0%, rgba(190,175,195,0.2) 100%)', borderBottom: '2px solid rgba(180,165,170,0.2)' }}>
+            style={{ background: 'linear-gradient(135deg, rgba(200,185,190,0.3) 0%, rgba(190,175,195,0.2) 100%)', borderBottom: '2px solid rgba(180,165,170,0.2)', paddingTop: 'calc(var(--safe-top) + 0.625rem)' }}>
             <button onClick={onBack} className="w-7 h-7 rounded-full bg-white/60 flex items-center justify-center text-xs font-bold active:scale-90 transition-transform shadow-sm backdrop-blur-sm" style={{ color: '#9b8a8e' }}>
                 <ArrowLeft size={14} />
             </button>
@@ -1065,7 +1065,7 @@ const GuidebookApp: React.FC = () => {
         return (
             <GameFrame>
                 {/* Cinematic header - no standard GameHeader */}
-                <div className="shrink-0 relative overflow-hidden" style={{ background: 'linear-gradient(135deg, rgba(30,20,40,0.85) 0%, rgba(60,30,50,0.7) 50%, rgba(40,20,50,0.85) 100%)' }}>
+                <div className="shrink-0 relative overflow-hidden" style={{ background: 'linear-gradient(135deg, rgba(30,20,40,0.85) 0%, rgba(60,30,50,0.7) 50%, rgba(40,20,50,0.85) 100%)', paddingTop: 'var(--safe-top)' }}>
                     <div className="absolute inset-0 opacity-10" style={{ backgroundImage: 'repeating-linear-gradient(90deg, transparent, transparent 3px, rgba(255,255,255,0.03) 3px, rgba(255,255,255,0.03) 4px)' }} />
                     <div className="flex items-center gap-3 px-4 py-3 relative z-10">
                         <button onClick={closeApp} className="w-7 h-7 rounded-full bg-white/10 flex items-center justify-center text-white/60 text-xs active:scale-90 transition-transform backdrop-blur-sm border border-white/10">
@@ -1301,7 +1301,7 @@ const GuidebookApp: React.FC = () => {
         return (
             <GameFrame>
                 {/* Cinematic header matching lobby style */}
-                <div className="shrink-0 relative overflow-hidden" style={{ background: 'linear-gradient(135deg, rgba(30,20,40,0.85) 0%, rgba(60,30,50,0.7) 50%, rgba(40,20,50,0.85) 100%)' }}>
+                <div className="shrink-0 relative overflow-hidden" style={{ background: 'linear-gradient(135deg, rgba(30,20,40,0.85) 0%, rgba(60,30,50,0.7) 50%, rgba(40,20,50,0.85) 100%)', paddingTop: 'var(--safe-top)' }}>
                     <div className="absolute inset-0 opacity-10" style={{ backgroundImage: 'repeating-linear-gradient(90deg, transparent, transparent 3px, rgba(255,255,255,0.03) 3px, rgba(255,255,255,0.03) 4px)' }} />
                     <div className="flex items-center gap-3 px-4 py-3 relative z-10">
                         <button onClick={backToLobby} className="w-7 h-7 rounded-full bg-white/10 flex items-center justify-center text-white/60 text-xs active:scale-90 transition-transform backdrop-blur-sm border border-white/10">
@@ -1739,7 +1739,7 @@ const GuidebookApp: React.FC = () => {
 
             {/* Option Edit Overlay */}
             {editingOptIdx !== null && (
-                <div className="fixed inset-0 z-50 flex items-end justify-center p-3 pb-4">
+                <div className="fixed inset-0 z-50 flex items-end justify-center p-3 pb-4" style={{ paddingBottom: `calc(1rem + var(--safe-bottom))` }}>
                     <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setEditingOptIdx(null)} />
                     <div className="relative w-full max-w-md rounded-3xl overflow-hidden shadow-2xl max-h-[85vh] overflow-y-auto" style={{ background: 'linear-gradient(160deg, #f5f0ee 0%, #ece6e9 100%)', border: '1px solid rgba(200,185,190,0.3)' }}>
                         <div className="px-5 pt-5 pb-3" style={{ borderBottom: '1px solid rgba(200,185,190,0.15)' }}>
@@ -1800,7 +1800,7 @@ const GuidebookApp: React.FC = () => {
 
             {/* Scenario Edit Overlay */}
             {editingScenario && (
-                <div className="fixed inset-0 z-50 flex items-end justify-center p-3 pb-4">
+                <div className="fixed inset-0 z-50 flex items-end justify-center p-3 pb-4" style={{ paddingBottom: `calc(1rem + var(--safe-bottom))` }}>
                     <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={() => setEditingScenario(false)} />
                     <div className="relative w-full max-w-md rounded-3xl overflow-hidden shadow-2xl max-h-[85vh] overflow-y-auto" style={{ background: 'linear-gradient(160deg, #f5f0ee 0%, #ece6e9 100%)', border: '1px solid rgba(200,185,190,0.3)' }}>
                         <div className="px-5 pt-5 pb-3" style={{ borderBottom: '1px solid rgba(200,185,190,0.15)' }}>
@@ -1858,7 +1858,7 @@ const GuidebookApp: React.FC = () => {
 
             {/* Round Context Menu */}
             {contextMenuRound !== null && (
-                <div className="fixed inset-0 z-40 flex items-end justify-center p-4 pb-8">
+                <div className="fixed inset-0 z-40 flex items-end justify-center p-4 pb-8" style={{ paddingBottom: `calc(2rem + var(--safe-bottom))` }}>
                     <div className="absolute inset-0 bg-black/20 backdrop-blur-sm" onClick={() => setContextMenuRound(null)} />
                     <Card className="relative w-full max-w-sm overflow-hidden">
                         <div className="text-center text-xs py-2" style={{ color: '#9b8a8e', borderBottom: '1px solid rgba(200,185,190,0.2)' }}>

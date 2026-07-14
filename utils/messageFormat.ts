@@ -11,8 +11,56 @@
  * 抽到这里后单点维护。
  */
 
-import type { Message } from '../types';
+import type { Message, Emoji } from '../types';
 import { formatLifeSimResetCardForContext } from './lifeSimChatCard';
+import { formatStatCount } from './videoParser';
+
+/**
+ * 表情包消息的 content 存的是图床 URL，本身不带名字。拼上下文时要靠这个反查出
+ * 当初设的表情名（关键字），非识图模型才能"看见"对方发了什么表情。
+ * 私聊主历史、群聊主历史都从这里取名，避免一处查一处漏（群聊曾漏查，只给 [表情包]）。
+ */
+export function stickerNameFromUrl(emojis: Emoji[], url: string): string {
+    return emojis.find(e => e.url === url)?.name || '未知表情';
+}
+
+/**
+ * 把「窥视的是哪个具体时间」组成一句人话：日期相对词 + 时段词 + 时刻。
+ * 例：今天上午08:00 / 昨天晚上21:30 / 6月25日下午14:00。
+ * 用于小剧场卡片注入——晚上看上午的内容时，不能含糊说"刚刚/刚才"，要落到具体时间。
+ * @param dateStr  卡片记录的日期 "YYYY-MM-DD"（缺失则只给时段+时刻）
+ * @param slotTime 时段起始 "HH:MM"
+ */
+export function theaterWhenPhrase(dateStr?: string, slotTime?: string): string {
+    const time = (slotTime || '').trim();
+    const hour = parseInt(time.split(':')[0], 10);
+    const period = !Number.isFinite(hour) ? ''
+        : hour < 5 ? '凌晨'
+        : hour < 8 ? '早上'
+        : hour < 11 ? '上午'
+        : hour < 13 ? '中午'
+        : hour < 17 ? '下午'
+        : hour < 19 ? '傍晚'
+        : hour < 23 ? '晚上'
+        : '深夜';
+
+    let dayWord = '今天';
+    const ymd = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    if (dateStr && /^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+        const now = new Date();
+        const today = ymd(now);
+        if (dateStr !== today) {
+            const yest = new Date(now); yest.setDate(now.getDate() - 1);
+            if (dateStr === ymd(yest)) {
+                dayWord = '昨天';
+            } else {
+                const [, mo, da] = dateStr.split('-');
+                dayWord = `${parseInt(mo, 10)}月${parseInt(da, 10)}日`;
+            }
+        }
+    }
+    return `${dayWord}${period}${time}`;
+}
 
 /** 仅返回内容体（不加 sender / timestamp）。调用方自行拼外层。 */
 export function normalizeMessageContent(
@@ -30,8 +78,13 @@ export function normalizeMessageContent(
     // 系统交互事件
     if (type === 'interaction') return `[系统: ${userName}戳了${charName}一下]`;
     if (type === 'transfer') {
-        const amt = msg.metadata?.amount;
-        return amt !== undefined ? `[系统: ${userName}转账 ${amt}]` : `[系统: ${userName}转账]`;
+        const meta = msg.metadata || {};
+        const amtStr = meta.amount !== undefined ? ` ${meta.amount}` : '';
+        const sender = msg.role === 'user' ? userName : charName;
+        const recipient = msg.role === 'user' ? charName : userName;
+        if (meta.receipt === 'accepted') return `[系统: ${sender}接收了${recipient}的转账${amtStr}]`;
+        if (meta.receipt === 'returned') return `[系统: ${sender}退回了${recipient}的转账${amtStr}]`;
+        return `[系统: ${sender}向${recipient}转账${amtStr}]`;
     }
 
     // 结算卡：几种 app 产生，用字段逐一翻成自然文本
@@ -110,6 +163,139 @@ export function normalizeMessageContent(
         return '[音乐卡片]';
     }
 
+    // TRPG 跑团片段：从 TRPG 游戏里多选转发到聊天的剧情。必须翻成完整可读文本，
+    // 让上下文 / 归档 / palace 都能读到"和用户一起玩游戏时发生了什么"，并标明来自 TRPG。
+    if (type === 'trpg_card') {
+        const t = msg.metadata?.trpg as {
+            gameTitle?: string;
+            userName?: string;
+            partyNames?: string[];
+            excerpt?: Array<{ speaker?: string; text?: string }>;
+        } | undefined;
+        if (t) {
+            const others = (t.partyNames || []).filter(n => n && n !== charName);
+            const withPart = others.length ? `（和${others.join('、')}）` : '';
+            const lines = (t.excerpt || [])
+                .map(e => `${e.speaker || ''}: ${(e.text || '').replace(/\s*\n+\s*/g, ' ').trim()}`)
+                .filter(s => s.trim() !== ':')
+                .join('\n');
+            return `[TRPG游戏片段] 这是${charName}和${t.userName || userName}${withPart}一起玩《${t.gameTitle || 'TRPG'}》跑团时的一段剧情（从游戏里转发到聊天，相当于你们一起玩游戏的共同回忆）：\n${lines}`;
+        }
+        return '[TRPG游戏片段]';
+    }
+
+    // 笔友会小说章节：从笔友会历史章节多选转发到聊天的归档总结。必须翻成完整可读文本，
+    // 让上下文 / 归档 / palace 都能读到"这本书写了什么"。共创者视角是"我们一起写的书"，
+    // 非共创者视角是"用户分享给我看的书"，措辞要区分开。
+    if (type === 'novel_card') {
+        const n = msg.metadata?.novel as {
+            bookTitle?: string;
+            subtitle?: string;
+            bookSummary?: string;
+            userName?: string;
+            collaboratorNames?: string[];
+            chapters?: Array<{ index?: number; summary?: string }>;
+        } | undefined;
+        if (n) {
+            const collabs = n.collaboratorNames || [];
+            const isCoauthor = collabs.includes(charName);
+            const others = collabs.filter(name => name && name !== charName);
+            const uName = n.userName || userName;
+            const withPart = others.length ? `（还有${others.join('、')}）` : '';
+            const head = isCoauthor
+                ? `这是${charName}和${uName}${withPart}一起在笔友会共同创作的小说《${n.bookTitle || '无题'}》的章节归档（用户转发到聊天，这本书是你们共同的创作回忆，你是执笔人之一）`
+                : `这是${uName}${collabs.length ? `和${collabs.join('、')}` : ''}在笔友会创作的小说《${n.bookTitle || '无题'}》的章节归档（用户分享给${charName}看的，${charName}没有参与创作）`;
+            const intro = (n.bookSummary || '').trim() ? `\n简介：${(n.bookSummary || '').trim()}` : '';
+            const body = (n.chapters || [])
+                .map(c => `第${c.index ?? '?'}章总结：\n${(c.summary || '').trim().slice(0, 2000)}`)
+                .join('\n\n');
+            return `[笔友会小说章节] ${head}：${intro}\n${body}`;
+        }
+        return '[笔友会小说章节]';
+    }
+
+    // 小红书卡片：把笔记标题 + 正文 desc + 作者翻成可读文本喂给角色。标题来自分享文案
+    // （无需后端），desc/作者来自 MCP 抓取（可能没有）。没专门分支时会走默认只给 content(=标题)，
+    // 抓空时甚至空字符串，角色读不到任何东西。
+    if (type === 'xhs_card') {
+        const note: any = msg.metadata?.xhsNote || {};
+        const title = (note.title || msg.content || '').trim();
+        const desc = (note.desc || '').trim();
+        const author = (note.author || '').trim();
+        const authorPart = author ? `（作者：${author}）` : '';
+        const head = `[小红书笔记] ${userName}分享了一篇小红书笔记${title ? `《${title}》` : ''}${authorPart}`;
+        // 评论区：建卡时抓到的评论一并喂给角色（含归档/记忆宫殿场景），与浏览笔记时的可见性对齐。
+        const comments = Array.isArray(note.comments) ? note.comments : [];
+        const commentsPart = comments.length
+            ? `\n评论区：\n${comments.slice(0, 15).map((c: any) => `· ${c.author || '匿名'}：${c.content}`).join('\n')}`
+            : '';
+        if (desc) return `${head}\n笔记正文：\n${desc}${commentsPart}`;
+        // 只有标题（没部署 MCP / 没抓到正文）：角色至少知道是哪篇笔记，但别假装读过正文。
+        if (title) return `${head}\n（注：只拿到了笔记标题，正文/图片没抓到——要读完整内容需部署小红书功能。别假装读过正文。）`;
+        return `${head}\n（注：这篇笔记的内容没能获取到。）`;
+    }
+
+    // 网页卡片：用户粘贴链接分享的网页。卡片只给人看封面，上下文/归档/palace 要读到
+    // 提取出的正文纯文字，角色才"看见"了网页内容（正文截到 ~1500 字防 token 爆）。
+    if (type === 'webpage_card') {
+        const meta: any = msg.metadata?.webpage || {};
+        const title = meta.title || msg.content || '网页';
+        const site = meta.siteName ? `（来自 ${meta.siteName}）` : '';
+        const url = meta.finalUrl || meta.url || '';
+        // 视频平台分享（videoParser 解析路径）：没有可读正文，喂给角色的是
+        // 「标题 + 作者 + 热度数据」，并明确告知看不到画面内容，防止对着标题瞎编剧情。
+        if (meta.video) {
+            const v: any = meta.video;
+            const plat = v.platformLabel || v.platform || '视频平台';
+            const isImage = v.contentType === 'image';
+            const kindLabel = isImage ? `图文${v.imageCount ? `（${v.imageCount} 张图）` : ''}` : '视频';
+            const author = v.authorName ? `（作者：${v.authorName}）` : '';
+            const head = `[视频分享] ${userName}分享了一个${plat}${kindLabel}${title ? `《${title}》` : ''}${author}${url ? `\n链接：${url}` : ''}`;
+            const stats = [
+                v.playCount ? `播放 ${formatStatCount(v.playCount)}` : '',
+                v.likeCount ? `点赞 ${formatStatCount(v.likeCount)}` : '',
+                v.commentCount ? `评论 ${formatStatCount(v.commentCount)}` : '',
+                v.collectCount ? `收藏 ${formatStatCount(v.collectCount)}` : '',
+            ].filter(Boolean);
+            const note = isImage
+                ? '（注：你能看到的是这个图文的标题、作者和热度数据，看不到图片内容本身，别假装看过图。）'
+                : '（注：你能看到的是这个视频的标题、作者和热度数据，看不到视频画面和声音，别假装看过视频内容。）';
+            return [
+                head,
+                stats.length ? `热度：${stats.join(' · ')}` : '',
+                v.publishTime ? `发布时间：${v.publishTime}` : '',
+                note,
+            ].filter(Boolean).join('\n');
+        }
+        const bodyRaw = (typeof meta.content === 'string' && meta.content.trim())
+            ? meta.content.trim()
+            : (typeof meta.excerpt === 'string' ? meta.excerpt.trim() : '');
+        const head = `[网页分享] ${userName}分享了一个网页《${title}》${site}${url ? `\n链接：${url}` : ''}`;
+        // 正文抓空（登录墙 / SPA 动态渲染等）：明确告诉角色没读到正文，避免它对着标题瞎编网页内容。
+        if (!bodyRaw) {
+            return `${head}\n（注：这个网页的正文没能抓取到——可能需要登录，或是用 JS 动态渲染的页面。你只看到标题和链接，不知道正文写了什么，别假装读过内容。）`;
+        }
+        const body = bodyRaw.length > 1500 ? bodyRaw.slice(0, 1500) + '…（正文过长已截断）' : bodyRaw;
+        return `${head}\n网页正文：\n${body}`;
+    }
+
+    // 小剧场卡片：用户在日程表"窥视"了角色某时段的行为演出，并把这一刻发到聊天里。
+    // 归档/记忆宫殿要读到「用户偷看了你 + 你当时在做什么」，角色才会记得"被看到"这件事。
+    if (type === 'theater_card') {
+        const t: any = msg.metadata?.theater || {};
+        const meta: any = msg.metadata || {};
+        const exposed = meta.exposed !== false; // 缺省按已暴露处理（兼容旧卡片）
+        const beat = Array.isArray(t.lines)
+            ? t.lines.map((l: any) => `· ${typeof l?.text === 'string' ? l.text : ''}`).filter((s: string) => s.length > 2).join('\n')
+            : '';
+        const head = `[小剧场·窥视] ${userName}悄悄看了${charName}在 ${theaterWhenPhrase(meta.date, meta.slotTime)}「${meta.activity || '某个时段'}」时的样子`;
+        const tail = exposed
+            ? `（${charName}意识到自己被${userName}看到了。）`
+            : `（这是${charName}当时真实在做的事，${charName}自己记得；但${charName}并不知道被${userName}看到。）`;
+        if (beat) return `${head}\n${charName}当时的画面：\n${beat}\n${tail}`;
+        return head;
+    }
+
     // 默认：text / 未知类型 → 用 content
     return msg.content || '';
 }
@@ -152,5 +338,5 @@ export function isMessageSemanticallyRelevant(msg: Message): boolean {
     const type = msg.type as string;
     if (type === 'image' || type === 'emoji' || type === 'voice') return false;
     // 有内容或有结构化 metadata 才算
-    return !!(msg.content?.trim() || msg.metadata?.scoreCard || msg.metadata?.amount || msg.metadata?.song);
+    return !!(msg.content?.trim() || msg.metadata?.scoreCard || msg.metadata?.amount || msg.metadata?.song || msg.metadata?.trpg || msg.metadata?.webpage);
 }

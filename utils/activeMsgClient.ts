@@ -250,8 +250,13 @@ const buildCompletePrompt = async (
   const { recentMessages, timeSinceUser } = await buildTimeGapHint(char.id);
   const currentTime = nowIsoLocal().replace('T', ' ');
   const legacyHint = buildLegacyStyleProactiveHint(userProfile.name || '对方', currentTime, timeSinceUser);
-  const emojis = await DB.getEmojis();
-  const categories = await DB.getEmojiCategories();
+  // 按角色可见性过滤表情包：主动消息不经过 Chat.tsx 的 aiVisibleEmojis/visibleCategories，
+  // 必须在这里复用同一套过滤，否则角色会用到只对其他角色开放的表情包。
+  const { emojis, categories } = ChatPrompts.filterVisibleEmojis(
+    await DB.getEmojis(),
+    await DB.getEmojiCategories(),
+    char.id,
+  );
   const systemPrompt = await ChatPrompts.buildSystemPrompt(
     char,
     userProfile,
@@ -319,6 +324,10 @@ const buildCompletePrompt = async (
     '',
     '【本次任务】',
     modeInstruction,
+    '',
+    // recency 末位人声锚：上面【角色系统设定】里已带「回到你自己」钢印，但被任务说明压在后面、
+    // 失了 recency。这里在最后一句把它拎回来，让主动消息也从「你这个人」长出来，而不是滑回均值腔。
+    `（开口前回到你自己：这条得是 ${char.name} 会发的那一条——语气、用词、节奏都只属于你。哪怕只是随口一句，也要是你。）`,
   ].join('\n');
 };
 

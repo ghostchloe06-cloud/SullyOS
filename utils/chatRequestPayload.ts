@@ -19,8 +19,14 @@ import { buildHtmlPrompt } from './htmlPrompt';
 import { buildThinkingChainPrompt } from './thinkingChainPrompt';
 import { buildMcdMiniAppContextBlock } from './mcdToolBridge';
 import type { McdMiniAppSnapshot } from './mcdToolBridge';
+import { buildLuckinMiniAppContextBlock, buildLuckinChatSystemBlock } from './luckinToolBridge';
+import type { LuckinMiniAppSnapshot, LuckinChatState } from './luckinToolBridge';
+import { isMcpChatAvailable } from './mcpClient';
+import { buildMcpSystemBlock, MCP_TAIL_REMINDER } from './mcpToolBridge';
 import type { MusicCfg, Song, LyricLine, MusicPlaybackSnapshot } from '../context/MusicContext';
 import { isPromptBuildSkipped } from './devDebug';
+import { injectWorldbookDepthEntries, resolveWorldbookEntries } from './worldbook';
+import { normalizeTranslationLangLabel } from './translationLang';
 
 export interface UserListeningContext {
     songName: string;
@@ -43,6 +49,12 @@ export interface BuildChatPayloadInput {
      */
     recentMsgsHint?: Message[];
     contextLimit: number;
+    /**
+     * 额外的记忆召回提示词（拼进向量/BM25 检索的 context query）。
+     * 用途：彼方等场景下，把"此刻在场的其他玩家名字 / 房间上下文"塞进召回 query，
+     * 让角色能回忆起自己跟对面这些人的关系，而不是只按聊天历史召回。
+     */
+    recallQueryHint?: string;
 
     // 实时世界 / 角色情绪
     realtimeConfig?: RealtimeConfig;
@@ -61,6 +73,9 @@ export interface BuildChatPayloadInput {
     htmlMode?: { enabled: boolean; customPrompt?: string };
     thinkingChain?: { enabled: boolean; customPrompt?: string };
     mcdMiniSnap?: McdMiniAppSnapshot;
+    luckinMiniSnap?: LuckinMiniAppSnapshot;
+    /** 瑞幸聊天点单模式 (点"瑞一杯"激活, 角色直接调真实工具) */
+    luckinChat?: LuckinChatState;
 }
 
 export interface BuildChatPayloadResult {
@@ -74,6 +89,9 @@ export interface BuildChatPayloadResult {
     flags: {
         bilingualActive: boolean;
         mcdActive: boolean;
+        luckinActive: boolean;
+        luckinChatActive: boolean;
+        mcpChatActive: boolean;
         htmlActive: boolean;
         thinkingActive: boolean;
         promptBuildSkipped: boolean;
@@ -116,7 +134,12 @@ function deriveListeningFromSnapshot(
     return { userListeningContext, isListeningTogether, musicCfg: cfg };
 }
 
-function cleanApiMessages(apiMessages: Array<{ role: string; content: any }>): Array<{ role: string; content: any }> {
+/**
+ * 剥离历史里旧的双语标签: `%%BILINGUAL%%` 形态整条在标记处截断 (只留原文侧),
+ * `<翻译>` XML 形态只留 <原文>。导出仅为单测 — 引用头绝不能混入 %%BILINGUAL%%
+ * (见 chatPrompts.buildMessageHistory 的引用摘要清洗), 否则截断会吃掉用户的实际回复。
+ */
+export function cleanApiMessages(apiMessages: Array<{ role: string; content: any }>): Array<{ role: string; content: any }> {
     return apiMessages.map((msg: any) => {
         if (typeof msg.content !== 'string') return msg;
         let c: string = msg.content;
@@ -132,26 +155,29 @@ function cleanApiMessages(apiMessages: Array<{ role: string; content: any }>): A
 }
 
 /**
- * 构造完整 chat 请求载荷。顺序严格对齐 useChatAI.ts 现有实现：
+ * 构造完整 chat 请求载荷。三段式结构（稳定前缀 / 历史 / 易变尾段）：
  *
  *   1. injectMemoryPalace（向量召回挂到 char.memoryPalaceInjection）
- *   2. ChatPrompts.buildSystemPrompt（核心人设 + 实时 + 记忆 + 音乐 + 日程内心独白）
- *   3. += 双语指令
- *   4. += HTML 模式提示词
- *   5. += 思考链提示词（+ 用户额外要求）
- *   6. ChatPrompts.buildMessageHistory → apiMessages
- *   7. 剥离 apiMessages 里旧的双语标签 → cleanedApiMessages
- *   8. += 麦当劳小程序上下文（注意：在 6/7 之后追加到 systemPrompt）
- *   9. fullMessages = [system, ...cleanedApiMessages]
- *  10. fullMessages.push（末尾双语 reminder，不进 systemPrompt）
+ *   2. ChatPrompts.buildSystemPromptParts → { stable, volatileState, recencyTail }
+ *   3. stable += 双语指令 / HTML 模式 / 思考链（按角色配置，变化慢）
+ *   4. ChatPrompts.buildMessageHistory → apiMessages → 剥离旧双语标签 → cleanedApiMessages
+ *   5. volatileTail = volatileState + 麦当劳/瑞幸/瑞一杯实时快照块
+ *   6. stable += 通用 MCP 工具块（工具清单持久化，变化慢）
+ *   7. volatileTail += recencyTail（总纲+「回到你自己」钢印，永远最后）
+ *   8. fullMessages = [stable system, ...cleanedApiMessages, volatileTail system]
+ *   9. fullMessages.push（末尾双语 reminder / MCP reminder）
  *
- * emotion eval 应当吃 (systemPrompt, cleanedApiMessages) —— 与主 API 看到的完全一致。
+ * 设计动机：稳定前缀不含分钟级时间戳/召回/buff → 中转的 prompt 前缀缓存能跨轮命中
+ * （TTFT 直降）；易变状态贴着生成点，时间/情绪拿到最强 recency 注意力。
+ *
+ * emotion eval 吃 (systemPrompt=stable+volatileTail 拼接, cleanedApiMessages) ——
+ * 信息与主 API 完全一致，仅易变段的位置不同（主 API 在历史后，eval 拼在 system 文本里）。
  */
 export async function buildChatRequestPayload(input: BuildChatPayloadInput): Promise<BuildChatPayloadResult> {
     const {
         char, userProfile, groups, emojis, categories, historyMsgs, contextLimit,
         realtimeConfig, innerState,
-        translationConfig, htmlMode, thinkingChain, mcdMiniSnap,
+        translationConfig, htmlMode, thinkingChain, mcdMiniSnap, luckinMiniSnap, luckinChat,
     } = input;
     const recentMsgsHint = input.recentMsgsHint ?? historyMsgs;
 
@@ -166,6 +192,9 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
             flags: {
                 bilingualActive: false,
                 mcdActive: false,
+                luckinActive: false,
+                luckinChatActive: false,
+                mcpChatActive: false,
                 htmlActive: false,
                 thinkingActive: false,
                 promptBuildSkipped: true,
@@ -174,7 +203,7 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
     }
 
     // ── 1. Memory Palace 向量召回 ─────────────────────────
-    await injectMemoryPalace(char, recentMsgsHint, undefined, userProfile?.name);
+    await injectMemoryPalace(char, recentMsgsHint, input.recallQueryHint, userProfile?.name);
 
     // ── 2. 解析音乐共听（如果 caller 没显式给，就从 snapshot 推） ──
     let userListeningContext = input.userListeningContext;
@@ -187,23 +216,31 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
         musicCfg = derived.musicCfg ?? musicCfg;
     }
 
-    // ── 3. buildSystemPrompt 核心 ─────────────────────────
-    let systemPrompt = await ChatPrompts.buildSystemPrompt(
+    // ── 3. buildSystemPromptParts 核心（三段式） ──────────
+    // stable → 消息数组第一条 system（前缀稳定，吃 prompt cache）；
+    // volatileTail → 历史消息之后的 system（时间/召回/buff/日程/音乐等实时状态 + 点单类模式块）；
+    // recencyTail（总纲+「回到你自己」钢印）最后拼进 volatileTail 末尾，保证它是模型
+    // 开口前读到的最后内容 —— 双语/HTML/思考链等格式块都只能拼在 stable 里、排它前面。
+    const parts = await ChatPrompts.buildSystemPromptParts(
         char, userProfile, groups, emojis, categories, recentMsgsHint,
         realtimeConfig, innerState || undefined,
         userListeningContext ?? null,
         !!isListeningTogether,
         musicCfg,
     );
+    let systemPrompt = parts.stable;
+    let volatileTail = parts.volatileState;
 
     // ── 4. 双语指令注入 ───────────────────────────────────
-    const bilingualActive = !!(translationConfig?.enabled && translationConfig.sourceLang && translationConfig.targetLang);
+    const sourceLang = normalizeTranslationLangLabel(translationConfig?.sourceLang);
+    const targetLang = normalizeTranslationLangLabel(translationConfig?.targetLang);
+    const bilingualActive = !!(translationConfig?.enabled && sourceLang && targetLang);
     if (bilingualActive && translationConfig) {
         systemPrompt += `\n\n[CRITICAL: 双语输出模式 - 必须严格遵守]
 你的每句话都必须用以下XML标签格式输出双语内容：
 <翻译>
-<原文>${translationConfig.sourceLang}内容</原文>
-<译文>${translationConfig.targetLang}内容</译文>
+<原文>${sourceLang}内容</原文>
+<译文>${targetLang}内容</译文>
 </翻译>
 
 规则：
@@ -211,8 +248,9 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
 - 多句话就输出多个<翻译>标签，一句一个
 - <翻译>标签外不要写任何文字
 - 表情包命令 [[SEND_EMOJI: ...]] 放在所有<翻译>标签外面
+- 引用命令 [[QUOTE: ...]] 也放在所有<翻译>标签外面；引用内容请原样照抄用户说过的原文（不要翻译、不要包<翻译>标签）
 
-示例（${translationConfig.sourceLang}→${translationConfig.targetLang}）：
+示例（${sourceLang}→${targetLang}）：
 <翻译>
 <原文>こんにちは！</原文>
 <译文>你好！</译文>
@@ -245,20 +283,68 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
 
     // ── 8. 剥离历史里旧的双语标签 ─────────────────────────
     const cleanedApiMessages = cleanApiMessages(apiMessages);
+    const resolvedWorldbookEntries = resolveWorldbookEntries(
+        char.mountedWorldbooks || [],
+        cleanedApiMessages,
+        char.name,
+        userProfile.name,
+    );
+    const messagesWithWorldbookDepth = injectWorldbookDepthEntries(
+        cleanedApiMessages,
+        resolvedWorldbookEntries.filter(entry => entry.position === 4),
+    );
 
-    // ── 9. 麦当劳小程序上下文（在 cleanedApiMessages 之后追加到 systemPrompt） ──
+    // ── 9. 麦当劳小程序上下文（购物车/菜单实时快照 → 易变尾段） ──
     const mcdActive = !!mcdMiniSnap?.open;
     if (mcdActive) {
         const block = buildMcdMiniAppContextBlock(mcdMiniSnap, userProfile?.name || '用户');
+        if (block) {
+            volatileTail += block;
+        }
+    }
+
+    // ── 9b. 瑞幸小程序上下文（同上，易变尾段） ──
+    const luckinActive = !!luckinMiniSnap?.open;
+    if (luckinActive) {
+        const block = buildLuckinMiniAppContextBlock(luckinMiniSnap, userProfile?.name || '用户');
+        if (block) {
+            volatileTail += block;
+        }
+    }
+
+    // ── 9c. 瑞幸聊天点单模式 (角色直接调真实工具；含实时定位/会话状态 → 易变尾段) ──
+    const luckinChatActive = !!luckinChat?.active;
+    if (luckinChatActive) {
+        const block = buildLuckinChatSystemBlock(luckinChat, recentMsgsHint, userProfile?.name || '用户');
+        if (block) {
+            volatileTail += block;
+        }
+    }
+
+    // ── 9d. 通用 MCP 工具模式 (用户自配的远程 MCP 服务器, 见 docs/mcp-client.md) ──
+    // 工具清单来自持久化的发现结果，变化很慢 → 稳定段。
+    const mcpChatActive = isMcpChatAvailable(char.id);
+    if (mcpChatActive) {
+        const block = buildMcpSystemBlock(userProfile?.name || '用户', char.id);
         if (block) {
             systemPrompt += block;
         }
     }
 
-    // ── 10. 组装 fullMessages + 末尾双语 reminder ─────────
+    // ── 10. recency 钢印归位 + 组装 fullMessages ─────────
+    // 「关于对方的表达」+「回到你自己」必须是易变尾段的最后内容：修复旧版把双语/HTML/
+    // 思考链/点单块拼在钢印之后、模型开口前最后读到的是格式说明书的问题。
+    volatileTail += parts.recencyTail;
+
+    // 结构：[稳定 system] + [历史消息] + [易变状态 system] (+ 末尾 reminder)。
+    // 稳定前缀不再包含分钟级时间戳等易变内容 → 支持前缀缓存的中转能跨轮命中；
+    // 易变状态贴着生成点注入，时间/情绪/日程反而拿到最强 recency 注意力。
+    // 注意：instant push 的 worker 端情绪评估把 messages[0] 当 system、messages[1..]
+    // 展平为对话历史 —— 易变尾段会以「[系统]: …」行出现在历史末尾，信息不丢。
     const fullMessages: Array<{ role: string; content: any }> = [
         { role: 'system', content: systemPrompt },
-        ...cleanedApiMessages,
+        ...messagesWithWorldbookDepth,
+        { role: 'system', content: volatileTail },
     ];
     if (bilingualActive) {
         fullMessages.push({
@@ -266,11 +352,16 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
             content: `[Reminder: 每句话必须用 <翻译><原文>...</原文><译文>...</译文></翻译> 标签包裹。一句一个标签。绝对不能省略。]`,
         });
     }
+    if (mcpChatActive) {
+        fullMessages.push({ role: 'system', content: MCP_TAIL_REMINDER });
+    }
 
     return {
-        systemPrompt,
-        cleanedApiMessages,
+        // 返回给情绪评估 / 调试查看器的仍是"完整拼接"——信息与主 API 完全一致，
+        // 只是主 API 的实际消息结构把易变尾段放在历史之后（见上）。
+        systemPrompt: systemPrompt + volatileTail,
+        cleanedApiMessages: messagesWithWorldbookDepth,
         fullMessages,
-        flags: { bilingualActive, mcdActive, htmlActive, thinkingActive, promptBuildSkipped: false },
+        flags: { bilingualActive, mcdActive, luckinActive, luckinChatActive, mcpChatActive, htmlActive, thinkingActive, promptBuildSkipped: false },
     };
 }

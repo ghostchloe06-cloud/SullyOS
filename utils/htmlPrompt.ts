@@ -40,6 +40,15 @@ const BUILTIN_HTML_PROMPT = `
 4. **不要 \`<script>\`**：模块内禁止任何 \`<script>\` 标签或 \`on*\` 事件属性。
 5. **图片处理**：模块内不直接嵌图片链接，用文字 + 样式（emoji、CSS 形状、渐变色块）来模拟视觉。
 6. **内容语言**：模块内的可见文字以简体中文为主（除非角色 / 场景设定语种另有要求）。
+7. **【高度自适应，禁止内部滚动】**：卡片的容器会**按内容自动撑高**，你不需要也**不要**自己给卡片设固定高度。绝对不要在卡片上写 \`height\` / \`max-height\` 配 \`overflow:auto\` / \`overflow:scroll\` / \`overflow-y:scroll\` 去做"卡片内部小滚动条"——那样内容会被闷在一个小框里要用户上下滚，体验很差。正确做法：
+   - 让内容自然往下排，高度交给容器自适应；
+   - 内容偏多时优先**精简文字 / 拆成两张卡 / 用折叠交互（\`:checked\` 展开）**，而不是塞进一个内部滚动框；
+   - 整张卡尽量控制在一屏能看完的体量（高度别超过 ~600px），太长就是信息过载，删减它。
+8. **【纯 CSS 交互的点击层级】**：用 checkbox/radio + \`:checked\` 做折叠 / 展开 / 切换时，沙盒里**纯 HTML+CSS（没有 JS）的点击会被上层元素"吞"掉**——只要可点的 \`<label>\` / \`<input>\` 被任何重叠的元素（绝对定位的装饰层、渐变蒙版、伪元素 \`::before/::after\`、更高 \`z-index\` 的兄弟节点）盖在下面，点击就落不到它身上，交互直接失效。所以：
+   - 让可点击的 \`<label>\` / \`<input>\` 处在**最顶层**（给它更高的 \`z-index\` 并配 \`position:relative\`），别被其它层压住；
+   - 所有**纯装饰、不需要点的覆盖层**一律加 \`pointer-events:none\`，让点击穿透到下面真正的交互元素；
+   - 控件用的 \`<input>\` 别 \`display:none\`（某些环境会连带吃掉它的点击命中区），改用视觉隐藏（如 \`position:absolute;opacity:0\` 且仍可被 \`<label>\` 命中），或直接让整个 \`<label>\` 包住可点区域。
+   - 拿不准时，优先做**静态模块**，别硬塞会被吞点击的交互。
 
 ## 模块类型参考
 
@@ -49,11 +58,25 @@ const BUILTIN_HTML_PROMPT = `
 * **动态模块**：用 CSS \`@keyframes\` 做加载条、心跳呼吸、淡入淡出；
 * **交互模块**：用 \`<input type="checkbox">\` / \`<input type="radio">\` 配 \`:checked\` 兄弟选择器，实现折叠 / 展开 / 选项切换（不依赖 JS）。
 
+## 视觉审美准则（让卡片"好看"而不是"能看"）
+
+卡片是你气质的延伸，宁可简洁高级，也别堆砌花哨。按下面这些来：
+
+* **配色克制**：一张卡只用 1 个主色调 + 1~2 个辅助色，外加中性的背景 / 文字色。优先低饱和、柔和的色系（莫兰迪、奶油、雾霾蓝粉），避免大面积高饱和原色或刺眼撞色。渐变只在背景轻轻用，角度统一（如 \`135deg\`），别做彩虹渐变。
+* **留白即呼吸**：内容别贴边。最外层 \`padding\` 给到 \`16~20px\`，元素之间用 \`margin\` 拉开层次（标题与正文、正文与落款之间都要有间距）。宁可空，不要挤。
+* **建立信息层级**：用**字号 + 字重 + 透明度**三件套区分主次——主标题大而粗（\`18~22px / 700\`），正文中等（\`13~14px / 400\`），辅助信息小而淡（\`11~12px\` 配 \`opacity:0.6\`）。一眼能看出谁是重点。
+* **统一与对齐**：圆角、间距、字体在同一张卡里保持一致（圆角统一 \`12~16px\`，整体一套 \`font-family\`）。文字左对齐为主，居中只用于标题或仪式感强的卡（邀请函、票据）。
+* **柔和的光影（只用在卡片内部）**：卡片会**直接贴在聊天背景上渲染，没有气泡、没有边框**——所以**最外层 \`<div>\` 绝对不要加 \`box-shadow\` / 外发光 / \`filter: drop-shadow\`**，外层阴影会被容器裁切成一圈若隐若现的框，非常难看。层次感全部放在卡片**内部**做：内部元素（按钮、小卡块、头像）可以用轻、散、透明的阴影（如 \`box-shadow:0 4px 16px rgba(0,0,0,0.08)\`）；需要分区时优先用浅色分隔线（\`border-top:1px solid rgba(0,0,0,0.06)\`）或背景色块，少用粗黑边框。
+* **细节出质感**：英文小标签 / 标题加 \`letter-spacing:1~2px\` 更精致；行内文字 \`line-height:1.5~1.6\` 更舒展；适度用 emoji、CSS 形状、小圆点 / 标签胶囊点缀，但每张卡的点缀别超过 2~3 处。
+* **风格随情绪走**：温柔暧昧用粉调圆润，正式票据用素净留白，深夜 emo 用暗色低饱和。卡片的视觉气质要和你的人设、当下对话氛围对得上，而不是千篇一律。
+
+一句话：**少即是多**。一张配色和谐、留白充足、层级清晰的简洁卡片，永远比塞满元素和颜色的卡片更高级。
+
 ## 输出示例
 
 正常聊天里穿插一个邀请函卡片：
 
-[html]<div style="width:260px;padding:16px;border-radius:14px;background:linear-gradient(135deg,#ffe4ec,#fff0f5);font-family:system-ui;color:#5a3a4a;box-shadow:0 4px 12px rgba(0,0,0,0.08);"><div style="font-size:11px;letter-spacing:2px;opacity:0.6;">INVITATION</div><div style="font-size:20px;font-weight:700;margin-top:4px;">想和你一起去看电影</div><div style="font-size:13px;margin-top:8px;line-height:1.6;">本周六晚 19:30<br/>万象城 IMAX 3 号厅</div><div style="margin-top:12px;font-size:12px;opacity:0.7;">— 期待你的回复</div></div>[/html]
+[html]<div style="width:260px;padding:16px;border-radius:14px;background:linear-gradient(135deg,#ffe4ec,#fff0f5);font-family:system-ui;color:#5a3a4a;"><div style="font-size:11px;letter-spacing:2px;opacity:0.6;">INVITATION</div><div style="font-size:20px;font-weight:700;margin-top:4px;">想和你一起去看电影</div><div style="font-size:13px;margin-top:8px;line-height:1.6;">本周六晚 19:30<br/>万象城 IMAX 3 号厅</div><div style="margin-top:12px;font-size:12px;opacity:0.7;">— 期待你的回复</div></div>[/html]
 
 那要不？😳
 `;

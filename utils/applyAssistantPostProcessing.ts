@@ -288,6 +288,13 @@ export interface PostProcessCtx {
     /** UI / 业务钩子 */
     hooks: PostProcessHooks;
     /**
+     * 流式预览已把气泡实时展示过（hooks/useChatAI 的 streamingBubbles）时置 true：
+     * 落库时跳过"拟人打字延迟"（每条 0.5~2s 的 setTimeout），气泡近乎立即回填。
+     * 否则用户会看到"预览气泡收回去 → 再一条条慢慢重弹"的二次播放。
+     * 未预览的路径（非流式 / 双语 / 工具模式 / instant push）不传，打字节奏不变。
+     */
+    instantRender?: boolean;
+    /**
      * Phase 1+: 当 worker 已在自己内部跑过 2nd-pass LLM 时, 主线程不该再调一次。
      * Phase 0 始终为 false / undefined。
      */
@@ -328,11 +335,15 @@ export async function applyAssistantPostProcessing(
         xhsCaches,
         api,
         hooks,
+        instantRender,
         skipSecondPassLLM,
         directives,
         reasoningContent: pushReasoningContent,
     } = ctx;
     const { baseUrl, headers, effectiveApi } = api;
+    // 拟人打字延迟：流式预览已实时展示过气泡时（instantRender）跳过，避免二次慢放
+    const typingPause = (ms: number): Promise<void> =>
+        instantRender ? Promise.resolve() : new Promise(r => setTimeout(r, ms));
     const {
         setMessages,
         addToast,
@@ -349,6 +360,9 @@ export async function applyAssistantPostProcessing(
         commentAuthorNameCache: commentAuthorNameCacheRef,
         commentParentIdCache: commentParentIdCacheRef,
     } = xhsCaches;
+
+    // API 调用记录用 meta：二轮重生 / 调阅 / 日记 / 小红书等都归在「消息」App 下，purpose 见各分支。
+    const apiLogMeta = { appName: '消息', charId: char.id, charName: char.name };
 
     // Phase 1: skipSecondPassLLM=true (instant push 路径) 时, 跳过所有需要回连 LLM 的
     // 二轮分支 (RECALL / SEARCH / READ_DIARY / FS_READ_DIARY / READ_NOTE / XHS_*)。
@@ -409,13 +423,269 @@ export async function applyAssistantPostProcessing(
     let aiContent = replayedTagPrefix ? `${replayedTagPrefix}${rawAiContent}` : rawAiContent;
     aiContent = normalizeAiContent(aiContent);
 
+    // ── 渲染基础设施 (提前声明, 供"执行功能前先展示本轮正文 A" + 末尾展示二轮结果 B 复用) ──
+    // 引用/回复标签的匹配 + 清理正则 (提前声明避免 lead-in 渲染时落入 TDZ)。
+    const QUOTE_RE_DOUBLE = /\[\[(?:QU[OA]TE|引用)[：:]\s*([\s\S]*?)\]\]/;
+    const QUOTE_RE_SINGLE = /\[(?:QU[OA]TE|引用)[：:]\s*([^\]]*)\]/;
+    const REPLY_RE_CN = /\[回复\s*[""“]([^""”]*?)[""”](?:\.{0,3})\]\s*[：:]?\s*/;
+    // 历史里引用消息被渲染成 [xx引用了xx说的「…」，并回复了 ↓]（chatPrompts.buildMessageHistory），
+    // 模型会模仿这个渲染格式而不是规范的 [[QUOTE:]] —— 把它也认作合法引用，否则既丢引用
+    // 又把整段方括号原样漏进气泡。「」是该渲染格式的硬锚点，配合"引用了"双锚降低误报。
+    // 引用摘要被截断成单行，「」内用 [^」\n]*? 限制在同一行：缺闭合 」 时不会跨行吞掉正文段落。
+    const QUOTE_RE_NL = /\[[^\[\]\n「」]{0,24}引用了[^\[\]\n「」]{0,24}「([^」\n]*?)」[^\[\]\n]{0,24}\]\s*/;
+    const QUOTE_CLEAN_DOUBLE = /\[\[(?:QU[OA]TE|引用)[：:][\s\S]*?\]\]/g;
+    const QUOTE_CLEAN_SINGLE = /\[(?:QU[OA]TE|引用)[：:][^\]]*\]/g;
+    const REPLY_CLEAN_CN = /\[回复\s*[""“][^""”]*?[""”](?:\.{0,3})\]\s*[：:]?\s*/g;
+    const QUOTE_CLEAN_NL = /\[[^\[\]\n「」]{0,24}引用了[^\[\]\n「」]{0,24}「[^」\n]*?」[^\[\]\n]{0,24}\]\s*/g;
+
+    // 抽取思考链 (showThinkingChain 开启时): reasoning_content + 内联 <think> 块。
+    const extractThinkingChain = (dataObj: any, reasoningOverride?: string): string | null => {
+        if (!(char as any).showThinkingChain) return null;
+        const lastRaw = dataObj?.choices?.[0]?.message?.content || '';
+        const lastReasoning = (
+            (reasoningOverride && reasoningOverride.trim())
+            || dataObj?.choices?.[0]?.message?.reasoning_content
+            || ''
+        ).trim();
+        const thinkBlocks: string[] = [];
+        const thinkPat = /<(think|thinking|thought)>([\s\S]*?)<\/\1>/gi;
+        let tm: RegExpExecArray | null;
+        while ((tm = thinkPat.exec(lastRaw)) !== null) {
+            const t = tm[2].trim();
+            if (t) thinkBlocks.push(t);
+        }
+        if (!/<\/(?:think|thinking|thought)>/i.test(lastRaw)) {
+            const openOnly = lastRaw.match(/<(?:think|thinking|thought)>([\s\S]*$)/i);
+            if (openOnly && openOnly[1].trim()) thinkBlocks.push(openOnly[1].trim());
+        }
+        const chain = [lastReasoning, ...thinkBlocks].filter(s => !!s).join('\n\n').trim();
+        return chain || null;
+    };
+
+    // 把一段文本 (parseAndExecuteActions / HTML 之外的部分) 渲染成气泡并落库 —— 双语 / 表情 / 引用 / 分段
+    // 与原 inline 末尾逻辑一致。抽出来是为了让"执行功能前的本轮正文 A"能在二轮前先展示, 二轮结果 B 复用同一套。
+    const renderAndPersist = async (rawContent: string, firstThinkingChain: string | null): Promise<void> => {
+        let firstMeta: any = firstThinkingChain ? { thinkingChain: firstThinkingChain } : null;
+        const takeMeta = (base: any): any => {
+            const merged = firstMeta ? { ...(base || {}), ...firstMeta } : base;
+            firstMeta = null;
+            return merged;
+        };
+
+        // 把 [[QUOTE: ...]] / [回复 "..."] 的引用文本解析成"被回复的那条用户消息"。
+        // 开了翻译的外语/粤语角色，引用文本往往是外语、或被 <原文>/<译文> 翻译标签包裹，
+        // 跟库里中文用户消息逐字 includes 匹配会失败 → 之前表现为丢引用 / 空引用气泡。
+        // 这里先剥掉翻译标签再逐字/前缀精确定位；匹配不到就兜底到「最近一条用户文字消息」
+        // （[[QUOTE]] 基本放在回复开头、指代最近一句话，兜底足够稳），杜绝外语角色空引用。
+        const resolveQuoteTarget = (quotedTextRaw: string): { id: number, content: string, name: string } | undefined => {
+            const raw = (quotedTextRaw || '').trim();
+            // 引用文本可能被翻译标签包裹：<原文>(外语) 与 <译文>(本地语) 都可能命中库里的中文用户消息。
+            // 不能直接剥标签——那样会把原文+译文拼成一串(如「你好Hello」)导致 includes 永远匹配不上。
+            // 这里把两边内容各自当候选逐个匹配；没有成对标签时再退化成「剥掉零散标签」的兜底候选。
+            const candidates: string[] = [];
+            // 历史渲染的引用摘要超过 60 字会带截断省略号，剥掉再匹配（不剥则 includes 永远失败）。
+            const pushCand = (s?: string) => { const t = (s || '').trim().replace(/(?:[…⋯]+|\.{3,})$/, '').trim(); if (t && !candidates.includes(t)) candidates.push(t); };
+            pushCand(raw.match(/<原文>([\s\S]*?)<\/原文>/)?.[1]);
+            pushCand(raw.match(/<译文>([\s\S]*?)<\/译文>/)?.[1]);
+            pushCand(raw.replace(/<\/?翻译>|<\/?原文>|<\/?译文>/g, '').replace(/%%BILINGUAL%%/gi, ''));
+            const users = contextMsgs.filter((m: Message) => m.role === 'user' && typeof m.content === 'string' && !!m.content.trim());
+            const reversedUsers = users.slice().reverse();
+            let targetMsg: Message | undefined;
+            for (const q of candidates) {
+                targetMsg = reversedUsers.find((m: Message) => m.content.includes(q))
+                    || (q.length > 10 ? reversedUsers.find((m: Message) => m.content.includes(q.slice(0, 10))) : undefined);
+                if (targetMsg) break;
+            }
+            // 兜底：精确匹配失败但角色明确想引用 → 取最近一条用户文字消息，避免空引用
+            if (!targetMsg) targetMsg = users.filter((m: Message) => m.type === 'text' || !m.type).slice(-1)[0] || users.slice(-1)[0];
+            if (!targetMsg) return undefined;
+            const truncated = targetMsg.content.length > 10 ? targetMsg.content.slice(0, 10) + '...' : targetMsg.content;
+            return { id: targetMsg.id, content: truncated, name: userProfile.name };
+        };
+
+        // Quote/Reply 目标 (双语路径用)
+        let aiReplyTarget: { id: number, content: string, name: string } | undefined;
+        const firstQuoteMatch = rawContent.match(QUOTE_RE_DOUBLE) || rawContent.match(QUOTE_RE_SINGLE) || rawContent.match(REPLY_RE_CN) || rawContent.match(QUOTE_RE_NL);
+        if (firstQuoteMatch) aiReplyTarget = resolveQuoteTarget(firstQuoteMatch[1]);
+
+        let content = ChatParser.sanitize(rawContent, { keepCitations: true });
+        content = content.replace(/\[\[INNER_STATE:\s*[\s\S]*?\]\]/g, '').trim();
+        if (!content) return;
+
+        const hasTranslationTags = /<翻译>\s*<原文>[\s\S]*?<\/原文>\s*<译文>[\s\S]*?<\/译文>\s*<\/翻译>/.test(content);
+        let globalMsgIndex = 0;
+
+        if (hasTranslationTags) {
+            // ─── 双语 ───
+            const bilingualEmojis: string[] = [];
+            let bEm;
+            const bEmojiPat = /\[\[SEND_EMOJI:\s*(.*?)\]\]/g;
+            while ((bEm = bEmojiPat.exec(content)) !== null) {
+                const name = bEm[1].trim();
+                if (!bilingualEmojis.includes(name)) bilingualEmojis.push(name);
+            }
+            content = content.replace(/\[\[SEND_EMOJI:\s*.*?\]\]/g, '').trim();
+            const tagPattern = /<翻译>\s*<原文>([\s\S]*?)<\/原文>\s*<译文>([\s\S]*?)<\/译文>\s*<\/翻译>/g;
+            let lastIndex = 0;
+            let tagMatch;
+
+            while ((tagMatch = tagPattern.exec(content)) !== null) {
+                const textBefore = content.slice(lastIndex, tagMatch.index).trim();
+                if (textBefore) {
+                    const cleaned = ChatParser.sanitize(textBefore);
+                    if (cleaned && ChatParser.hasDisplayContent(cleaned)) {
+                        const chunks = ChatParser.chunkText(cleaned);
+                        for (const chunk of chunks) {
+                            if (!chunk) continue;
+                            const replyData = globalMsgIndex === 0 ? aiReplyTarget : undefined;
+                            await typingPause(Math.min(Math.max(chunk.length * 50, 500), 2000));
+                            await DB.saveMessage({ charId: char.id, role: 'assistant', type: 'text', content: chunk, replyTo: replyData, metadata: takeMeta(mcdInheritMeta) } as any);
+                            setMessages(await DB.getRecentMessagesByCharId(char.id, 200));
+                            globalMsgIndex++;
+                        }
+                    }
+                }
+
+                const originalText = ChatParser.sanitize(tagMatch[1].trim());
+                const translatedText = ChatParser.sanitize(tagMatch[2].trim());
+                if (originalText || translatedText) {
+                    const biContent = originalText && translatedText
+                        ? `${originalText}\n%%BILINGUAL%%\n${translatedText}`
+                        : (originalText || translatedText);
+                    const replyData = globalMsgIndex === 0 ? aiReplyTarget : undefined;
+                    await typingPause(Math.min(Math.max(biContent.length * 30, 400), 2000));
+                    await DB.saveMessage({ charId: char.id, role: 'assistant', type: 'text', content: biContent, replyTo: replyData, metadata: takeMeta(mcdInheritMeta) } as any);
+                    setMessages(await DB.getRecentMessagesByCharId(char.id, 200));
+                    globalMsgIndex++;
+                }
+
+                lastIndex = tagMatch.index + tagMatch[0].length;
+            }
+
+            const textAfter = content.slice(lastIndex).trim();
+            if (textAfter) {
+                const cleaned = ChatParser.sanitize(textAfter.replace(/<\/?翻译>|<\/?原文>|<\/?译文>/g, '').trim());
+                if (cleaned && ChatParser.hasDisplayContent(cleaned)) {
+                    const chunks = ChatParser.chunkText(cleaned);
+                    for (const chunk of chunks) {
+                        if (!chunk) continue;
+                        const replyData = globalMsgIndex === 0 ? aiReplyTarget : undefined;
+                        await typingPause(Math.min(Math.max(chunk.length * 50, 500), 2000));
+                        await DB.saveMessage({ charId: char.id, role: 'assistant', type: 'text', content: chunk, replyTo: replyData, metadata: takeMeta(mcdInheritMeta) } as any);
+                        setMessages(await DB.getRecentMessagesByCharId(char.id, 200));
+                        globalMsgIndex++;
+                    }
+                }
+            }
+
+            for (const emojiName of bilingualEmojis) {
+                const foundEmoji = emojis.find(e => e.name === emojiName);
+                if (foundEmoji) {
+                    await typingPause(Math.random() * 500 + 300);
+                    await DB.saveMessage({ charId: char.id, role: 'assistant', type: 'emoji', content: foundEmoji.url, metadata: takeMeta(mcdInheritMeta) } as any);
+                    setMessages(await DB.getRecentMessagesByCharId(char.id, 200));
+                }
+            }
+        } else {
+            // ─── normal path (splitResponse → chunkText → per-chunk save) ───
+            const parts = ChatParser.splitResponse(content);
+            // 模型常把 [[QUOTE:]] 单独写一行 (后面紧跟换行或 [[SEND_EMOJI:]]), chunkText/splitResponse
+            // 会把它拆成一个"只有标签没有正文"的 chunk — 剥标签后 hasDisplayContent 为 false 不落库,
+            // 解析出的引用目标若不暂存就会随之丢失。挂到下一条真正落库的文字气泡上。
+            let pendingReplyTarget: { id: number, content: string, name: string } | undefined;
+            for (let partIndex = 0; partIndex < parts.length; partIndex++) {
+                const part = parts[partIndex];
+
+                if (part.type === 'emoji') {
+                    const foundEmoji = emojis.find(e => e.name === part.content);
+                    if (foundEmoji) {
+                        await typingPause(Math.random() * 500 + 300);
+                        await DB.saveMessage({ charId: char.id, role: 'assistant', type: 'emoji', content: foundEmoji.url, metadata: takeMeta(mcdInheritMeta) } as any);
+                        setMessages(await DB.getRecentMessagesByCharId(char.id, 200));
+                    }
+                } else {
+                    const rawBlocks = part.content.split(/^\s*---\s*$/m).filter(b => b.trim());
+                    const allChunks: string[] = [];
+                    for (const block of rawBlocks) {
+                        allChunks.push(...ChatParser.chunkText(block.trim()));
+                    }
+                    if (allChunks.length === 0 && part.content.trim()) allChunks.push(part.content.trim());
+
+                    for (let i = 0; i < allChunks.length; i++) {
+                        let chunk = allChunks[i];
+                        const delay = Math.min(Math.max(chunk.length * 50, 500), 2000);
+                        await typingPause(delay);
+
+                        let chunkReplyTarget: { id: number, content: string, name: string } | undefined;
+                        const chunkQuoteMatch = chunk.match(QUOTE_RE_DOUBLE) || chunk.match(QUOTE_RE_SINGLE) || chunk.match(REPLY_RE_CN) || chunk.match(QUOTE_RE_NL);
+                        if (chunkQuoteMatch) {
+                            chunkReplyTarget = resolveQuoteTarget(chunkQuoteMatch[1]);
+                            chunk = chunk.replace(QUOTE_CLEAN_DOUBLE, '').replace(QUOTE_CLEAN_SINGLE, '').replace(REPLY_CLEAN_CN, '').replace(QUOTE_CLEAN_NL, '').trim();
+                        }
+
+                        const replyData = chunkReplyTarget ?? pendingReplyTarget;
+
+                        let chunkSaved = false;
+                        if (ChatParser.hasDisplayContent(chunk)) {
+                            const cleanChunk = ChatParser.sanitize(chunk);
+                            if (cleanChunk) {
+                                await DB.saveMessage({ charId: char.id, role: 'assistant', type: 'text', content: cleanChunk, replyTo: replyData, metadata: takeMeta(mcdInheritMeta) } as any);
+                                setMessages(await DB.getRecentMessagesByCharId(char.id, 200));
+                                globalMsgIndex++;
+                                chunkSaved = true;
+                            }
+                        }
+                        pendingReplyTarget = chunkSaved ? undefined : replyData;
+                    }
+                }
+            }
+        }
+    };
+
+    // 「执行功能前的本轮正文 A」: 在二轮重生开始前先把 A 渲染成气泡, 这样用户看到的顺序是
+    // A 气泡 → "正在搜索/调阅…" 状态 → 二轮结果 B 气泡 (而不是等 B 回来才一起冒出来)。
+    // XHS_*/READ_NOTE 标签 sanitize 不剥, 这里先剥掉; 其余 RECALL/SEARCH/DIARY... 由 renderAndPersist
+    // 内 sanitize 统一清。A 的思考链取一轮 reasoning。
+    const round1ThinkingChain = extractThinkingChain(initialData, pushReasoningContent);
+    let leadInRendered = false;
+    const renderLeadIn = async (raw: string): Promise<void> => {
+        if (leadInRendered) return;
+        leadInRendered = true;
+        await renderAndPersist(
+            raw.replace(/\[\[READ_NOTE:[\s\S]*?\]\]/g, '').replace(/\[\[XHS_[A-Z_]+(?::[\s\S]*?)?\]\]/g, ''),
+            round1ThinkingChain,
+        );
+    };
+
     // ─── Step 2: 二轮 LLM 钩子 ───
+
+    // 本轮回复里只要含"会触发二轮重生"的指令 (RECALL / SEARCH / READ_DIARY / FS_READ_DIARY /
+    // READ_NOTE / XHS_SEARCH|BROWSE|MY_PROFILE|DETAIL), 就先把指令之外的本轮正文 A 落库展示。
+    // 纯副作用 (XHS_SHARE/COMMENT/LIKE/FAV/POST、写日记) 不重生、不需要先展示, 故不在此列。
+    // 之后各分支正常跑功能 + 二轮; 末尾再展示 B。若分支因未配置等原因没真正发起二轮 (data 不变),
+    // 末尾会跳过重复渲染 (见下方收尾)。
+    if (!skipSecondPassLLM) {
+        const willRegenerate =
+            /\[\[RECALL:\s*\d{4}[-/年]\d{1,2}\]\]/.test(aiContent)
+            || /\[\[SEARCH:\s*.+?\]\]/.test(aiContent)
+            || /\[\[READ_DIARY:\s*.+?\]\]/.test(aiContent)
+            || /\[\[FS_READ_DIARY:\s*.+?\]\]/.test(aiContent)
+            || /\[\[READ_NOTE:\s*.+?\]\]/.test(aiContent)
+            || /\[\[XHS_SEARCH:\s*.+?\]\]/.test(aiContent)
+            || /\[\[XHS_BROWSE(?::\s*.+?)?\]\]/.test(aiContent)
+            || /\[\[XHS_MY_PROFILE\]\]/.test(aiContent)
+            || /\[\[XHS_DETAIL:\s*.+?\]\]/.test(aiContent);
+        if (willRegenerate) await renderLeadIn(aiContent);
+    }
 
     // 5. Handle Recall (Loop if needed)
     const recallMatch = aiContent.match(/\[\[RECALL:\s*(\d{4})[-/年](\d{1,2})\]\]/);
     if (!skipSecondPassLLM && recallMatch) {
         const year = recallMatch[1];
         const month = recallMatch[2];
+        // 模型常把 [[RECALL]] 指令和本轮正文 A 写在同一条回复里 (A 已在 Step 2 开头先行展示)。把 A
+        // 作为 assistant 上文喂给二轮, 让二轮结果 B 接着 A 往下说, 更连贯。
+        const recallLeadIn = aiContent.replace(/\[\[RECALL:\s*\d{4}[-/年]\d{1,2}\]\]/g, '').trim();
         const rr = await runRecall({ year, month }, agenticCtx);
 
         if (rr.ok && rr.alreadyActive) {
@@ -423,12 +693,12 @@ export async function applyAssistantPostProcessing(
             aiContent = aiContent.replace(/\[\[RECALL:\s*\d{4}[-/年]\d{1,2}\]\]/g, '').trim();
         } else if (rr.ok && rr.logsText) {
             setRecallStatus(`正在调阅 ${year}年${month}月 的详细档案...`);
-            const recallMessages = [...fullMessages, { role: 'user', content: `[系统: 已成功调取 ${year}-${month} 的详细日志]\n${rr.logsText}\n[系统: 现在请结合这些细节回答用户。保持对话自然。]` }];
+            const recallMessages = [...fullMessages, ...(recallLeadIn ? [{ role: 'assistant', content: recallLeadIn }] : []), { role: 'user', content: `[系统: 已成功调取 ${year}-${month} 的详细日志]\n${rr.logsText}\n[系统: 现在请结合这些细节回答用户。保持对话自然。]` }];
             try {
                 data = await safeFetchJson(`${baseUrl}/chat/completions`, {
                     method: 'POST', headers,
                     body: JSON.stringify({ model: effectiveApi.model, messages: recallMessages, temperature: 0.8, max_tokens: 8000, stream: false })
-                });
+                }, 2, 0, { ...apiLogMeta, purpose: '调阅记忆' });
                 updateTokenUsage(data, historyMsgCount, 'recall');
                 aiContent = data.choices?.[0]?.message?.content || '';
                 aiContent = normalizeAiContent(aiContent);
@@ -467,7 +737,7 @@ export async function applyAssistantPostProcessing(
                 data = await safeFetchJson(`${baseUrl}/chat/completions`, {
                     method: 'POST', headers,
                     body: JSON.stringify({ model: effectiveApi.model, messages: searchMessages, temperature: 0.8, max_tokens: 8000, stream: false })
-                });
+                }, 2, 0, { ...apiLogMeta, purpose: '联网搜索' });
                 updateTokenUsage(data, historyMsgCount, 'search');
                 aiContent = data.choices?.[0]?.message?.content || '';
                 console.log('🔍 [Search] AI基于搜索结果生成的新回复:', aiContent.slice(0, 100) + '...');
@@ -594,7 +864,7 @@ export async function applyAssistantPostProcessing(
             data = await safeFetchJson(`${baseUrl}/chat/completions`, {
                 method: 'POST', headers,
                 body: JSON.stringify({ model: effectiveApi.model, messages: msgs, temperature: 0.8, max_tokens: 8000, stream: false })
-            });
+            }, 2, 0, { ...apiLogMeta, purpose: '写日记' });
             updateTokenUsage(data, historyMsgCount, 'diary-fallback');
             aiContent = data.choices?.[0]?.message?.content || '';
             aiContent = normalizeAiContent(aiContent);
@@ -647,7 +917,7 @@ export async function applyAssistantPostProcessing(
                         data = await safeFetchJson(`${baseUrl}/chat/completions`, {
                             method: 'POST', headers,
                             body: JSON.stringify({ model: effectiveApi.model, messages: diaryMessages, temperature: 0.8, max_tokens: 8000, stream: false })
-                        });
+                        }, 2, 0, { ...apiLogMeta, purpose: '翻阅日记' });
                         updateTokenUsage(data, historyMsgCount, 'read-diary-notion');
                         aiContent = data.choices?.[0]?.message?.content || '';
                         aiContent = normalizeAiContent(aiContent);
@@ -669,7 +939,7 @@ export async function applyAssistantPostProcessing(
                         data = await safeFetchJson(`${baseUrl}/chat/completions`, {
                             method: 'POST', headers,
                             body: JSON.stringify({ model: effectiveApi.model, messages: nodiaryMessages, temperature: 0.8, max_tokens: 8000, stream: false })
-                        });
+                        }, 2, 0, { ...apiLogMeta, purpose: '翻阅日记' });
                         updateTokenUsage(data, historyMsgCount, 'no-diary-notion');
                         aiContent = data.choices?.[0]?.message?.content || '';
                         aiContent = normalizeAiContent(aiContent);
@@ -804,7 +1074,7 @@ export async function applyAssistantPostProcessing(
                         data = await safeFetchJson(`${baseUrl}/chat/completions`, {
                             method: 'POST', headers,
                             body: JSON.stringify({ model: effectiveApi.model, messages: diaryMessages, temperature: 0.8, max_tokens: 8000, stream: false })
-                        });
+                        }, 2, 0, { ...apiLogMeta, purpose: '翻阅日记' });
                         updateTokenUsage(data, historyMsgCount, 'read-diary-feishu');
                         aiContent = data.choices?.[0]?.message?.content || '';
                         aiContent = normalizeAiContent(aiContent);
@@ -825,7 +1095,7 @@ export async function applyAssistantPostProcessing(
                         data = await safeFetchJson(`${baseUrl}/chat/completions`, {
                             method: 'POST', headers,
                             body: JSON.stringify({ model: effectiveApi.model, messages: nodiaryMessages, temperature: 0.8, max_tokens: 8000, stream: false })
-                        });
+                        }, 2, 0, { ...apiLogMeta, purpose: '翻阅日记' });
                         updateTokenUsage(data, historyMsgCount, 'no-diary-feishu');
                         aiContent = data.choices?.[0]?.message?.content || '';
                         aiContent = normalizeAiContent(aiContent);
@@ -875,7 +1145,7 @@ export async function applyAssistantPostProcessing(
                     data = await safeFetchJson(`${baseUrl}/chat/completions`, {
                         method: 'POST', headers,
                         body: JSON.stringify({ model: effectiveApi.model, messages: noteMessages, temperature: 0.8, max_tokens: 8000, stream: false })
-                    });
+                    }, 2, 0, { ...apiLogMeta, purpose: '翻阅笔记' });
                     updateTokenUsage(data, historyMsgCount, 'read-note');
                     aiContent = data.choices?.[0]?.message?.content || '';
                     aiContent = normalizeAiContent(aiContent);
@@ -897,7 +1167,7 @@ export async function applyAssistantPostProcessing(
                     data = await safeFetchJson(`${baseUrl}/chat/completions`, {
                         method: 'POST', headers,
                         body: JSON.stringify({ model: effectiveApi.model, messages: nonoteMessages, temperature: 0.8, max_tokens: 8000, stream: false })
-                    });
+                    }, 2, 0, { ...apiLogMeta, purpose: '翻阅笔记' });
                     updateTokenUsage(data, historyMsgCount, 'read-note-empty');
                     aiContent = data.choices?.[0]?.message?.content || '';
                     aiContent = normalizeAiContent(aiContent);
@@ -939,7 +1209,7 @@ export async function applyAssistantPostProcessing(
                 data = await safeFetchJson(`${baseUrl}/chat/completions`, {
                     method: 'POST', headers,
                     body: JSON.stringify({ model: effectiveApi.model, messages: xhsMessages, temperature: 0.8, max_tokens: 8000, stream: false })
-                });
+                }, 2, 0, { ...apiLogMeta, purpose: '小红书搜索' });
                 updateTokenUsage(data, historyMsgCount, 'xhs-search');
                 aiContent = data.choices?.[0]?.message?.content || '';
                 aiContent = normalizeAiContent(aiContent);
@@ -985,7 +1255,7 @@ export async function applyAssistantPostProcessing(
                 data = await safeFetchJson(`${baseUrl}/chat/completions`, {
                     method: 'POST', headers,
                     body: JSON.stringify({ model: effectiveApi.model, messages: xhsMessages, temperature: 0.8, max_tokens: 8000, stream: false })
-                });
+                }, 2, 0, { ...apiLogMeta, purpose: '小红书浏览' });
                 updateTokenUsage(data, historyMsgCount, 'xhs-browse');
                 aiContent = data.choices?.[0]?.message?.content || '';
                 aiContent = normalizeAiContent(aiContent);
@@ -1227,7 +1497,7 @@ export async function applyAssistantPostProcessing(
                 data = await safeFetchJson(`${baseUrl}/chat/completions`, {
                     method: 'POST', headers,
                     body: JSON.stringify({ model: effectiveApi.model, messages: xhsMessages, temperature: 0.8, max_tokens: 8000, stream: false })
-                });
+                }, 2, 0, { ...apiLogMeta, purpose: '小红书主页' });
                 updateTokenUsage(data, historyMsgCount, 'xhs-profile');
                 aiContent = data.choices?.[0]?.message?.content || '';
                 aiContent = normalizeAiContent(aiContent);
@@ -1245,7 +1515,7 @@ export async function applyAssistantPostProcessing(
                 data = await safeFetchJson(`${baseUrl}/chat/completions`, {
                     method: 'POST', headers,
                     body: JSON.stringify({ model: effectiveApi.model, messages: xhsMessages, temperature: 0.8, max_tokens: 8000, stream: false })
-                });
+                }, 2, 0, { ...apiLogMeta, purpose: '小红书主页' });
                 updateTokenUsage(data, historyMsgCount, 'xhs-profile');
                 aiContent = data.choices?.[0]?.message?.content || '';
                 aiContent = normalizeAiContent(aiContent);
@@ -1291,7 +1561,7 @@ export async function applyAssistantPostProcessing(
             data = await safeFetchJson(`${baseUrl}/chat/completions`, {
                 method: 'POST', headers,
                 body: JSON.stringify({ model: effectiveApi.model, messages: xhsMessages, temperature: 0.8, max_tokens: 8000, stream: false })
-            });
+            }, 2, 0, { ...apiLogMeta, purpose: '小红书详情' });
             updateTokenUsage(data, historyMsgCount, 'xhs-detail');
             aiContent = data.choices?.[0]?.message?.content || '';
             aiContent = normalizeAiContent(aiContent);
@@ -1473,31 +1743,10 @@ export async function applyAssistantPostProcessing(
     // ─── Step 3: ChatParser.parseAndExecuteActions ───
     aiContent = await ChatParser.parseAndExecuteActions(aiContent, char.id, char.name, addToast, musicHooks);
 
-    // ─── Step 4: thinking chain 抽取 ───
-    // push 路径 (ctx.reasoningContent 非空) 优先用 worker 写到 reasoning_buffer 的内容;
-    // 本地 fetch 路径走 data.choices[0].message.reasoning_content (initialData 或 2nd-pass result).
-    let pendingThinkingChain: string | null = null;
-    if ((char as any).showThinkingChain) {
-        const lastRaw = data?.choices?.[0]?.message?.content || '';
-        const lastReasoning = (
-            (pushReasoningContent && pushReasoningContent.trim())
-            || data?.choices?.[0]?.message?.reasoning_content
-            || ''
-        ).trim();
-        const thinkBlocks: string[] = [];
-        const thinkPat = /<(think|thinking|thought)>([\s\S]*?)<\/\1>/gi;
-        let tm: RegExpExecArray | null;
-        while ((tm = thinkPat.exec(lastRaw)) !== null) {
-            const t = tm[2].trim();
-            if (t) thinkBlocks.push(t);
-        }
-        if (!/<\/(?:think|thinking|thought)>/i.test(lastRaw)) {
-            const openOnly = lastRaw.match(/<(?:think|thinking|thought)>([\s\S]*$)/i);
-            if (openOnly && openOnly[1].trim()) thinkBlocks.push(openOnly[1].trim());
-        }
-        const chain = [lastReasoning, ...thinkBlocks].filter(s => !!s).join('\n\n').trim();
-        if (chain) pendingThinkingChain = chain;
-    }
+    // ─── Step 4: thinking chain 抽取 (本轮末尾展示用) ───
+    // 跑过二轮 (data !== initialData) → 取二轮 data 的 reasoning; 没跑二轮 → 取一轮 (round1ThinkingChain,
+    // 已含 push 路径 reasoning)。一轮正文 A 的思考链在 Step 2 开头展示时已单独带上。
+    let pendingThinkingChain: string | null = data !== initialData ? extractThinkingChain(data) : round1ThinkingChain;
     const mergeAssistantMeta = (base: any): any => {
         if (!pendingThinkingChain) return base;
         const merged = { ...(base || {}), thinkingChain: pendingThinkingChain };
@@ -1530,168 +1779,23 @@ export async function applyAssistantPostProcessing(
         aiContent = cleanedContent;
     }
 
-    // ─── Step 7 (前置 Quote): Handle Quote/Reply Logic ───
-    const QUOTE_RE_DOUBLE = /\[\[(?:QU[OA]TE|引用)[：:]\s*([\s\S]*?)\]\]/;
-    const QUOTE_RE_SINGLE = /\[(?:QU[OA]TE|引用)[：:]\s*([^\]]*)\]/;
-    const REPLY_RE_CN = /\[回复\s*[""“]([^""”]*?)[""”](?:\.{0,3})\]\s*[：:]?\s*/;
-    const QUOTE_CLEAN_DOUBLE = /\[\[(?:QU[OA]TE|引用)[：:][\s\S]*?\]\]/g;
-    const QUOTE_CLEAN_SINGLE = /\[(?:QU[OA]TE|引用)[：:][^\]]*\]/g;
-    const REPLY_CLEAN_CN = /\[回复\s*[""“][^""”]*?[""”](?:\.{0,3})\]\s*[：:]?\s*/g;
-    let aiReplyTarget: { id: number, content: string, name: string } | undefined;
-    const firstQuoteMatch = aiContent.match(QUOTE_RE_DOUBLE) || aiContent.match(QUOTE_RE_SINGLE) || aiContent.match(REPLY_RE_CN);
-    if (firstQuoteMatch) {
-        const quotedText = firstQuoteMatch[1].trim();
-        if (quotedText) {
-            const targetMsg = contextMsgs.slice().reverse().find((m: Message) => m.role === 'user' && m.content.includes(quotedText))
-                || (quotedText.length > 10 ? contextMsgs.slice().reverse().find((m: Message) => m.role === 'user' && m.content.includes(quotedText.slice(0, 10))) : undefined);
-            if (targetMsg) {
-                const truncated = targetMsg.content.length > 10 ? targetMsg.content.slice(0, 10) + '...' : targetMsg.content;
-                aiReplyTarget = { id: targetMsg.id, content: truncated, name: userProfile.name };
-            }
-        }
-    }
-
-    // ─── Step 6: sanitize + Step 7: INNER_STATE 兜底 ───
-    aiContent = ChatParser.sanitize(aiContent, { keepCitations: true });
-    aiContent = aiContent.replace(/\[\[INNER_STATE:\s*[\s\S]*?\]\]/g, '').trim();
-
-    // 空内容兜底
-    if (!aiContent.trim() && (searchMatch || readDiaryMatch || fsReadDiaryMatch)) {
-        aiContent = '嗯...';
-    }
-
-    if (aiContent) {
-        const hasTranslationTags = /<翻译>\s*<原文>[\s\S]*?<\/原文>\s*<译文>[\s\S]*?<\/译文>\s*<\/翻译>/.test(aiContent);
-
-        let globalMsgIndex = 0;
-
-        if (hasTranslationTags) {
-            // ─── Step 8: 双语 ───
-            const bilingualEmojis: string[] = [];
-            let bEm;
-            const bEmojiPat = /\[\[SEND_EMOJI:\s*(.*?)\]\]/g;
-            while ((bEm = bEmojiPat.exec(aiContent)) !== null) {
-                const name = bEm[1].trim();
-                if (!bilingualEmojis.includes(name)) bilingualEmojis.push(name);
-            }
-            aiContent = aiContent.replace(/\[\[SEND_EMOJI:\s*.*?\]\]/g, '').trim();
-            const tagPattern = /<翻译>\s*<原文>([\s\S]*?)<\/原文>\s*<译文>([\s\S]*?)<\/译文>\s*<\/翻译>/g;
-            let lastIndex = 0;
-            let tagMatch;
-
-            while ((tagMatch = tagPattern.exec(aiContent)) !== null) {
-                const textBefore = aiContent.slice(lastIndex, tagMatch.index).trim();
-                if (textBefore) {
-                    const cleaned = ChatParser.sanitize(textBefore);
-                    if (cleaned && ChatParser.hasDisplayContent(cleaned)) {
-                        const chunks = ChatParser.chunkText(cleaned);
-                        for (const chunk of chunks) {
-                            if (!chunk) continue;
-                            const replyData = globalMsgIndex === 0 ? aiReplyTarget : undefined;
-                            await new Promise(r => setTimeout(r, Math.min(Math.max(chunk.length * 50, 500), 2000)));
-                            await DB.saveMessage({ charId: char.id, role: 'assistant', type: 'text', content: chunk, replyTo: replyData, metadata: mergeAssistantMeta(mcdInheritMeta) } as any);
-                            setMessages(await DB.getRecentMessagesByCharId(char.id, 200));
-                            globalMsgIndex++;
-                        }
-                    }
-                }
-
-                const originalText = ChatParser.sanitize(tagMatch[1].trim());
-                const translatedText = ChatParser.sanitize(tagMatch[2].trim());
-                if (originalText || translatedText) {
-                    const biContent = originalText && translatedText
-                        ? `${originalText}\n%%BILINGUAL%%\n${translatedText}`
-                        : (originalText || translatedText);
-                    const replyData = globalMsgIndex === 0 ? aiReplyTarget : undefined;
-                    await new Promise(r => setTimeout(r, Math.min(Math.max(biContent.length * 30, 400), 2000)));
-                    await DB.saveMessage({ charId: char.id, role: 'assistant', type: 'text', content: biContent, replyTo: replyData, metadata: mergeAssistantMeta(mcdInheritMeta) } as any);
-                    setMessages(await DB.getRecentMessagesByCharId(char.id, 200));
-                    globalMsgIndex++;
-                }
-
-                lastIndex = tagMatch.index + tagMatch[0].length;
-            }
-
-            const textAfter = aiContent.slice(lastIndex).trim();
-            if (textAfter) {
-                const cleaned = ChatParser.sanitize(textAfter.replace(/<\/?翻译>|<\/?原文>|<\/?译文>/g, '').trim());
-                if (cleaned && ChatParser.hasDisplayContent(cleaned)) {
-                    const chunks = ChatParser.chunkText(cleaned);
-                    for (const chunk of chunks) {
-                        if (!chunk) continue;
-                        const replyData = globalMsgIndex === 0 ? aiReplyTarget : undefined;
-                        await new Promise(r => setTimeout(r, Math.min(Math.max(chunk.length * 50, 500), 2000)));
-                        await DB.saveMessage({ charId: char.id, role: 'assistant', type: 'text', content: chunk, replyTo: replyData, metadata: mergeAssistantMeta(mcdInheritMeta) } as any);
-                        setMessages(await DB.getRecentMessagesByCharId(char.id, 200));
-                        globalMsgIndex++;
-                    }
-                }
-            }
-
-            for (const emojiName of bilingualEmojis) {
-                const foundEmoji = emojis.find(e => e.name === emojiName);
-                if (foundEmoji) {
-                    await new Promise(r => setTimeout(r, Math.random() * 500 + 300));
-                    await DB.saveMessage({ charId: char.id, role: 'assistant', type: 'emoji', content: foundEmoji.url, metadata: mergeAssistantMeta(mcdInheritMeta) } as any);
-                    setMessages(await DB.getRecentMessagesByCharId(char.id, 200));
-                }
-            }
-        } else {
-            // ─── Step 9-13: normal path (splitResponse → chunkText → per-chunk save) ───
-            const parts = ChatParser.splitResponse(aiContent);
-            for (let partIndex = 0; partIndex < parts.length; partIndex++) {
-                const part = parts[partIndex];
-
-                if (part.type === 'emoji') {
-                    const foundEmoji = emojis.find(e => e.name === part.content);
-                    if (foundEmoji) {
-                        await new Promise(r => setTimeout(r, Math.random() * 500 + 300));
-                        await DB.saveMessage({ charId: char.id, role: 'assistant', type: 'emoji', content: foundEmoji.url, metadata: mergeAssistantMeta(mcdInheritMeta) } as any);
-                        setMessages(await DB.getRecentMessagesByCharId(char.id, 200));
-                    }
-                } else {
-                    const rawBlocks = part.content.split(/^\s*---\s*$/m).filter(b => b.trim());
-                    const allChunks: string[] = [];
-                    for (const block of rawBlocks) {
-                        allChunks.push(...ChatParser.chunkText(block.trim()));
-                    }
-                    if (allChunks.length === 0 && part.content.trim()) allChunks.push(part.content.trim());
-
-                    for (let i = 0; i < allChunks.length; i++) {
-                        let chunk = allChunks[i];
-                        const delay = Math.min(Math.max(chunk.length * 50, 500), 2000);
-                        await new Promise(r => setTimeout(r, delay));
-
-                        let chunkReplyTarget: { id: number, content: string, name: string } | undefined;
-                        const chunkQuoteMatch = chunk.match(QUOTE_RE_DOUBLE) || chunk.match(QUOTE_RE_SINGLE) || chunk.match(REPLY_RE_CN);
-                        if (chunkQuoteMatch) {
-                            const quotedText = chunkQuoteMatch[1].trim();
-                            if (quotedText) {
-                                const targetMsg = contextMsgs.slice().reverse().find((m: Message) => m.role === 'user' && m.content.includes(quotedText))
-                                    || (quotedText.length > 10 ? contextMsgs.slice().reverse().find((m: Message) => m.role === 'user' && m.content.includes(quotedText.slice(0, 10))) : undefined);
-                                if (targetMsg) {
-                                    const truncated = targetMsg.content.length > 10 ? targetMsg.content.slice(0, 10) + '...' : targetMsg.content;
-                                    chunkReplyTarget = { id: targetMsg.id, content: truncated, name: userProfile.name };
-                                }
-                            }
-                            chunk = chunk.replace(QUOTE_CLEAN_DOUBLE, '').replace(QUOTE_CLEAN_SINGLE, '').replace(REPLY_CLEAN_CN, '').trim();
-                        }
-
-                        const replyData = chunkReplyTarget;
-
-                        if (ChatParser.hasDisplayContent(chunk)) {
-                            const cleanChunk = ChatParser.sanitize(chunk);
-                            if (cleanChunk) {
-                                await DB.saveMessage({ charId: char.id, role: 'assistant', type: 'text', content: cleanChunk, replyTo: replyData, metadata: mergeAssistantMeta(mcdInheritMeta) } as any);
-                                setMessages(await DB.getRecentMessagesByCharId(char.id, 200));
-                                globalMsgIndex++;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    } else {
+    // ─── Step 6: 展示本轮回复 (二轮结果 B / 无二轮时的单轮回复) ───
+    // - 跑过二轮 (data !== initialData): aiContent 现在是 B; 一轮正文 A 已在 Step 2 开头先行展示, 这里只展示 B。
+    // - 有重生指令但没真正发起二轮 (data 不变: 未配置/无结果/无日志/已激活/二轮异常 等): A 已展示, 跳过避免重复。
+    // - 没有重生 (普通回复 / instant push): leadInRendered 必为 false, 正常展示本轮唯一回复。
+    if (leadInRendered && data === initialData) {
         setMessages(await DB.getRecentMessagesByCharId(char.id, 200));
+    } else {
+        const sanitizedBody = ChatParser.sanitize(aiContent, { keepCitations: true })
+            .replace(/\[\[INNER_STATE:\s*[\s\S]*?\]\]/g, '')
+            .trim();
+        if (sanitizedBody) {
+            await renderAndPersist(aiContent, pendingThinkingChain);
+        } else if (!leadInRendered && (data !== initialData || recallMatch || searchMatch || readDiaryMatch || fsReadDiaryMatch)) {
+            // 跑过二轮却吐空, 且本轮还没展示过任何内容 → 至少补一句, 避免整轮静默。
+            await renderAndPersist('嗯...', pendingThinkingChain);
+        } else {
+            setMessages(await DB.getRecentMessagesByCharId(char.id, 200));
+        }
     }
 }

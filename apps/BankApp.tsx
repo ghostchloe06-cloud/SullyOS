@@ -30,7 +30,7 @@ const INITIAL_STATE: BankFullState = {
             {
                 id: 'staff-001',
                 name: '系统',
-                avatar: 'https://sharkpan.xyz/f/gXayCw/XT.png',
+                avatar: 'https://cdn.jsdelivr.net/gh/qegj567-cloud/SullyOS-assets@main/bgm/SULLY/XT.png',
                 role: 'manager',
                 fatigue: 0,
                 maxFatigue: 100,
@@ -741,7 +741,7 @@ ${previousGuestbook}
         <div className="h-full w-full flex flex-col font-sans relative overflow-hidden" style={{ background: 'linear-gradient(180deg, #FDF6E3 0%, #FFF8E1 100%)' }}>
 
             {/* Premium Header */}
-            <div className="pt-[calc(env(safe-area-inset-top)+1.5rem)] pb-3 px-4 sticky top-0 z-[50] shrink-0"
+            <div className="pt-[calc(var(--safe-top)+1.5rem)] pb-3 px-4 sticky top-0 z-[50] shrink-0"
                  style={{ background: 'linear-gradient(180deg, rgba(141, 110, 99, 0.95) 0%, rgba(109, 76, 65, 0.95) 100%)', backdropFilter: 'blur(10px)' }}>
                 <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
@@ -871,7 +871,7 @@ ${previousGuestbook}
             {showGuestbook && (
                 <div className="absolute inset-0 z-[100] flex flex-col animate-slide-up" style={{ background: 'linear-gradient(180deg, #FDF6E3 0%, #FFF8E1 100%)' }}>
                     {/* Header */}
-                    <div className="pt-[calc(env(safe-area-inset-top)+0.75rem)] pb-3 px-4 shrink-0"
+                    <div className="pt-[calc(var(--safe-top)+0.75rem)] pb-3 px-4 shrink-0"
                          style={{ background: 'linear-gradient(180deg, rgba(141, 110, 99, 0.95) 0%, rgba(109, 76, 65, 0.95) 100%)', backdropFilter: 'blur(10px)' }}>
                         <div className="flex items-center justify-between">
                             <div className="flex items-center gap-3">

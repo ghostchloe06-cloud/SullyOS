@@ -8,9 +8,11 @@ import { openDB } from '../db';
 import type {
     MemoryNode, MemoryVector, MemoryLink, MemoryBatch,
     TopicBox, Anticipation, MemoryRoom, BoxStatus, AnticipationStatus,
-    EventBox,
+    EventBox, RoomPlate, PlateRoom, DigestReport,
 } from './types';
+import { DIGEST_REPORT_KEEP } from './types';
 import { bm25Index } from './bm25Index';
+import type { VectorIndexEntry as VectorBackupIndexEntry } from '../backupFormat';
 
 // ─── Store 名称常量 ────────────────────────────────────
 
@@ -21,6 +23,8 @@ const STORE_MEMORY_BATCHES = 'memory_batches';
 const STORE_TOPIC_BOXES    = 'topic_boxes';
 const STORE_ANTICIPATIONS  = 'anticipations';
 const STORE_EVENT_BOXES    = 'event_boxes';
+const STORE_ROOM_PLATES    = 'room_plates';
+const STORE_DIGEST_REPORTS = 'digest_reports';
 
 // ─── 通用辅助 ──────────────────────────────────────────
 
@@ -202,6 +206,39 @@ export function ensureFloat32(vec: number[] | Float32Array | Uint8Array): Float3
     }
     // 旧 number[] 路径
     return new Float32Array(vec);
+}
+
+/**
+ * 把 memory_vectors 的原始记录归一化成「Float32 原始字节拼成的一根 bin + 索引」，供 v2 备份的
+ * 向量二进制旁路使用（见 utils/backupFormat.ts）。vector 可能是 Uint8Array（已迁移）/ Float32Array /
+ * 遗留 number[]，必须先过 ensureFloat32 统一——遗留 number[] 不归一化直接当字节读会写出无效数据（R4·F4）。
+ * dimensions 用实际 f32 长度，钉死 byteLength === dimensions*4 不变量（导入端据此校验）。
+ */
+export function encodeVectorsForBackup(
+    rawVectors: Array<{ memoryId?: string; charId?: string; dimensions?: number; model?: string; vector?: unknown }>,
+): { bin: Uint8Array; index: VectorBackupIndexEntry[] } {
+    const index: VectorBackupIndexEntry[] = [];
+    const parts: Uint8Array[] = [];
+    let offset = 0;
+    for (const v of rawVectors) {
+        if (!v || !v.vector || !v.memoryId) continue;
+        const f32 = ensureFloat32(v.vector as number[] | Float32Array | Uint8Array);
+        const bytes = new Uint8Array(f32.buffer, f32.byteOffset, f32.byteLength);
+        parts.push(bytes);
+        index.push({
+            memoryId: v.memoryId,
+            charId: (v.charId ?? '') as string,
+            dimensions: f32.length,
+            model: v.model,
+            byteOffset: offset,
+            byteLength: bytes.byteLength,
+        });
+        offset += bytes.byteLength;
+    }
+    const bin = new Uint8Array(offset);
+    let p = 0;
+    for (const part of parts) { bin.set(part, p); p += part.byteLength; }
+    return { bin, index };
 }
 
 /** 编码为 IndexedDB 存储形态（Uint8Array of Float32 raw bytes） */
@@ -522,6 +559,53 @@ export const EventBoxDB = {
             tx.onerror = () => reject(tx.error);
         });
     },
+};
+
+// ─── RoomPlate CRUD（房间门牌） ───────────────────────
+
+/** 门牌主键：一角色一房间一块 */
+export function plateId(charId: string, room: PlateRoom): string {
+    return `${charId}:${room}`;
+}
+
+export const RoomPlateDB = {
+    save: (plate: RoomPlate) => put<RoomPlate>(STORE_ROOM_PLATES, plate),
+
+    get: (charId: string, room: PlateRoom) =>
+        getByKey<RoomPlate>(STORE_ROOM_PLATES, plateId(charId, room)),
+
+    getByCharId: (charId: string) =>
+        getAllByIndex<RoomPlate>(STORE_ROOM_PLATES, 'charId', charId),
+
+    delete: (charId: string, room: PlateRoom) =>
+        deleteByKey(STORE_ROOM_PLATES, plateId(charId, room)),
+};
+
+// ─── DigestReport CRUD（消化日志） ────────────────────
+
+export const DigestReportDB = {
+    /** 保存并修剪：每角色只留最近 DIGEST_REPORT_KEEP 条 */
+    save: async (report: DigestReport): Promise<void> => {
+        await put<DigestReport>(STORE_DIGEST_REPORTS, report);
+        try {
+            const all = await getAllByIndex<DigestReport>(STORE_DIGEST_REPORTS, 'charId', report.charId);
+            if (all.length > DIGEST_REPORT_KEEP) {
+                const overflow = all
+                    .sort((a, b) => b.createdAt - a.createdAt)
+                    .slice(DIGEST_REPORT_KEEP);
+                for (const old of overflow) {
+                    await deleteByKey(STORE_DIGEST_REPORTS, old.id);
+                }
+            }
+        } catch { /* 修剪失败不影响本条保存 */ }
+    },
+
+    /** 按时间倒序（最新在前） */
+    getByCharId: (charId: string): Promise<DigestReport[]> =>
+        getAllByIndex<DigestReport>(STORE_DIGEST_REPORTS, 'charId', charId)
+            .then(list => list.sort((a, b) => b.createdAt - a.createdAt)),
+
+    delete: (id: string) => deleteByKey(STORE_DIGEST_REPORTS, id),
 };
 
 // ─── Anticipation CRUD ────────────────────────────────

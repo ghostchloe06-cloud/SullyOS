@@ -151,7 +151,8 @@ ${buildGroupRulesBlock(groupName, memberNames, userLabel)}
                     max_tokens: 12000,
                     stream: false,
                 }),
-            }
+            },
+            2, 180_000, { appName: '记忆宫殿', purpose: '群记忆提取' }
         );
 
         const reply = data.choices?.[0]?.message?.content || '';

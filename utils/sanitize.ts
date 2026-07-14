@@ -62,12 +62,15 @@ const stripBusinessTagsForNotification = (t: string): string =>
     .replace(/\[\[(?:READ_NOTE|XHS_[A-Z_]+)[:\s][\s\S]*?\]\]/g, '')
     .replace(/\[\[XHS_[A-Z_]+\]\]/g, '');
 
-/** 引用类: `[[QUOTE|引用]] / [QUOTE|引用] / [回复 "..."]` */
+/** 引用类: `[[QUOTE|引用]] / [QUOTE|引用] / [回复 "..."] / 模仿历史渲染的 [xx引用了xx「…」…]` */
 const stripQuotes = (t: string): string =>
   t
     .replace(/\[\[(?:QU[OA]TE|引用)[：:][\s\S]*?\]\]/g, '')
     .replace(/\[(?:QU[OA]TE|引用)[：:][^\]]*\]/g, '')
-    .replace(/\[回复\s*[""“][^""”]*?[""”](?:\.{0,3})\]\s*[：:]?\s*/g, '');
+    .replace(/\[回复\s*[""“][^""”]*?[""”](?:\.{0,3})\]\s*[：:]?\s*/g, '')
+    // buildMessageHistory 把引用渲染成 [xx引用了xx说的「…」，并回复了 ↓]，模型会学这个格式输出。
+    // 解析端 (applyAssistantPostProcessing QUOTE_RE_NL) 已把它认作引用，这里保证残留不漏进气泡/通知。
+    .replace(/\[[^\[\]\n「」]{0,24}引用了[^\[\]\n「」]{0,24}「[^」\n]*?」[^\[\]\n]{0,24}\]\s*/g, '');
 
 /** markdown 标题 `# heading` → `heading` (保留文字) */
 const stripMarkdownHeaders = (t: string): string => t.replace(/^#{1,6}\s+/gm, '');
@@ -126,9 +129,106 @@ const replaceTranslationForBanner = (t: string): string =>
     .replace(/<译文>[\s\S]*?<\/译文>/g, '')
     .replace(/<\/?(?:翻译|原文)>/g, '');
 
-/** `<语音>...</语音>` → 内部文字 (banner 用; segment 路径里有 sentinel 保护跳过这条) */
+/** `<语音>...</语音>(<字幕>...</字幕>)` → 字幕优先、否则语音内文 (banner 用;
+ *  segment 路径里有 sentinel 保护跳过这条)。闭合容许空格/简繁互换。 */
 const replaceVoiceForBanner = (t: string): string =>
-  t.replace(/<(语音|語音)>([\s\S]*?)<\/\1>/g, (_m, _tag, inner) => (inner || '').trim());
+  t
+    .replace(
+      /(?:<字幕>([\s\S]*?)<\/字幕>\s*)?<[语語]音[^>]*>([\s\S]*?)<\/\s*[语語]音\s*>(?:\s*<字幕>([\s\S]*?)<\/字幕>)?/g,
+      (_m, pre, inner, post) => ((post || pre || inner || '') as string).trim(),
+    )
+    .replace(/<字幕>([\s\S]*?)<\/字幕>/g, '$1')  // 落单字幕块: 剥标签留中文
+    .replace(/<\/?字幕>/g, '');
+
+// ─── 语音标签规整 (掉格式自愈) ──────────────────────────────────────────────
+
+/**
+ * 单个标签家族的配对修复扫描: 孤儿闭合删除、嵌套多余开标签删除、自闭合空标签删除、
+ * 未闭合开标签在末尾补闭合。
+ * closeBeforeTrailingSubtitle: 补语音闭合时, 若末尾跟着完整 <字幕> 块, 闭合插在字幕
+ * 之前 —— 否则字幕会被吞进语音块里被朗读出来。
+ */
+function repairPairedTag(
+  text: string,
+  tokenRe: RegExp,
+  closeFormOf: (openTok: string) => string,
+  closeBeforeTrailingSubtitle: boolean,
+): string {
+  const kept: string[] = [];
+  let cursor = 0;
+  let openForm: string | null = null;
+  let tok: RegExpExecArray | null;
+  while ((tok = tokenRe.exec(text)) !== null) {
+    const isClose = tok[0].startsWith('</');
+    if (!isClose && /\/\s*>$/.test(tok[0])) {
+      // 自闭合空标签: 无意义, 直接删 (别让配对逻辑把后文全吞进去)
+      kept.push(text.slice(cursor, tok.index));
+      cursor = tok.index + tok[0].length;
+      continue;
+    }
+    if (isClose) {
+      if (openForm === null) {
+        // 孤儿闭合: 删除
+        kept.push(text.slice(cursor, tok.index));
+        cursor = tok.index + tok[0].length;
+      } else {
+        openForm = null; // 正常配对
+      }
+    } else if (openForm !== null) {
+      // 块内又出现开标签 (嵌套/复读): 删掉多余的这个
+      kept.push(text.slice(cursor, tok.index));
+      cursor = tok.index + tok[0].length;
+    } else {
+      openForm = closeFormOf(tok[0]);
+    }
+  }
+  kept.push(text.slice(cursor));
+  let result = kept.join('');
+  if (openForm !== null) {
+    const closeTag = `</${openForm}>`;
+    if (closeBeforeTrailingSubtitle) {
+      const trail = result.match(/(\s*<字幕>[\s\S]*?<\/字幕>\s*)$/);
+      if (trail) {
+        const at = result.length - trail[0].length;
+        return result.slice(0, at).replace(/\s+$/, '') + closeTag + trail[0].replace(/\s+$/, '');
+      }
+    }
+    result = result.replace(/\s+$/, '') + closeTag;
+  }
+  return result;
+}
+
+/**
+ * 把 LLM 写歪的 <语音> / <字幕> 标签修回规范形态, 让下游所有配对正则 (chunkText
+ * 原子块保护 / MessageItem hasVoiceTag / parseVoiceOutput / worker Phase 1.5) 都能命中。
+ * 落库前跑一次 (sanitizeForBubble / sanitizeIntoSegments), 下游不用各自容错。
+ *
+ * 修复的形态 (全部来自真实掉格式报告):
+ *  1. 全角尖括号:  ＜语音＞…＜/语音＞ / ＜／字幕＞     → <语音>…</语音> / </字幕>
+ *  2. 闭合标签内空格 / 全角斜杠: </ 语音 > / <／字幕>  → </语音> / </字幕>
+ *  3. 开标签属性: <语音emotion=…> 少空格、全角引号 “” / 全角等号 ＝ → 规范属性
+ *  4. 配对修复: 有开无闭 → 末尾补闭合 (语音的闭合会插在末尾完整 <字幕> 块之前);
+ *     孤儿闭合 (无开) / 嵌套多余开标签 / 自闭合空标签 → 删除
+ */
+export function normalizeVoiceTags(t: string): string {
+  if (!/[语語]音|字幕/.test(t)) return t; // fast path
+  let result = t;
+  // 1. 全角尖括号 → 半角 (只动语音/字幕标签本身, 不碰正文其他全角符号)
+  result = result.replace(/＜\s*[/／]\s*([语語]音|字幕)\s*＞/g, '</$1>');
+  result = result.replace(/＜\s*((?:[语語]音|字幕)[^<>＜＞]*?)\s*＞/g, '<$1>');
+  // 2. 闭合标签规整: </ 语音 > / <／字幕> / < /语音> → </语音> 等
+  result = result.replace(/<\s*[/／]\s*([语語]音|字幕)\s*>/g, '</$1>');
+  // 3. 开标签属性规整: 少空格 / 全角引号 / 全角等号
+  result = result.replace(/<([语語]音|字幕)\s*([^<>]*?)\s*>/g, (_m, tag: string, attrs: string) => {
+    if (!attrs) return `<${tag}>`;
+    const fixed = attrs.replace(/[“”＂]/g, '"').replace(/[‘’]/g, "'").replace(/＝/g, '=').trim();
+    return `<${tag} ${fixed}>`;
+  });
+  // 4. 配对扫描: 先修语音 (闭合避让末尾字幕块), 再修字幕
+  result = repairPairedTag(result, /<\/?[语語]音[^>]*>/g, tok => (/語/.test(tok) ? '語音' : '语音'), true);
+  result = repairPairedTag(result, /<\/?字幕[^>]*>/g, () => '字幕', false);
+  return result;
+}
 
 /**
  * 翻译块只保留原文.
@@ -214,6 +314,8 @@ export function sanitizeForBubble(
   let result = text;
   // 1. 字面 \n 还原
   result = stripLiteralBackslashN(result);
+  // 1.5. 语音标签自愈 — 必须在 chunkText 之前 (下游原子块保护靠配对正则)
+  result = normalizeVoiceTags(result);
   // 2. 源标签 / 时间戳 / 业务标签
   result = stripSourceTags(result);
   result = stripTimestamps(result);
@@ -288,6 +390,7 @@ export function sanitizeIntoSegments(text: string): Segment[] {
   // Phase 1: 全文 suppress
   let cleaned = stripLiteralBackslashN(text);
   cleaned = stripThinkBlocks(cleaned);
+  cleaned = normalizeVoiceTags(cleaned); // 语音标签自愈 — Phase 1.5 的配对保护靠它兜底
 
   // Phase 1.5: 原子语义块交给 amsg-instant 标准 protected-block splitter 识别,
   // 再桥回旧 pipeline。这样只替换"如何保护原子块", 不改变后续清洗/分段语义。
@@ -305,8 +408,12 @@ export function sanitizeIntoSegments(text: string): Segment[] {
         preview: (_raw: string, match: RegExpMatchArray) => (match[1] || '').trim() || '[翻译]',
       },
       {
-        pattern: /<(语音|語音)>([\s\S]*?)<\/\1>/,
-        preview: (_raw: string, match: RegExpMatchArray) => (match[2] || '').trim() || '[语音]',
+        // 语音块 + 紧邻的 <字幕> 块是一个原子单元 (字幕是这条语音的中文对照, 拆开
+        // 就配不上了)。字幕前置/后置都容忍; banner 预览优先用字幕 (用户读得懂中文)。
+        // 闭合容许空格 + 简繁互换 (normalizeVoiceTags 已修, 这里不再依赖 \1 回引)。
+        pattern: /(?:<字幕>([\s\S]*?)<\/字幕>\s*)?<[语語]音[^>]*>([\s\S]*?)<\/\s*[语語]音\s*>(?:\s*<字幕>([\s\S]*?)<\/字幕>)?/,
+        preview: (_raw: string, match: RegExpMatchArray) =>
+          (match[3] || match[1] || match[2] || '').trim() || '[语音]',
       },
     ],
   }) as ProtectedAtomSegment[];
@@ -405,7 +512,11 @@ function sanitizeTextForBanner(text: string): string {
  */
 function chunkText(text: string): string[] {
   const CJK = '\\u4e00-\\u9fff\\u3400-\\u4dbf\\u3000-\\u303f\\uff00-\\uffef\\u2000-\\u206f\\u2e80-\\u2eff\\u3001-\\u3003\\u2018-\\u201f\\u300a-\\u300f\\uff01-\\uff0f\\uff1a-\\uff20';
-  const cjkSpaceRe = new RegExp(`(?<=[${CJK}])\\s+(?=[${CJK}])`);
+  // No lookbehind (?<=): iOS Safari <16.4 JSC doesn't support it; old devices throw
+  // "invalid group specifier name" at new RegExp. Capture the left CJK char + zero-width
+  // lookahead on the right, restore via $1. Byte-equivalent (see utils/lookbehindFree.test.ts).
+  const cjkSplitRe = new RegExp(`([${CJK}])\\s+(?=[${CJK}])`, 'g');
+  const SPLIT = String.fromCharCode(1);  // CJK split marker (distinct slot from SPACE_SENTINEL below)
 
   const lineChunks = text.split(/(?:\r\n|\r|\n|\u2028|\u2029)+/)
     .map((c) => c.trim())
@@ -418,7 +529,7 @@ function chunkText(text: string): string[] {
   const out: string[] = [];
   for (const chunk of lineChunks) {
     const guarded = chunk.replace(/\[{1,2}[^\[\]]*\]{1,2}/g, (m) => m.replace(/\s/g, SPACE_SENTINEL));
-    const sub = guarded.split(cjkSpaceRe)
+    const sub = guarded.replace(cjkSplitRe, `$1${SPLIT}`).split(SPLIT)
       .map((c) => c.split(SPACE_SENTINEL).join(' ').trim())
       .filter((c) => c.length > 0);
     out.push(...sub);

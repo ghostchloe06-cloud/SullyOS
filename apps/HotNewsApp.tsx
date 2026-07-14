@@ -78,22 +78,24 @@ const HotNewsApp: React.FC = () => {
     return (
         <div className="h-full w-full bg-[#f4efe4] flex flex-col font-serif text-stone-900">
             {/* 顶栏 */}
-            <div className="h-20 bg-[#f4efe4] flex items-end pb-3 px-4 border-b-2 border-stone-800 shrink-0 sticky top-0 z-10">
-                <div className="flex items-center gap-2 w-full">
-                    <button onClick={closeApp} className="p-2 -ml-2 rounded-full hover:bg-black/5 active:scale-90 transition-transform">
-                        <ArrowLeft size={22} weight="bold" className="text-stone-700" />
-                    </button>
-                    <h1 className="text-xl font-bold tracking-wide text-stone-800 flex items-center gap-2">
-                        <Newspaper size={22} weight="fill" /> 热点日报
-                    </h1>
-                    <button
-                        onClick={forceRefresh}
-                        disabled={loading}
-                        className="ml-auto p-2 rounded-full hover:bg-black/5 active:scale-90 transition-transform disabled:opacity-40"
-                        title="真·刷新（强制重新拉取本时段）"
-                    >
-                        <ArrowClockwise size={20} weight="bold" className={`text-stone-700 ${loading ? 'animate-spin' : ''}`} />
-                    </button>
+            <div className="bg-[#f4efe4] border-b-2 border-stone-800 shrink-0 sticky top-0 z-10" style={{ paddingTop: 'var(--safe-top)' }}>
+                <div className="flex items-center px-4 py-3">
+                    <div className="flex items-center gap-2 w-full">
+                        <button onClick={closeApp} className="p-2 -ml-2 rounded-full hover:bg-black/5 active:scale-90 transition-transform">
+                            <ArrowLeft size={22} weight="bold" className="text-stone-700" />
+                        </button>
+                        <h1 className="text-xl font-bold tracking-wide text-stone-800 flex items-center gap-2">
+                            <Newspaper size={22} weight="fill" /> 热点日报
+                        </h1>
+                        <button
+                            onClick={forceRefresh}
+                            disabled={loading}
+                            className="ml-auto p-2 rounded-full hover:bg-black/5 active:scale-90 transition-transform disabled:opacity-40"
+                            title="真·刷新（强制重新拉取本时段）"
+                        >
+                            <ArrowClockwise size={20} weight="bold" className={`text-stone-700 ${loading ? 'animate-spin' : ''}`} />
+                        </button>
+                    </div>
                 </div>
             </div>
 
@@ -113,7 +115,7 @@ const HotNewsApp: React.FC = () => {
                 <div className="my-3 bg-stone-800 text-stone-100 rounded-lg px-3 py-2.5 text-[11px] leading-relaxed flex gap-2">
                     <WarningCircle size={16} weight="fill" className="shrink-0 mt-0.5 text-amber-300" />
                     <span>
-                        这只是<b>热点可视化</b>。每次对话会从下面这些里<b>随机抽几条</b>注入给角色——它不一定会拎出来说，
+                        这只是<b>热点可视化</b>。聊天时角色会知道<b>这些热点</b>，但不一定会主动提。
                         当作背景认知自然存在；偶尔也会主动<b>分享成新闻卡片</b>找你聊。
                         {realtimeConfig.newsEnabled
                             ? '（已开启：角色会真的看到这些）'

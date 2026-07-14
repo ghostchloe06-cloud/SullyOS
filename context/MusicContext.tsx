@@ -13,7 +13,9 @@ import React, {
 } from 'react';
 import { cachedCall as _cachedCall, invalidate as _invalidateCache, clearAll as _clearAllCache } from '../utils/musicCache';
 import { DB } from '../utils/db';
+import { getProxyWorkerUrl, DEFAULT_PROXY_WORKER, PROXY_WORKER_CHANGED_EVENT } from '../utils/proxyWorker';
 import type { PostProcessMusicHooks } from '../utils/applyAssistantPostProcessing';
+import { createMusicTrackChangeDetail, MUSIC_TRACK_CHANGED_EVENT, type MusicTrackChangeDetail } from '../utils/musicTrackChange';
 
 /* ───────────── 类型 ───────────── */
 export type MusicQuality = 'standard' | 'higher' | 'exhigh' | 'lossless' | 'hires';
@@ -82,31 +84,38 @@ const loadLocalAlbum = (): Song[] => {
 const saveLocalAlbum = (songs: Song[]) => {
   try { localStorage.setItem(LS_LOCAL_ALBUM_KEY, JSON.stringify(songs)); } catch {}
 };
-const DEFAULT_WORKER = 'https://sullymeow.ccwu.cc';
+// 音乐的默认 worker = 中心配置（设置 → 自定义网络代理）。用户没在播放器里单独
+// 设过地址时，跟着中心 worker 走；在播放器里手填过自定义地址的，那个地址覆盖生效。
+const musicDefaultWorker = (): string => getProxyWorkerUrl();
 
 export const MUSIC_DEFAULT_CFG: MusicCfg = {
-  workerUrl: DEFAULT_WORKER,
+  workerUrl: musicDefaultWorker(),
   cookie: '',
   quality: 'exhigh',
 };
 
 /* ───────────── 工具 ───────────── */
-// 旧 worker 域名 → 新自定义域名的迁移表。老用户 localStorage 里存的还是
-// sully-n.qegj567.workers.dev，国内访问超时；自定义域名走 CF 边缘到同一个
-// worker，行为一致。第一次读到自动改写并落盘，下次刷新就稳定了。
-const STALE_WORKER_HOSTS = [/sully-n\.qegj567\.workers\.dev/i];
+// worker 地址迁移：把"非自定义"的存量地址一律视为"没单独设过" → 跟随中心 worker。
+//   1. 旧的 sully-n.qegj567.workers.dev 默认（国内超时，早就该弃用）；
+//   2. 旧公共域名 sullymeow.ccwu213.cc（注册已过期、DNS 无法解析，2026-07 起）；
+//   3. 停在公共默认实例（= 中心配置的默认值）上的——中心没改时这是 no-op，
+//      中心换成自部署 worker 后，音乐自动跟着切过去。
+// 只有用户在播放器里手填的、跟默认不一样的地址才原样保留。读到需要改写时落盘一次。
+const normalizeHost = (u: string): string => u.trim().replace(/\/+$/, '').toLowerCase();
+const FOLLOW_CENTRAL_HOSTS = [/sully-n\.qegj567\.workers\.dev/i, /sullymeow\.ccwu213\.cc/i];
 const migrateWorkerUrl = (url: string | undefined): string => {
-  if (!url) return DEFAULT_WORKER;
-  for (const re of STALE_WORKER_HOSTS) {
-    if (re.test(url)) return DEFAULT_WORKER;
-  }
+  const central = musicDefaultWorker();
+  if (!url) return central;
+  const norm = normalizeHost(url);
+  if (norm === normalizeHost(DEFAULT_PROXY_WORKER)) return central;
+  if (FOLLOW_CENTRAL_HOSTS.some((re) => re.test(norm))) return central;
   return url;
 };
 
 const loadCfg = (): MusicCfg => {
   try {
     const raw = localStorage.getItem(LS_CFG_KEY);
-    if (!raw) return MUSIC_DEFAULT_CFG;
+    if (!raw) return { ...MUSIC_DEFAULT_CFG, workerUrl: musicDefaultWorker() };
     const parsed = JSON.parse(raw);
     const cfg = { ...MUSIC_DEFAULT_CFG, ...parsed };
     const migrated = migrateWorkerUrl(cfg.workerUrl);
@@ -115,7 +124,7 @@ const loadCfg = (): MusicCfg => {
       try { localStorage.setItem(LS_CFG_KEY, JSON.stringify(cfg)); } catch {}
     }
     return cfg;
-  } catch { return MUSIC_DEFAULT_CFG; }
+  } catch { return { ...MUSIC_DEFAULT_CFG, workerUrl: musicDefaultWorker() }; }
 };
 
 /**
@@ -359,6 +368,20 @@ export const MusicProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     saveCfg(next);
   }, []);
 
+  // 中心配置（设置 → 自定义网络代理）变了 → 重读音乐 cfg，让"跟随中心"的地址实时切过去。
+  // 音乐 cfg 是挂载时快照进 state 的，不重读就只能等下次刷新页面；地址真的变了才清缓存重拉。
+  useEffect(() => {
+    const onProxyChanged = () => {
+      setCfgState(prev => {
+        const next = loadCfg();
+        if (next.workerUrl !== prev.workerUrl) _clearAllCache();
+        return next;
+      });
+    };
+    window.addEventListener(PROXY_WORKER_CHANGED_EVENT, onProxyChanged);
+    return () => window.removeEventListener(PROXY_WORKER_CHANGED_EVENT, onProxyChanged);
+  }, []);
+
   const initialState = useMemo(loadState, []);
   const [queue, setQueueState] = useState<Song[]>(initialState.queue);
   const [idx, setIdx] = useState<number>(initialState.idx);
@@ -515,16 +538,19 @@ export const MusicProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     setListeningTogetherWith(prev => prev.length ? [] : prev);
   }, []);
 
-  // 当 current 歌曲变化（切歌 / 初次播放新歌）→ 清空"一起听"
-  // 这样 char 选择 "join" 仅对当前这一首有效，切到下一首后回到 off
-  const currentSongIdRef = useRef<number | null>(null);
+  // 切歌后清空上一首的"一起听"；新歌真正开始播放后，再通知刚才的 char 重新判断
+  const previousSongRef = useRef<Song | null>(null);
+  const pendingTrackChangeRef = useRef<MusicTrackChangeDetail | null>(null);
   useEffect(() => {
-    const newId = current?.id ?? null;
-    if (currentSongIdRef.current !== null && currentSongIdRef.current !== newId) {
+    const previousSong = previousSongRef.current;
+    const detail = createMusicTrackChangeDetail(previousSong, current, listeningTogetherWith);
+
+    if (previousSong && previousSong.id !== current?.id) {
       setListeningTogetherWith([]);
+      pendingTrackChangeRef.current = detail;
     }
-    currentSongIdRef.current = newId;
-  }, [current]);
+    previousSongRef.current = current;
+  }, [current, listeningTogetherWith]);
 
   // 前进/后退 refs (避免循环依赖 & audio 事件闭包陷阱)
   const queueRef = useRef(queue); queueRef.current = queue;
@@ -540,7 +566,14 @@ export const MusicProvider: React.FC<{ children: React.ReactNode }> = ({ childre
     // 注意: 不要设置 crossOrigin — NetEase CDN 没有 CORS 头，会变成静默加载失败
     audioRef.current = a;
 
-    const onPlay = () => setPlaying(true);
+    const onPlay = () => {
+      setPlaying(true);
+      const detail = pendingTrackChangeRef.current;
+      if (detail) {
+        pendingTrackChangeRef.current = null;
+        window.dispatchEvent(new CustomEvent(MUSIC_TRACK_CHANGED_EVENT, { detail }));
+      }
+    };
     const onPause = () => setPlaying(false);
     const onTime = () => setProgress(a.currentTime);
     const onMeta = () => setDuration(a.duration || 0);

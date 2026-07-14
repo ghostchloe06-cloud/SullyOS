@@ -92,7 +92,7 @@ export const MizuHeader: React.FC<{
   right?: React.ReactNode;
 }> = ({ title, onBack, onClose, right }) => (
   <div className="flex items-center justify-between px-4 h-12 shrink-0 shizuku-glass-strong relative z-20"
-    style={{ borderBottom: `1px solid rgba(255,255,255,0.3)` }}>
+    style={{ borderBottom: `1px solid rgba(255,255,255,0.3)`, paddingTop: 'var(--safe-top)', boxSizing: 'content-box' }}>
     <button
       className="w-8 h-8 flex items-center justify-center rounded-full transition-all"
       style={{ color: C.primary }}

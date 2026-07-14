@@ -5,6 +5,8 @@
 
 import { safeResponseJson } from './safeApi';
 import { DB } from './db';
+import { getProxyWorkerUrl } from './proxyWorker';
+import { nowInTimeZone } from './timezone';
 
 export interface WeatherData {
     temp: number;
@@ -31,8 +33,8 @@ export interface SearchResult {
 export interface RealtimeConfig {
     // 天气配置
     weatherEnabled: boolean;
-    weatherApiKey: string;  // OpenWeatherMap API Key
-    weatherCity: string;    // 城市名 (如 "Beijing" 或 "Shanghai")
+    weatherApiKey: string;  // OpenWeatherMap API Key（可选；留空走免 key 的 Open-Meteo）
+    weatherCity: string;    // 城市名 (如 "北京"、"Beijing"，Open-Meteo 支持中文)
 
     // 新闻配置
     newsEnabled: boolean;
@@ -79,13 +81,107 @@ export const defaultRealtimeConfig: RealtimeConfig = {
     notionApiKey: '',
     notionDatabaseId: '',
     xhsEnabled: false,
-    xhsMcpConfig: { enabled: false, serverUrl: 'https://sullymeow.ccwu.cc/api', cookie: undefined, loggedInNickname: undefined, loggedInUserId: undefined, userXsecToken: undefined },
+    xhsMcpConfig: { enabled: false, serverUrl: `${getProxyWorkerUrl()}/api`, cookie: undefined, loggedInNickname: undefined, loggedInUserId: undefined, userXsecToken: undefined },
     cacheMinutes: 30
 };
 
 // 缓存
 let weatherCache: { data: WeatherData | null; timestamp: number } = { data: null, timestamp: 0 };
 let newsCache: { data: NewsItem[]; timestamp: number } = { data: [], timestamp: 0 };
+
+// Open-Meteo 地名解析缓存：城市名 → 坐标，避免每次取天气都多打一次 geocoding
+const geocodeCache = new Map<string, { latitude: number; longitude: number; name: string }>();
+
+// WMO weather code（Open-Meteo 返回的 weather_code）→ 中文描述 + 近似 OWM icon 码
+// 完整码表见 https://open-meteo.com/en/docs（WMO Weather interpretation codes）
+const WMO_WEATHER_CODES: Record<number, { description: string; icon: string }> = {
+    0: { description: '晴', icon: '01d' },
+    1: { description: '大致晴朗', icon: '02d' },
+    2: { description: '局部多云', icon: '03d' },
+    3: { description: '阴', icon: '04d' },
+    45: { description: '雾', icon: '50d' },
+    48: { description: '雾凇', icon: '50d' },
+    51: { description: '轻微毛毛雨', icon: '09d' },
+    53: { description: '毛毛雨', icon: '09d' },
+    55: { description: '浓密毛毛雨', icon: '09d' },
+    56: { description: '冻毛毛雨', icon: '09d' },
+    57: { description: '强冻毛毛雨', icon: '09d' },
+    61: { description: '小雨', icon: '10d' },
+    63: { description: '中雨', icon: '10d' },
+    65: { description: '大雨', icon: '10d' },
+    66: { description: '冻雨', icon: '13d' },
+    67: { description: '强冻雨', icon: '13d' },
+    71: { description: '小雪', icon: '13d' },
+    73: { description: '中雪', icon: '13d' },
+    75: { description: '大雪', icon: '13d' },
+    77: { description: '雪粒', icon: '13d' },
+    80: { description: '小阵雨', icon: '09d' },
+    81: { description: '阵雨', icon: '09d' },
+    82: { description: '强阵雨', icon: '09d' },
+    85: { description: '小阵雪', icon: '13d' },
+    86: { description: '强阵雪', icon: '13d' },
+    95: { description: '雷阵雨', icon: '11d' },
+    96: { description: '雷阵雨伴小冰雹', icon: '11d' },
+    99: { description: '雷阵雨伴大冰雹', icon: '11d' },
+};
+
+/**
+ * OpenWeatherMap 源（需要 API Key）。失败时抛错，由调用方决定是否回落。
+ */
+export const fetchOwmWeather = async (city: string, apiKey: string): Promise<WeatherData> => {
+    const url = `https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(city)}&appid=${apiKey}&units=metric&lang=zh_cn`;
+    const response = await fetch(url);
+    if (!response.ok) {
+        throw new Error(`OpenWeatherMap HTTP ${response.status}`);
+    }
+    const data = await safeResponseJson(response);
+    return {
+        temp: Math.round(data.main.temp),
+        feelsLike: Math.round(data.main.feels_like),
+        humidity: data.main.humidity,
+        description: data.weather[0]?.description || '未知',
+        icon: data.weather[0]?.icon || '01d',
+        city: data.name
+    };
+};
+
+/**
+ * Open-Meteo 源（免费、免 key、CORS 友好）。城市名先过官方 geocoding（支持中文），失败时抛错。
+ */
+export const fetchOpenMeteoWeather = async (city: string): Promise<WeatherData> => {
+    let geo = geocodeCache.get(city);
+    if (!geo) {
+        const geoUrl = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city)}&count=1&language=zh&format=json`;
+        const geoRes = await fetch(geoUrl);
+        if (!geoRes.ok) {
+            throw new Error(`Open-Meteo geocoding HTTP ${geoRes.status}`);
+        }
+        const geoData = await safeResponseJson(geoRes);
+        const hit = geoData.results?.[0];
+        if (!hit) {
+            throw new Error(`Open-Meteo 找不到城市: ${city}`);
+        }
+        geo = { latitude: hit.latitude, longitude: hit.longitude, name: hit.name };
+        geocodeCache.set(city, geo);
+    }
+
+    const url = `https://api.open-meteo.com/v1/forecast?latitude=${geo.latitude}&longitude=${geo.longitude}&current=temperature_2m,apparent_temperature,relative_humidity_2m,weather_code&timezone=auto`;
+    const response = await fetch(url);
+    if (!response.ok) {
+        throw new Error(`Open-Meteo HTTP ${response.status}`);
+    }
+    const data = await safeResponseJson(response);
+    const current = data.current;
+    const wmo = WMO_WEATHER_CODES[current.weather_code] || { description: '未知', icon: '01d' };
+    return {
+        temp: Math.round(current.temperature_2m),
+        feelsLike: Math.round(current.apparent_temperature),
+        humidity: Math.round(current.relative_humidity_2m),
+        description: wmo.description,
+        icon: wmo.icon,
+        city: geo.name
+    };
+};
 
 // 特殊日期表
 const SPECIAL_DATES: Record<string, string> = {
@@ -109,10 +205,10 @@ const SPECIAL_DATES: Record<string, string> = {
 export const RealtimeContextManager = {
 
     /**
-     * 获取天气信息
+     * 获取天气信息。填了 OpenWeatherMap key 优先走 OWM，失败或没填 key 时回落免费的 Open-Meteo。
      */
     fetchWeather: async (config: RealtimeConfig): Promise<WeatherData | null> => {
-        if (!config.weatherEnabled || !config.weatherApiKey) {
+        if (!config.weatherEnabled || !config.weatherCity) {
             return null;
         }
 
@@ -124,34 +220,29 @@ export const RealtimeContextManager = {
             return weatherCache.data;
         }
 
-        try {
-            const url = `https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(config.weatherCity)}&appid=${config.weatherApiKey}&units=metric&lang=zh_cn`;
+        let weather: WeatherData | null = null;
 
-            const response = await fetch(url);
-            if (!response.ok) {
-                console.error('Weather API error:', response.status);
+        if (config.weatherApiKey) {
+            try {
+                weather = await fetchOwmWeather(config.weatherCity, config.weatherApiKey);
+            } catch (e) {
+                console.warn('OpenWeatherMap 失败，回落 Open-Meteo:', e);
+            }
+        }
+
+        if (!weather) {
+            try {
+                weather = await fetchOpenMeteoWeather(config.weatherCity);
+            } catch (e) {
+                console.error('Failed to fetch weather:', e);
                 return null;
             }
-
-            const data = await safeResponseJson(response);
-
-            const weather: WeatherData = {
-                temp: Math.round(data.main.temp),
-                feelsLike: Math.round(data.main.feels_like),
-                humidity: data.main.humidity,
-                description: data.weather[0]?.description || '未知',
-                icon: data.weather[0]?.icon || '01d',
-                city: data.name
-            };
-
-            // 更新缓存
-            weatherCache = { data: weather, timestamp: now };
-
-            return weather;
-        } catch (e) {
-            console.error('Failed to fetch weather:', e);
-            return null;
         }
+
+        // 更新缓存
+        weatherCache = { data: weather, timestamp: now };
+
+        return weather;
     },
 
     // hot_news（orz.ai）平台 key → 中文展示名。用于 source 标注，让提示词读起来自然。
@@ -301,7 +392,7 @@ export const RealtimeContextManager = {
     fetchBraveNews: async (apiKey: string): Promise<NewsItem[]> => {
         try {
             // 使用自建的 Cloudflare Worker 代理
-            const workerUrl = 'https://sullymeow.ccwu.cc/news?q=热点新闻&count=5&country=cn';
+            const workerUrl = `${getProxyWorkerUrl()}/news?q=热点新闻&count=5&country=cn`;
 
             const response = await fetch(workerUrl, {
                 headers: {
@@ -407,8 +498,8 @@ export const RealtimeContextManager = {
     /**
      * 获取时间上下文
      */
-    getTimeContext: () => {
-        const now = new Date();
+    getTimeContext: (tz?: string) => {
+        const now = nowInTimeZone(tz);
         const hour = now.getHours();
         const dayNames = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
         const dayOfWeek = dayNames[now.getDay()];
@@ -512,7 +603,7 @@ export const RealtimeContextManager = {
     /**
      * 构建完整的实时上下文（注入到系统提示词）
      */
-    buildFullContext: async (config: RealtimeConfig): Promise<string> => {
+    buildFullContext: async (config: RealtimeConfig, tz?: string): Promise<string> => {
         const parts: string[] = [];
 
         // 开头强调：这是真实世界的信息
@@ -520,8 +611,9 @@ export const RealtimeContextManager = {
         parts.push(`⚠️ 重要：以下信息来自真实世界，不是虚构的。你现在真的能"看到"外面的世界。`);
         parts.push('');
 
-        // 1. 时间信息（总是包含）
-        const time = RealtimeContextManager.getTimeContext();
+        // 1. 时间信息（总是包含）。tz 非空时按角色所在时区折算。
+        //    时差提示（tzAwarenessNote）统一由 ContextBuilder.buildCoreContext 注入，这里不再追加，避免双份。
+        const time = RealtimeContextManager.getTimeContext(tz);
         parts.push(`📅 当前真实时间: ${time.dateStr} ${time.dayOfWeek} ${time.timeOfDay} ${time.timeStr}`);
 
         // 2. 特殊日期
@@ -530,8 +622,8 @@ export const RealtimeContextManager = {
             parts.push(`🎉 今日特殊: ${specialDates.join('、')}`);
         }
 
-        // 3. 天气信息
-        if (config.weatherEnabled && config.weatherApiKey) {
+        // 3. 天气信息（有没有 OWM key 都能取：无 key 走 Open-Meteo）
+        if (config.weatherEnabled) {
             const weather = await RealtimeContextManager.fetchWeather(config);
             if (weather) {
                 parts.push('');
@@ -609,6 +701,7 @@ export const RealtimeContextManager = {
     clearCache: () => {
         weatherCache = { data: null, timestamp: 0 };
         newsCache = { data: [], timestamp: 0 };
+        geocodeCache.clear();
     },
 
     /**
@@ -622,7 +715,7 @@ export const RealtimeContextManager = {
 
         try {
             // 使用自建的 Cloudflare Worker 代理
-            const workerUrl = `https://sullymeow.ccwu.cc/search?q=${encodeURIComponent(query)}&count=5`;
+            const workerUrl = `${getProxyWorkerUrl()}/search?q=${encodeURIComponent(query)}&count=5`;
 
             const response = await fetch(workerUrl, {
                 method: 'GET',
@@ -696,8 +789,8 @@ export interface DiaryPreview {
 
 export const NotionManager = {
 
-    // Worker 代理地址
-    WORKER_URL: 'https://sullymeow.ccwu.cc',
+    // Worker 代理地址（中心配置，用户可在设置里换成自部署实例）
+    get WORKER_URL() { return getProxyWorkerUrl(); },
 
     /**
      * 测试 Notion 连接（通过 Worker 代理）
@@ -1734,7 +1827,8 @@ function formatFeishuDiaryContent(content: string, mood?: string, characterName?
 
 export const FeishuManager = {
 
-    WORKER_URL: 'https://sullymeow.ccwu.cc',
+    // Worker 代理地址（中心配置，用户可在设置里换成自部署实例）
+    get WORKER_URL() { return getProxyWorkerUrl(); },
 
     /**
      * 获取飞书 tenant_access_token（通过 Worker 代理，带缓存）

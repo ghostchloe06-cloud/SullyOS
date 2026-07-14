@@ -1,8 +1,11 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { useOS } from '../../context/OSContext';
-import { CharacterProfile, SpriteConfig, SkinSet } from '../../types';
+import { CharacterProfile, SpriteConfig, SkinSet, DateStyleConfig } from '../../types';
 import { processImage } from '../../utils/file';
+import { pickDateFallbackSprite } from '../../utils/dateSprites';
+import { DATE_STYLE_PRESETS } from '../../utils/datePrompts';
+import ObserveSettings from './ObserveSettings';
 
 // 标准情绪列表
 const REQUIRED_EMOTIONS = ['normal', 'happy', 'angry', 'sad', 'shy'];
@@ -13,9 +16,41 @@ interface DateSettingsProps {
     onBack: () => void;
 }
 
+/** 可折叠分区卡片：标题常驻，内容默认收起，点标题展开。用原生 <details> 省状态。 */
+const Section: React.FC<{ title: string; defaultOpen?: boolean; children: React.ReactNode }> = ({ title, defaultOpen, children }) => (
+    <details open={defaultOpen} className="group bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
+        <summary className="list-none cursor-pointer select-none flex items-center justify-between gap-2 px-4 py-3.5 active:bg-slate-50 [&::-webkit-details-marker]:hidden">
+            <h3 className="text-xs font-bold text-slate-400 uppercase">{title}</h3>
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-3.5 h-3.5 text-slate-300 transition-transform group-open:rotate-180 shrink-0"><path fillRule="evenodd" d="M5.23 7.21a.75.75 0 0 1 1.06.02L10 11.168l3.71-3.938a.75.75 0 1 1 1.08 1.04l-4.25 4.5a.75.75 0 0 1-1.08 0l-4.25-4.5a.75.75 0 0 1 .02-1.06Z" clipRule="evenodd" /></svg>
+        </summary>
+        <div className="px-4 pb-4 pt-1">{children}</div>
+    </details>
+);
+
 const DateSettings: React.FC<DateSettingsProps> = ({ char, onBack }) => {
-    const { updateCharacter, addToast } = useOS();
+    const { updateCharacter, addToast, userProfile } = useOS();
     const fileInputRef = useRef<HTMLInputElement>(null);
+
+    // 文风与叙事（即时生效：system prompt 每次请求重建，存上就影响下一条回复）
+    const styleConfig = char.dateStyleConfig || {};
+    const [extraDraft, setExtraDraft] = useState(styleConfig.extra || '');
+    useEffect(() => { setExtraDraft(char.dateStyleConfig?.extra || ''); }, [char.id]);
+    const patchStyleConfig = (patch: Partial<DateStyleConfig>) => {
+        updateCharacter(char.id, { dateStyleConfig: { ...(char.dateStyleConfig || {}), ...patch } });
+    };
+    const saveExtraDraft = () => {
+        const trimmed = extraDraft.trim();
+        if (trimmed === (char.dateStyleConfig?.extra || '')) return;
+        patchStyleConfig({ extra: trimmed || undefined });
+        addToast(trimmed ? '补充要求已保存' : '补充要求已清空', 'success');
+    };
+    const userName = userProfile?.name || '用户';
+    const POV_OPTIONS: { id: DateStyleConfig['pov']; label: string; example: string }[] = [
+        { id: undefined, label: '默认', example: '不额外指定，随模型发挥' },
+        { id: 'third-name', label: '第三人称 · 称名字', example: `${char.name}看着${userName}` },
+        { id: 'third-you', label: '第三人称 · 称"你"', example: `${char.name}看着你` },
+        { id: 'first-you', label: '第一人称', example: '我看着你' },
+    ];
 
     const [uploadTarget, setUploadTarget] = useState<'bg' | 'sprite' | 'skin-sprite'>('bg');
     const [targetEmotionKey, setTargetEmotionKey] = useState<string>('');
@@ -48,7 +83,11 @@ const DateSettings: React.FC<DateSettingsProps> = ({ char, onBack }) => {
         }
         return sprites;
     }, [activeSkinId, skinSets, sprites]);
-    const currentSpriteImg = previewSprites['normal'] || previewSprites['default'] || Object.values(previewSprites)[0] || char.avatar;
+    const currentSpriteImg = pickDateFallbackSprite(
+        previewSprites,
+        [...REQUIRED_EMOTIONS, ...(char.customDateSprites || [])],
+        char.avatar,
+    );
 
     const triggerUpload = (target: 'bg' | 'sprite', emotionKey?: string) => {
         setUploadTarget(target);
@@ -205,8 +244,7 @@ const DateSettings: React.FC<DateSettingsProps> = ({ char, onBack }) => {
             </div>
 
             <div className="flex-1 overflow-y-auto p-5 space-y-8 pb-20">
-                <section className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm">
-                    <h3 className="text-xs font-bold text-slate-400 uppercase mb-4">立绘位置调整</h3>
+                <Section title="立绘位置调整">
                     <div className="space-y-6">
                         <div>
                             <div className="flex justify-between text-[10px] text-slate-500 mb-2"><span>大小缩放 (Scale)</span><span>{tempSpriteConfig.scale.toFixed(1)}x</span></div>
@@ -221,7 +259,7 @@ const DateSettings: React.FC<DateSettingsProps> = ({ char, onBack }) => {
                             <input type="range" min="-50" max="50" step="5" value={tempSpriteConfig.y} onChange={e => setTempSpriteConfig({...tempSpriteConfig, y: parseInt(e.target.value)})} className="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-primary" />
                         </div>
                     </div>
-                </section>
+                </Section>
 
                 <section className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm">
                     <div className="flex items-center justify-between">
@@ -238,8 +276,82 @@ const DateSettings: React.FC<DateSettingsProps> = ({ char, onBack }) => {
                     </div>
                 </section>
 
-                <section>
-                    <h3 className="text-xs font-bold text-slate-400 uppercase mb-3">背景 (Background)</h3>
+                <ObserveSettings char={char} />
+
+                <Section title="文风与叙事 (Writing Style)">
+                    <p className="text-[11px] text-slate-400 mt-1 mb-4">调整见面时 AI 的写作风格与叙事人称，修改后从下一条回复开始生效。</p>
+
+                    {/* 写作风格 */}
+                    <div className="mb-5">
+                        <label className="text-[11px] text-slate-500 font-bold mb-2 block">写作风格</label>
+                        <div className="flex flex-wrap gap-2">
+                            {DATE_STYLE_PRESETS.map(p => {
+                                const active = (styleConfig.style || 'cinematic') === p.id;
+                                return (
+                                    <button
+                                        key={p.id}
+                                        onClick={() => patchStyleConfig({ style: p.id })}
+                                        className={`px-3.5 py-2 rounded-full text-xs font-bold transition-all active:scale-95 ${active ? 'bg-primary text-white shadow-md shadow-primary/20' : 'bg-slate-100 text-slate-500 hover:bg-slate-200'}`}
+                                    >
+                                        {p.label}
+                                    </button>
+                                );
+                            })}
+                        </div>
+                        <p className="text-[11px] text-slate-400 mt-2 leading-relaxed">
+                            {DATE_STYLE_PRESETS.find(p => p.id === (styleConfig.style || 'cinematic'))?.hint}
+                        </p>
+                    </div>
+
+                    {/* 叙事人称 */}
+                    <div className="mb-5">
+                        <label className="text-[11px] text-slate-500 font-bold mb-2 block">叙事人称</label>
+                        <div className="space-y-2">
+                            {POV_OPTIONS.map(opt => {
+                                const active = styleConfig.pov === opt.id;
+                                return (
+                                    <button
+                                        key={opt.id || 'default'}
+                                        onClick={() => patchStyleConfig({ pov: opt.id })}
+                                        className={`w-full flex items-center justify-between px-4 py-3 rounded-xl border text-left transition-all active:scale-[0.98] ${active ? 'border-primary bg-primary/5 ring-1 ring-primary/20' : 'border-slate-100 bg-slate-50 hover:bg-slate-100'}`}
+                                    >
+                                        <span className={`text-xs font-bold ${active ? 'text-primary' : 'text-slate-600'}`}>{opt.label}</span>
+                                        <span className="text-[11px] text-slate-400 italic">{opt.example}</span>
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    </div>
+
+                    {/* 细节深挖引导 */}
+                    <div className="mb-5 flex items-center justify-between">
+                        <div className="pr-4">
+                            <label className="text-[11px] text-slate-500 font-bold block">细节深挖引导</label>
+                            <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">教 AI 从任何一句话里挖出可写的细节，并每轮给一条不同的聚焦线索，减少空话和模型口癖。</p>
+                        </div>
+                        <button
+                            onClick={() => patchStyleConfig({ digDeeper: styleConfig.digDeeper === false ? undefined : false })}
+                            className={`w-12 h-7 rounded-full transition-colors relative shrink-0 ${styleConfig.digDeeper !== false ? 'bg-primary' : 'bg-slate-200'}`}
+                        >
+                            <div className={`absolute top-0.5 w-6 h-6 bg-white rounded-full shadow-md transition-transform ${styleConfig.digDeeper !== false ? 'translate-x-5' : 'translate-x-0.5'}`}></div>
+                        </button>
+                    </div>
+
+                    {/* 自定义补充 */}
+                    <div>
+                        <label className="text-[11px] text-slate-500 font-bold mb-2 block">自定义补充（可选）</label>
+                        <textarea
+                            value={extraDraft}
+                            onChange={e => setExtraDraft(e.target.value)}
+                            onBlur={saveExtraDraft}
+                            placeholder="比如：多写环境互动；不要写心理活动；对话占比多一些……"
+                            className="w-full h-20 px-4 py-3 bg-slate-100 rounded-xl text-sm resize-none focus:ring-1 focus:ring-primary/30 outline-none transition-all leading-relaxed"
+                        />
+                        <p className="text-[10px] text-slate-300 mt-1">点别处会自动保存；这段会照原样用上，比上面的风格优先。</p>
+                    </div>
+                </Section>
+
+                <Section title="背景 (Background)">
                     <div 
                         onClick={() => triggerUpload('bg')}
                         className="aspect-video bg-slate-200 rounded-xl overflow-hidden relative border-2 border-dashed border-slate-300 flex items-center justify-center cursor-pointer hover:border-primary group"
@@ -251,10 +363,9 @@ const DateSettings: React.FC<DateSettingsProps> = ({ char, onBack }) => {
                             </>
                         ) : <span className="text-slate-400 text-xs">+ 上传背景图</span>}
                     </div>
-                </section>
+                </Section>
                 
-                <section>
-                    <h3 className="text-xs font-bold text-slate-400 uppercase mb-3">基础情绪立绘</h3>
+                <Section title="基础情绪立绘">
                     <div className="grid grid-cols-3 gap-3">
                         {REQUIRED_EMOTIONS.map(key => (
                             <div key={key} onClick={() => triggerUpload('sprite', key)} className="flex flex-col gap-2 group cursor-pointer">
@@ -272,10 +383,9 @@ const DateSettings: React.FC<DateSettingsProps> = ({ char, onBack }) => {
                             </div>
                         ))}
                     </div>
-                </section>
+                </Section>
 
-                <section>
-                    <h3 className="text-xs font-bold text-slate-400 uppercase mb-3">自定义情绪 (Custom Emotions)</h3>
+                <Section title="自定义情绪 (Custom Emotions)">
                     <p className="text-[11px] text-slate-400 mb-4">为该角色添加专属情绪，AI 会在见面时使用。每个角色的自定义情绪互相独立。</p>
 
                     {/* Existing custom emotions grid */}
@@ -326,13 +436,10 @@ const DateSettings: React.FC<DateSettingsProps> = ({ char, onBack }) => {
                             添加
                         </button>
                     </div>
-                </section>
+                </Section>
 
                 {/* URL Upload for Default Sprites */}
-                <section className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm">
-                    <div className="flex items-center justify-between mb-2">
-                        <h3 className="text-xs font-bold text-slate-400 uppercase">图床 URL 上传</h3>
-                    </div>
+                <Section title="图床 URL 上传">
                     <p className="text-[11px] text-slate-400 mb-3">直接粘贴图片 URL 作为默认立绘</p>
                     <button
                         onClick={() => { setUrlTargetSkinId(null); setShowUrlModal(true); }}
@@ -340,11 +447,10 @@ const DateSettings: React.FC<DateSettingsProps> = ({ char, onBack }) => {
                     >
                         + 通过 URL 添加立绘
                     </button>
-                </section>
+                </Section>
 
                 {/* Skin Sets System */}
-                <section>
-                    <h3 className="text-xs font-bold text-slate-400 uppercase mb-3">皮肤系统 (Skin Sets)</h3>
+                <Section title="皮肤系统 (Skin Sets)">
                     <p className="text-[11px] text-slate-400 mb-4">为角色创建多套立绘皮肤。切换皮肤后，AI 将使用对应皮肤的表情立绘。</p>
 
                     {/* Active skin indicator */}
@@ -427,7 +533,7 @@ const DateSettings: React.FC<DateSettingsProps> = ({ char, onBack }) => {
                             创建
                         </button>
                     </div>
-                </section>
+                </Section>
 
                 <input type="file" ref={fileInputRef} className="hidden" accept="image/*" onChange={handleFileUpload} />
             </div>
@@ -442,7 +548,7 @@ const DateSettings: React.FC<DateSettingsProps> = ({ char, onBack }) => {
                         </div>
                         <div className="p-4 space-y-3">
                             <div>
-                                <label className="text-[11px] text-slate-500 font-bold mb-1 block">情绪 Key</label>
+                                <label className="text-[11px] text-slate-500 font-bold mb-1 block">情绪</label>
                                 <select
                                     value={skinUrlEmotionKey}
                                     onChange={e => setSkinUrlEmotionKey(e.target.value)}

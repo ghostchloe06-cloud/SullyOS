@@ -13,7 +13,6 @@
 
 import { createCloudflareWorker } from '@rei-standard/amsg-instant/adapters/cloudflare';
 import { createD1BlobStore } from '@rei-standard/amsg-instant/blob/d1';
-import { sendPushWithMaybeBlob } from '@rei-standard/amsg-instant';
 import {
   buildContentPush,
   buildToolRequestPush,
@@ -63,7 +62,9 @@ const MULTIPART_TRANSPORT = { enabled: true };
 const UTILITY_CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Client-Token',
+  // X-Amsg-Request-Encoding: 大请求体 gzip 上行用的自定义头 (见 decodeGzipRequestBody)。
+  // 跨域带它会触发 CORS 预检, 必须放行, 否则浏览器拦请求。amsg-instant 库的预检不含它, 故 worker 自己回预检。
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Client-Token, X-Amsg-Request-Encoding',
   'Access-Control-Max-Age': '86400',
 };
 const D1_BLOB_TABLE = 'amsg_transient_blobs';
@@ -94,6 +95,85 @@ const ERROR_EVENT_TYPES = new Set([
   'multipart_too_large',
   'multipart_too_many_chunks',
 ]);
+
+const TRACE_EVENT_TYPES = new Set([
+  // 主链路里程碑: 一次会话的完整叙事是
+  //   request → llm_start → llm_done → push_sent×N (前台还有 sse_payload_enqueued)
+  // llm_start 和 llm_done 之间的安静期 = 在等上游 LLM, 不是卡死。
+  'request',
+  'llm_start',
+  'llm_done',
+  'push_sent',
+  'multipart_sent',
+  'sse_stream_aborted',
+  'sse_stream_canceled',
+  'sse_payload_enqueued',
+  'sse_payload_enqueue_failed',
+  'backup_push_scheduled',
+  'backup_push_sent',
+  'backup_push_failed',
+  'fallback_push_sent',
+  'fallback_push_failed',
+  'sse_error_fallback_failed',
+  'wait_until_rejected',
+  'wait_until_failed',
+]);
+
+// 「断开后还活着多久」侦察兵: 客户端断开 SSE 后每 10s 打一条心跳,
+// 日志里最后一条 post_abort_alive 的 sinceAbortMs ≈ 平台实际给的
+// 断开后存活窗口 (CF 文档值是 30s, Deno Deploy 没有书面值, 靠这个量)。
+// 心跳一旦停了而 backup_push_sent 还没出现 = 进程在那一刻被回收。
+// 最多陪跑 5 分钟, 防止刷屏。
+const POST_ABORT_HEARTBEAT_MS = 10_000;
+const POST_ABORT_HEARTBEAT_MAX_TICKS = 30;
+const postAbortWatchers = new Map<string, ReturnType<typeof setInterval>>();
+
+function startPostAbortHeartbeat(sessionId: string): void {
+  if (postAbortWatchers.has(sessionId)) return;
+  const abortedAt = Date.now();
+  let ticks = 0;
+  const timer = setInterval(() => {
+    ticks += 1;
+    console.log('[instant-push:trace]', {
+      type: 'post_abort_alive',
+      sessionId,
+      sinceAbortMs: Date.now() - abortedAt,
+    });
+    if (ticks >= POST_ABORT_HEARTBEAT_MAX_TICKS) {
+      clearInterval(timer);
+      postAbortWatchers.delete(sessionId);
+    }
+  }, POST_ABORT_HEARTBEAT_MS);
+  postAbortWatchers.set(sessionId, timer);
+}
+
+// 失败类事件的 cause 通常是个 Error 对象 (push 失败时带 statusCode, 如 413 = payload 超
+// 推送服务上限)。CF 日志直接打 Error 经常序列化成空对象, 把关键字段摊平成普通字段才看得见。
+function flattenAmsgEvent(e: { type: string; [k: string]: unknown }): Record<string, unknown> {
+  const cause = (e as any).cause;
+  if (cause == null) return e;
+  return {
+    ...e,
+    cause: undefined,
+    causeName: cause?.name,
+    causeMessage: cause?.message ?? String(cause),
+    causeStatus: cause?.statusCode ?? cause?.status,
+  };
+}
+
+function traceAmsgEvent(e: { type: string; [k: string]: unknown }): void {
+  if (e.type === 'sse_stream_aborted' && typeof e.sessionId === 'string') {
+    startPostAbortHeartbeat(e.sessionId);
+  }
+  const formatted = flattenAmsgEvent(e);
+  if (ERROR_EVENT_TYPES.has(e.type)) {
+    console.error('[instant-push]', formatted);
+    return;
+  }
+  if (TRACE_EVENT_TYPES.has(e.type)) {
+    console.log('[instant-push:trace]', formatted);
+  }
+}
 
 function parseBooleanFlag(value: string | undefined): boolean | null {
   if (value == null) return null;
@@ -320,9 +400,7 @@ function buildAmsgOptions(env: Env) {
     blobStore: createBlobStore(env),
     multipart: MULTIPART_TRANSPORT,
     onEvent: (e: { type: string; [k: string]: unknown }) => {
-      if (ERROR_EVENT_TYPES.has(e.type)) {
-        console.error('[instant-push]', e);
-      }
+      traceAmsgEvent(e);
     },
   };
 }
@@ -332,25 +410,61 @@ const cfWorker = createCloudflareWorker((env: Env) => {
     ...buildAmsgOptions(env),
     clientToken: env.AMSG_CLIENT_TOKEN,
     maxLoopIterations: 10,
+    sse: {
+      backupPush: 'on',
+      keepaliveMs: 1_000,
+      immediateKeepalive: true,
+    },
     onLLMOutput,
+    onBeforeLoop: ({ requestBody }: any) => {
+      if (!requestBody?.emotionEval) return undefined;
+      // Start emotion eval in parallel (returns promise)
+      return { emotionEval: runEmotionEval(requestBody) };
+    },
+    onAfterLoop: async ({ deliver, pending, requestBody, sessionId }: any) => {
+      if (!pending?.emotionEval) return;
+
+      try {
+        const emotionRaw = await pending.emotionEval;
+        // 无论成功 / 失败 / 空结果都推一条 emotion_update (emotionRaw 可能为空字符串):
+        // 客户端据此熄灭 "情绪分析中" 徽章, 否则只能等本地安全超时, 体验上像卡死.
+        const charId = requestBody?.charId || requestBody?.metadata?.charId || '';
+        await deliver({
+          messageKind: 'emotion_update',
+          messageId: `msg_${sessionId}_emotion`,
+          sessionId,
+          metadata: {
+            ...(requestBody?.metadata || {}),
+            charId,
+            emotionRaw,
+          },
+          notification: {
+            show: 'when-hidden',
+            silent: true,
+            title: requestBody?.contactName ? `来自 ${requestBody.contactName}` : '主动消息',
+            tag: `chat-message-${charId}`,
+            body: '对方的情绪产生了波动...',
+          }
+        });
+      } catch (err) {
+        console.warn('[instant] emotion eval failed in onAfterLoop:', err);
+      }
+    },
   };
 });
 
 /**
  * 副 API 情绪评估 (worker 端). 框架的 onLLMOutput hook 故意不暴露 apiKey、也不允许自己发 LLM/push
- * (见 amsg-instant SessionContext 文档), 所以情绪评估的第二次 LLM 调用 + emotion_update 推送
- * 在框架外、这层包装里做: 客户端把副 API 凭据 + 拼好的 eval prompt 放在请求体 emotionEval 字段,
- * 主回复跑完后 (cfWorker.fetch 返回后) 用 ctx.waitUntil 跑 eval, 把原始结果作为 emotion_update
- * push 推回. 客户端 SW 路由进 inbox, flush 时 applyEmotionEvalRaw 落 buff + 广播 innerState.
+ * (见 amsg-instant SessionContext 文档), 所以情绪评估的第二次 LLM 调用
+ * 在 onBeforeLoop 并行启动，在 onAfterLoop 里用 deliver (SSE/Push) 追加推送.
  *
- * 失败全吞 (情绪评估失败不该影响主回复); emotion_update 不带 notification, SW 静默入 inbox.
+ * 失败全吞 (情绪评估失败不该影响主回复); emotion_update 携带静默 notification 属性防系统拉黑，客户端仍静默入 inbox。.
  */
-async function runEmotionEval(body: any, env: Env, requestUrl?: string): Promise<void> {
+async function runEmotionEval(body: any): Promise<string> {
   const ee = body?.emotionEval;
-  const sub = body?.pushSubscription;
-  if (!ee?.prompt || !ee?.api?.baseUrl || !ee?.api?.apiKey || !ee?.api?.model) return;
-  if (!sub || typeof sub.endpoint !== 'string') return;
-  if (!env.VAPID_PUBLIC_KEY || !env.VAPID_PRIVATE_KEY) return;
+  if (!ee?.prompt || !ee?.api?.baseUrl || !ee?.api?.apiKey || !ee?.api?.model) {
+    return '';
+  }
 
   const charId = (body?.metadata && typeof body.metadata === 'object') ? body.metadata.charId : '';
   // 情绪评估 = 单条 user 消息, 与本地 buildEmotionEvalPrompt 输出**逐字对齐**. 客户端把 prompt 里
@@ -390,7 +504,6 @@ async function runEmotionEval(body: any, env: Env, requestUrl?: string): Promise
   const evalMessages = [{ role: 'user', content: evalContent }];
   try {
     const baseUrl = String(ee.api.baseUrl).replace(/\/+$/, '');
-    console.log('[TIMING] emotion: LLM call start', new Date().toISOString());
     const res = await fetch(`${baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
@@ -401,40 +514,27 @@ async function runEmotionEval(body: any, env: Env, requestUrl?: string): Promise
         model: ee.api.model,
         messages: evalMessages,
         temperature: 0.85,
+        // 显式给足输出额度: 部分代理不传 max_tokens 时默认很小, eval 输出很长, 会被截断成半截 JSON
+        max_tokens: 8000,
         stream: false,
       }),
     });
-    console.log('[TIMING] emotion: LLM call done', res.status, new Date().toISOString());
     let raw = '';
     if (res.ok) {
       const data: any = await res.json();
-      raw = data?.choices?.[0]?.message?.content || '';
+      // content 可能是分块数组; 个别代理把全部输出塞进 reasoning_content 而 content 留空 —
+      // 与客户端 utils/emotionApply.ts:extractAssistantText 同一套兜底 (解析容错在客户端 applyEmotionEvalRaw).
+      const msg = data?.choices?.[0]?.message;
+      raw = flattenContent(msg?.content)
+        || (typeof msg?.reasoning_content === 'string' ? msg.reasoning_content : '');
     } else {
       console.error('[emotion-eval] LLM call failed', res.status);
     }
 
-    // 无论成功 / 失败 / 空结果都推一条 emotion_update (emotionRaw 可能为空字符串):
-    // 客户端据此熄灭 "情绪分析中" 徽章, 否则只能等本地安全超时, 体验上像卡死.
-    const pushObj = {
-      messageKind: 'emotion_update',
-      messageType: MESSAGE_TYPE.INSTANT,
-      source: PUSH_SOURCE.INSTANT,
-      sessionId: body?.sessionId || '',
-      contactName: body?.contactName || '',
-      message: '',
-      messageId: `msg_${body?.sessionId || Date.now()}_emotion`,
-      timestamp: Date.now(),
-      metadata: { charId, emotionRaw: raw },
-    };
-
-    // Reuse amsg's oversize transport so large emotionRaw payloads do not exceed Web Push limits.
-    await sendPushWithMaybeBlob(pushObj, { pushSubscription: sub }, {
-      ...buildAmsgOptions(env),
-      requestUrl,
-    } as any, body?.sessionId || '');
-    console.log('[TIMING] emotion: push sent', new Date().toISOString());
+    return raw;
   } catch (e) {
     console.error('[emotion-eval] failed', e);
+    return '';
   }
 }
 
@@ -446,9 +546,69 @@ async function runEmotionEval(body: any, env: Env, requestUrl?: string): Promise
  * 并行调度副 API 情绪评估 + 推 emotion_update. 主回复的 LLM 生成 + 切段 + 推送
  * 由 amsg-instant Cloudflare adapter 接收 ctx 后自己挂进 waitUntil.
  */
+/**
+ * 给 SSE 响应补防压缩 / 防缓冲头, 再原样转发库返回的流式 Response。
+ *
+ * 库 (amsg-instant) 内部把 SSE 响应头写死成 text/event-stream + Cache-Control: no-cache,
+ * 没法配。问题排查时怀疑: 边缘 / 中间层若对这条流做压缩或缓冲, 每秒一发的 `: keepalive`
+ * 小帧会被攒在缓冲里不实时下发, 客户端看着像 idle → 到连接寿命上限被掐。
+ * 加 `no-transform` (CF 文档的禁边缘改写开关) + `X-Accel-Buffering: no` (nginx 类反代禁缓冲提示)
+ * 把这条路堵上。只动 text/event-stream 响应, JSON / 204 / blob 原样放行。
+ * 注意: 不设 `Content-Encoding: identity` —— 手动声明编码可能和流式传输打架, 反而引新坑;
+ * text/event-stream 本就不在 CF 自动压缩名单里, no-transform 已足够。
+ */
+function withSseAntiBufferingHeaders(resp: Response): Response {
+  const contentType = resp.headers.get('content-type') || '';
+  if (!contentType.includes('text/event-stream')) return resp;
+  const headers = new Headers(resp.headers);
+  headers.set('Cache-Control', 'no-cache, no-transform');
+  headers.set('X-Accel-Buffering', 'no');
+  return new Response(resp.body, {
+    status: resp.status,
+    statusText: resp.statusText,
+    headers,
+  });
+}
+
+/**
+ * 大请求体 gzip 上行解码。amsg-client 2.7+ 在 body 超阈值时会 gzip 压缩、带自定义头
+ * `X-Amsg-Request-Encoding: gzip` 发原始压缩字节 —— iOS 上行把 ~322KB 压到 ~50KB,
+ * 绕开「大 body 上传撑过 ~42s 被中间层掐」那条链路。
+ *
+ * 这里在 worker 入口把它解压回普通 JSON Request, 后续 `.json()` / amsg-instant 读 body
+ * 全程无感。**故意用自定义头而非标准 `Content-Encoding`**: 标准头会被 CF / 代理自动解压,
+ * 双重解压会炸; 自定义头只有我们自己认, 链路中间不碰。
+ *
+ * 没这个头 (旧客户端 / 客户端 CompressionStream 不可用时回退明文) 原样返回, 向后兼容。
+ */
+async function decodeGzipRequestBody(request: Request): Promise<Request> {
+  if (request.headers.get('x-amsg-request-encoding') !== 'gzip' || !request.body) {
+    return request;
+  }
+  const decompressed = await new Response(
+    request.body.pipeThrough(new DecompressionStream('gzip')),
+  ).arrayBuffer();
+  const headers = new Headers(request.headers);
+  headers.delete('x-amsg-request-encoding');
+  headers.delete('content-length'); // 解压后长度变了, 删掉让运行时自算
+  return new Request(request.url, {
+    method: request.method,
+    headers,
+    body: decompressed,
+  });
+}
+
 export default {
   fetch: async (request: Request, env: Env, ctx: { waitUntil(p: Promise<unknown>): void }) => {
     const url = new URL(request.url);
+
+    // CORS 预检自处理：amsg-instant 库的预检 Allow-Headers 写死且不含压缩用的
+    // X-Amsg-Request-Encoding，跨域带该头的预检会被它拦死。抢在库之前回我们自己的
+    // 预检响应（放行列表见 UTILITY_CORS_HEADERS），与 version/capabilities 分支一致。
+    if (request.method === 'OPTIONS') {
+      return new Response(null, { status: 204, headers: UTILITY_CORS_HEADERS });
+    }
+
     if (url.pathname === '/version') {
       return handleVersionRequest(request);
     }
@@ -456,25 +616,33 @@ export default {
       return handleCapabilitiesRequest(request, env);
     }
 
+    // 大请求体走 gzip 上行时, 入口先解压成普通 Request, 后面 .json() / cfWorker 全程无感。
+    let decodedRequest: Request;
+    try {
+      decodedRequest = await decodeGzipRequestBody(request);
+    } catch {
+      return new Response(JSON.stringify({ error: 'Failed to decompress request body' }), {
+        status: 400,
+        headers: {
+          ...UTILITY_CORS_HEADERS,
+          'Content-Type': 'application/json',
+        },
+      });
+    }
+
     let body: any = null;
     try {
-      body = await request.clone().json();
+      body = await decodedRequest.clone().json();
     } catch {
       body = null; // 非 JSON / 解析失败: 不影响主路径
     }
-    const requestedEnv = withRequestOversizeTransport(env, body);
+    const requestedEnv = withRequestOversizeTransport({ ...env }, body);
     const workerEnv = await prepareBlobStoreEnv(requestedEnv);
     scheduleD1BlobCleanup(workerEnv, ctx);
 
-    // 情绪评估不依赖主回复内容 (用 body.messages = 与主回复同一批消息, 跟本地一样不含新回复),
-    // 所以与主回复**并行**跑, 而不是 await cfWorker.fetch (流式输出 + 推送 + 收尾可能拖 ~30s)
-    // 完成后才启动 —— 砍掉情绪评估的启动延迟, 让 buff / "情绪分析中" 徽章尽快结算.
-    if (body?.emotionEval) {
-      console.log('[TIMING] emotion: dispatched', new Date().toISOString());
-      ctx.waitUntil(runEmotionEval(body, workerEnv, request.url));
-    }
-    console.log('[TIMING] reply: dispatched', new Date().toISOString());
-    return await (cfWorker as any).fetch(request, workerEnv, ctx);
+    // 主回复由 amsg-instant 内部的 onBeforeLoop / waitUntil 驱动。
+    const resp = await (cfWorker as any).fetch(decodedRequest, workerEnv, ctx);
+    return withSseAntiBufferingHeaders(resp);
   },
   async scheduled(_event: unknown, env: Env) {
     const workerEnv = await prepareBlobStoreEnv(env);
@@ -492,7 +660,7 @@ export default {
  *            iteration, metadata, contactName, avatarUrl, llmResponse, ... }
  */
 async function onLLMOutput(ctx: any) {
-  return buildPushDecision({
+  const decision = buildPushDecision({
     llmOutputText: String(ctx.llmOutputText ?? ''),
     sessionId: ctx.sessionId,
     iteration: Number(ctx.iteration ?? 0),
@@ -501,6 +669,7 @@ async function onLLMOutput(ctx: any) {
     // metadata 透传: 客户端 sendInstantPush 时塞了 charId; SW 路由要它分发到具体角色
     callerMetadata: (ctx.metadata && typeof ctx.metadata === 'object') ? ctx.metadata : {},
   });
+  return decision;
 }
 
 // ─── Pure logic: 抽出来给单测 ──────────────────────────────────────────────
@@ -702,7 +871,7 @@ function buildSegmentPush(args: {
         ...(directives !== undefined ? { directives } : {}),
       },
     }),
-    notification: { title: notificationTitle, body: seg.sanitized },
+    notification: { show: 'when-hidden', title: notificationTitle, body: seg.sanitized },
   };
 }
 

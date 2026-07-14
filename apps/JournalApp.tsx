@@ -6,10 +6,12 @@ import { CharacterProfile, DiaryEntry, StickerData, DiaryPage, MemoryFragment } 
 import { ContextBuilder } from '../utils/context';
 import { processImage } from '../utils/file';
 import Modal from '../components/os/Modal';
-import { safeResponseJson } from '../utils/safeApi';
+import { safeResponseJson, extractJson } from '../utils/safeApi';
+import { normalizeMessageContent } from '../utils/messageFormat';
 import { injectMemoryPalace, ingestDiaryToPalace, type DiaryIngestResult } from '../utils/memoryPalace/pipeline';
 import { getRoomLabel } from '../utils/memoryPalace/types';
 import { Sparkle, Archive } from '@phosphor-icons/react';
+import { CharacterGroupFilterBar, filterCharactersByGroup, GROUP_FILTER_ALL } from '../components/character/CharacterGroupFilter';
 
 const INTRO_SEEN_KEY = 'journal_app_intro_seen_v4';
 
@@ -34,6 +36,23 @@ const DEFAULT_STICKERS = [
     twemojiUrl('1f48c'), twemojiUrl('1f4a4'), twemojiUrl('1f97a'), twemojiUrl('1f621'), twemojiUrl('1f62d'),
 ];
 
+// 兜底：extractJson 都救不回来时，内容可能是「模型没按 JSON 写的散文」，也可能是
+// 「破损到修不了的 JSON」。前者直接当正文用；后者不能把 { "text": "..." } 整段露出来。
+// 这里做最后一层打捞：若内容像个带 text 字段的 JSON 对象，正则抠出 text 值并还原转义；
+// 否则原样返回。
+const salvageDiaryText = (raw: string): string => {
+    const s = (raw || '').trim();
+    if (!s.startsWith('{') || !/"text"\s*:/.test(s)) return s;
+    const m = s.match(/"text"\s*:\s*"((?:\\.|[^"\\])*)"/);
+    if (!m) return s;
+    try {
+        // 用 JSON.parse 还原 \n \" \\ 等转义，失败就手动替换常见转义
+        return JSON.parse(`"${m[1]}"`);
+    } catch {
+        return m[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+    }
+};
+
 // HELPER: Get local date string YYYY-MM-DD
 const getLocalDateStr = () => {
     const d = new Date();
@@ -44,10 +63,11 @@ const getLocalDateStr = () => {
 };
 
 const JournalApp: React.FC = () => {
-    const { closeApp, characters, activeCharacterId, apiConfig, addToast, userProfile, updateCharacter, memoryPalaceConfig } = useOS();
+    const { closeApp, characters, activeCharacterId, apiConfig, addToast, userProfile, updateCharacter, memoryPalaceConfig, characterGroups } = useOS();
 
     const [mode, setMode] = useState<'select' | 'calendar' | 'write'>('select');
     const [selectedChar, setSelectedChar] = useState<CharacterProfile | null>(null);
+    const [journalGroupId, setJournalGroupId] = useState<string>(GROUP_FILTER_ALL); // 选日记本页的分组筛选
     const [diaries, setDiaries] = useState<DiaryEntry[]>([]);
     const [currentEntry, setCurrentEntry] = useState<DiaryEntry | null>(null);
     const [selectedDate, setSelectedDate] = useState<string>(getLocalDateStr());
@@ -409,8 +429,13 @@ const JournalApp: React.FC = () => {
 
             const recentMsgs = await DB.getMessagesByCharId(selectedChar.id);
             const contextLimit = 30;
+            // 用统一的 normalizeMessageContent 把消息转成可读文本，绝不能直接塞 m.content：
+            // score_card（含上一次交换日记同步进来的卡片）的 content 是整段 JSON，里面带
+            // charAvatar 的 base64 data URL + 双方日记全文。重新生成时这张卡已在历史里，
+            // 直接 dump 原始 content 会把 base64 头像和 JSON 结构整个灌进 prompt，
+            // 造成 token 异常膨胀。normalize 后日记卡会被压成一行摘要，不再泄漏 base64/JSON。
             const recentContext = recentMsgs.slice(-contextLimit).map(m => {
-                const content = m.type === 'image' ? '[User sent an image]' : m.content;
+                const content = normalizeMessageContent(m, selectedChar.name, userProfile.name);
                 return `[${new Date(m.timestamp).toLocaleTimeString()}] ${m.role === 'user' ? 'User' : 'You'}: ${content}`;
             }).join('\n');
 
@@ -438,9 +463,11 @@ ${customStickerContext}
 如果要使用 Custom Sticker，请将 URL 直接放入返回的 stickers 数组中。
 
 ### 输出格式 (必须是纯 JSON)
+- 只输出这个 JSON 对象本身，前后不要有任何多余文字。
+- text 是一个 JSON 字符串：内部的换行必须写成 \\n，引号必须写成 \\"，反斜杠必须写成 \\\\。**绝对不要**在字符串里直接放真实换行或未转义的引号，否则会解析失败。
 Structure:
 {
-  "text": "日记正文...",
+  "text": "日记正文第一段\\n\\n第二段...",
   "paperStyle": "one of: ${styleOptions}",
   "stickers": ["sticker1", "http://custom-sticker-url..."] (从默认列表或 Custom Stickers 中选0-3个)
 }`;
@@ -463,11 +490,14 @@ Structure:
             let content = data.choices[0].message.content.trim();
             content = content.replace(/```json/g, '').replace(/```/g, '').trim();
             
-            let parsed;
-            try {
-                parsed = JSON.parse(content);
-            } catch (e) {
-                parsed = { text: content, paperStyle: 'plain', stickers: [] };
+            // Claude 常返回未转义特殊字符（引号 / 反斜杠 / 换行）的 JSON，裸 JSON.parse 会炸。
+            // 旧代码一炸就把整段原始 JSON（{ "text": ... } 带字面量 \n）直接塞进日记正文，
+            // 这就是「交换日记掉格式」的现象。先走 extractJson 的多层容错；连它都解析不出来
+            // （模型压根没按 JSON 写、直接写了散文）才把内容当纯文本兜底，兜底时再剥一层
+            // 可能残留的 JSON 外壳，保证任何情况下都不会把 { "text": ... } 露给用户。
+            let parsed: any = extractJson(content);
+            if (!parsed || typeof parsed.text !== 'string') {
+                parsed = { text: salvageDiaryText(content), paperStyle: 'plain', stickers: [] };
             }
 
             const charStickers: StickerData[] = (parsed.stickers || []).map((s: string) => ({
@@ -746,9 +776,9 @@ ${charPart}
                 <p className="font-bold text-amber-700">几个新变化,先看一眼:</p>
                 <div className="rounded-2xl bg-amber-50 border border-amber-100 px-4 py-3 space-y-2">
                     <p><span className="font-bold text-amber-700">① 自动同步聊天:</span> 角色回复了你的日记之后,会自动变成一张漂亮卡片出现在和这个角色的聊天里 —— 不用再手动发送。你之后在日记本里改文字 / 删日记,聊天里那张卡片也会跟着同步。</p>
-                    <p><span className="font-bold text-amber-700">② 单向日记不进上下文:</span> 如果你只是单方面写给角色看(没让 ta 回复),这一篇就不会进入任何记忆,按以前的方式存着就好。</p>
-                    <p><span className="font-bold text-amber-700">③ 新日记不用管归档:</span> 本次更新<b>之后</b>新写的日记走的就是上面"自动同步聊天"那条线 —— 卡片落到聊天里之后, chatapp 的日度归档 / 记忆宫殿管线会跟处理其它消息一样把它顺带处理掉, 不需要也<b>不应该</b>再手动归档一次。所以新日记你看不到归档入口, 这是故意的。</p>
-                    <p><span className="font-bold text-amber-700">④ 老日记还能手动归档:</span> 本次更新<b>之前</b>留下的老日记里, 如果是角色回复过的, <b>点进那篇日记, 右上角会有一个"归档"按钮</b>, 点一下就行 —— 没开宫殿的角色走主 API 出散文式总结写进神经链接, 开了宫殿的就走副 API 一次抽多条结构化记忆, 节点入向量库 + 同一组内容也 bullet 化写进神经链接, 跟 chatapp 自动归档一模一样。</p>
+                    <p><span className="font-bold text-amber-700">② 单向日记不进记忆:</span> 如果你只是单方面写给角色看(没让 ta 回复),这一篇就不会进入任何记忆,按以前的方式存着就好。</p>
+                    <p><span className="font-bold text-amber-700">③ 新日记不用管归档:</span> 本次更新<b>之后</b>新写的日记走的就是上面"自动同步聊天"那条线 —— 卡片进了聊天后，系统会像处理普通消息一样自动帮你整理。不需要也<b>不应该</b>再手动归档一次。所以新日记你看不到归档入口, 这是故意的。</p>
+                    <p><span className="font-bold text-amber-700">④ 老日记还能手动归档:</span> 本次更新<b>之前</b>留下的老日记里, 如果是角色回复过的, <b>点进那篇日记, 右上角会有一个"归档"按钮</b>, 点一下就行 —— 就会把这篇日记整理进角色的记忆里，开了记忆宫殿的角色会记得更细。</p>
                 </div>
                 <p className="text-xs text-slate-400">这条提示只出现一次。</p>
             </div>
@@ -762,22 +792,22 @@ ${charPart}
         // 宫殿状态文案
         let palaceStatus: { tone: 'on' | 'off' | 'warn' | 'fail'; title: string; detail: string } = { tone: 'off', title: '', detail: '' };
         if (!p) {
-            palaceStatus = { tone: 'fail', title: '记忆宫殿 · 写入失败', detail: '入宫过程抛出异常, 详情看控制台。神经链接已 fallback 走主 API 散文版写入成功。' };
+            palaceStatus = { tone: 'fail', title: '记忆宫殿 · 写入失败', detail: '记忆宫殿这次没能写入，但日记已经成功存进神经链接。' };
         } else if (p.status === 'palace_disabled') {
-            palaceStatus = { tone: 'off', title: '记忆宫殿 · 未开启', detail: `${archiveResult.charName} 没开启记忆宫殿, 走的主 API 散文路径写神经链接。要让日记进向量记忆, 去角色设置打开"记忆宫殿"开关再归档。` };
+            palaceStatus = { tone: 'off', title: '记忆宫殿 · 未开启', detail: `${archiveResult.charName} 没开启记忆宫殿，这次按基础方式存进了神经链接。想让日记记得更细，去角色设置打开"记忆宫殿"开关再归档。` };
         } else if (p.status === 'lightllm_missing') {
-            palaceStatus = { tone: 'warn', title: '记忆宫殿 · 副 API 未配置', detail: '宫殿已开, 但宫殿副 API (memoryPalaceConfig.lightLLM) 没填; 没法做结构化抽取, 神经链接已 fallback 走主 API 散文版。' };
+            palaceStatus = { tone: 'warn', title: '记忆宫殿 · 副 API 未配置', detail: '记忆宫殿的后台模型还没配置，去设置里填一下就能用完整功能；这次先按基础方式存进了神经链接。' };
         } else if (p.status === 'embedding_missing') {
-            palaceStatus = { tone: 'warn', title: '记忆宫殿 · 嵌入模型未配置', detail: '宫殿已开, 但 embedding 配置缺失; 没法向量化, 神经链接已 fallback 走主 API 散文版。' };
+            palaceStatus = { tone: 'warn', title: '记忆宫殿 · 嵌入模型未配置', detail: '嵌入模型还没配置；这次先按基础方式存进了神经链接，去设置补上就能用完整功能。' };
         } else if (p.status === 'empty_input') {
             palaceStatus = { tone: 'warn', title: '记忆宫殿 · 内容为空', detail: '日记两页都没有正文, 没东西可入宫。' };
         } else if (p.status === 'extracted_none') {
-            palaceStatus = { tone: 'warn', title: '记忆宫殿 · 副 API 没提取出内容', detail: '副 API 读完日记但没认为有值得记的东西。神经链接已 fallback 走主 API 散文版写入。' };
+            palaceStatus = { tone: 'warn', title: '记忆宫殿 · 副 API 没提取出内容', detail: '读完这篇日记后没找到值得单独记的内容；日记本身已经存进神经链接了。' };
         } else {
             palaceStatus = {
                 tone: 'on',
                 title: `记忆宫殿 · 入了 ${p.stored} 条${p.skipped > 0 ? ` (另有 ${p.skipped} 条命中已有记忆去重)` : ''}`,
-                detail: '副 API 把日记拆成下面这几条结构化记忆并向量化, 同一组内容也 bullet 化进了上面的神经链接。后续聊天召回时按语义命中。createdAt 已对齐到日记当天。',
+                detail: '这篇日记被整理成下面这几条记忆，之后聊到相关内容时角色会想起来；日期按日记当天记。',
             };
         }
 
@@ -799,7 +829,7 @@ ${charPart}
                     {archiveResult.summaryOrigin === 'palace_bullets' ? (
                         <div className="rounded-xl bg-gradient-to-r from-emerald-50 to-purple-50 border border-emerald-200/60 px-3 py-2 text-[11px] text-slate-600">
                             ✓ 这次归档同时进了 <b className="text-emerald-700">神经链接</b> 和 <b className="text-purple-700">记忆宫殿</b>,
-                            两边拿的是 <b>同一组提取出来的内容</b> —— 副 API 抽出的 MemoryNode 直接 bullet 化写进神经链接, 跟 chatapp 的自动归档一致。
+                            两边拿的是 <b>同一组提取出来的内容</b> —— 这次提取出的几条记忆会一并存进神经链接。
                         </div>
                     ) : (
                         <div className="rounded-xl bg-emerald-50/70 border border-emerald-100 px-3 py-2 text-[11px] text-slate-600">
@@ -810,7 +840,7 @@ ${charPart}
                     {/* 神经链接 */}
                     <div className="rounded-2xl border border-emerald-100 bg-emerald-50/70 px-4 py-3 space-y-2">
                         <div className="flex items-center gap-2 flex-wrap">
-                            <span className="text-[10px] font-bold tracking-widest uppercase text-emerald-700">● 神经链接 · char.memories</span>
+                            <span className="text-[10px] font-bold tracking-widest uppercase text-emerald-700">● 神经链接</span>
                             <span className="text-[10px] text-emerald-600/70">写入 1 条 · 日期 {archiveResult.date}</span>
                             <span className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700">mood={archiveResult.summaryOrigin === 'palace_bullets' ? 'diary_palace' : 'diary'}</span>
                         </div>
@@ -873,16 +903,21 @@ ${charPart}
             <div className="h-full w-full bg-amber-50 flex flex-col font-light">
                 {introModal}
                 {archiveResultModal}
-                <div className="pt-12 pb-4 px-6 border-b border-amber-100 bg-amber-50/80 backdrop-blur-sm sticky top-0 z-20 flex items-center justify-between shrink-0 h-24 box-border">
-                    <button onClick={closeApp} className="p-2 -ml-2 rounded-full hover:bg-amber-100/50 active:scale-90 transition-transform">
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6 text-amber-900"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
-                    </button>
-                    <span className="font-bold text-amber-900 text-lg tracking-wide">选择日记本</span>
-                    <div className="w-8"></div>
+                <div className="border-b border-amber-100 bg-amber-50/80 backdrop-blur-sm sticky top-0 z-20 shrink-0" style={{ paddingTop: 'var(--chrome-top)' }}>
+                    <div className="h-12 px-6 flex items-center justify-between">
+                        <button onClick={closeApp} className="p-2 -ml-2 rounded-full hover:bg-amber-100/50 active:scale-90 transition-transform">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6 text-amber-900"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
+                        </button>
+                        <span className="font-bold text-amber-900 text-lg tracking-wide">选择日记本</span>
+                        <div className="w-8"></div>
+                    </div>
                 </div>
                 
+                {/* 分组筛选（没建分组时不渲染），浅色米黄底 */}
+                <CharacterGroupFilterBar characters={characters} groups={characterGroups}
+                    value={journalGroupId} onChange={setJournalGroupId} className="px-6 pt-4 shrink-0" />
                 <div className="p-6 grid grid-cols-2 gap-5 overflow-y-auto pb-20 no-scrollbar">
-                    {characters.map(c => (
+                    {filterCharactersByGroup(characters, characterGroups, journalGroupId).map(c => (
                         <div key={c.id} onClick={() => handleCharSelect(c)} className="aspect-[3/4] bg-white rounded-r-2xl rounded-l-md border-l-4 border-l-amber-800 shadow-[2px_4px_12px_rgba(0,0,0,0.08)] p-4 flex flex-col items-center justify-center gap-3 cursor-pointer active:scale-95 transition-all relative overflow-hidden group">
                             <div className="absolute inset-y-0 left-0 w-2 bg-gradient-to-r from-black/10 to-transparent"></div>
                             <div className="w-16 h-16 rounded-full p-[2px] border border-amber-100 bg-amber-50">
@@ -902,7 +937,7 @@ ${charPart}
             <div className="h-full w-full bg-white flex flex-col font-light relative">
                 {introModal}
                 {archiveResultModal}
-                <div className="pt-12 pb-6 px-6 bg-amber-500 shadow-lg shrink-0 rounded-b-[2rem] z-20">
+                <div className="pb-6 px-6 bg-amber-500 shadow-lg shrink-0 rounded-b-[2rem] z-20" style={{ paddingTop: 'max(3rem, var(--safe-top))' }}>
                     <div className="flex justify-between items-start mb-4">
                          <button onClick={() => setMode('select')} className="text-white/80 hover:text-white transition-colors">
                             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="M10.5 19.5 3 12m0 0 7.5-7.5M3 12h18" /></svg>
@@ -984,63 +1019,65 @@ ${charPart}
             {archiveResultModal}
 
             {/* Editor Header */}
-            <div className="pt-12 pb-3 px-4 bg-[#1a1a1a]/90 backdrop-blur-md flex items-center justify-between text-white shrink-0 z-30 h-24 box-border">
-                <button onClick={() => setMode('calendar')} className="p-2 -ml-2 text-white/60 hover:text-white rounded-full active:bg-white/10 transition-colors">
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
-                </button>
-                <div className="flex gap-3">
-                    {/* Toggle Char Sticker Visibility Button */}
-                    {activeTab === 'char' && (
-                        <button 
-                            onClick={() => setHideCharStickers(!hideCharStickers)} 
-                            className={`p-2 rounded-full transition-colors ${hideCharStickers ? 'bg-red-500/20 text-red-400' : 'bg-white/10 text-white/60'}`}
-                            title={hideCharStickers ? "显示贴纸" : "隐藏贴纸"}
-                        >
-                            {hideCharStickers ? (
-                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M3.98 8.223A10.477 10.477 0 0 0 1.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.451 10.451 0 0 1 12 4.5c4.756 0 8.773 3.162 10.065 7.498a10.522 10.522 0 0 1-4.293 5.774M6.228 6.228 3 3m3.228 3.228 3.65 3.65m7.894 7.894L21 21m-3.228-3.228-3.65-3.65m0 0a3 3 0 1 0-4.243-4.243m4.242 4.242L9.88 9.88" /></svg>
-                            ) : (
-                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M2.036 12.322a1.012 1.012 0 0 1 0-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178Z" /><path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" /></svg>
-                            )}
-                        </button>
-                    )}
-
-                    {currentEntry?.chatCardMessageId && (
-                        <div className="px-3 py-1 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-300 flex items-center gap-1.5" title="该日记已自动同步为聊天卡片">
-                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-3 h-3"><path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" /></svg>
-                            已同步聊天
-                        </div>
-                    )}
-                    {currentEntry?.isArchived && (
-                        <div className="px-3 py-1 rounded-full text-[10px] font-bold bg-amber-500/15 text-amber-300 flex items-center gap-1.5" title="该日记已归档进神经链接">
-                            <Archive size={11} weight="fill" />
-                            已归档
-                        </div>
-                    )}
-                    {/* 老日记 (本次更新前留下的, autoSync 未设) 且角色已回复 → 右上角出现归档按钮.
-                        新日记走自动同步聊天那条线, 不显示这个按钮防止重复入库. */}
-                    {currentEntry && !currentEntry.autoSync && currentEntry.charPage && !currentEntry.isArchived && (
-                        <button
-                            onClick={() => handleArchiveDiary(currentEntry)}
-                            disabled={archivingId === currentEntry.id}
-                            className={`px-3 py-1.5 rounded-full text-xs font-bold shadow-lg transition-all flex items-center gap-1.5 ${archivingId === currentEntry.id ? 'bg-amber-700/60 text-amber-200 cursor-wait' : 'bg-amber-500 text-white hover:bg-amber-400 active:scale-95'}`}
-                            title={'把这篇老日记归档进神经链接' + (selectedChar?.memoryPalaceEnabled ? ' / 记忆宫殿' : '')}
-                        >
-                            {archivingId === currentEntry.id ? (
-                                <>
-                                    <div className="w-3 h-3 border-2 border-amber-200/40 border-t-amber-100 rounded-full animate-spin"></div>
-                                    归档中
-                                </>
-                            ) : (
-                                <>
-                                    <Archive size={12} weight="fill" />
-                                    归档
-                                </>
-                            )}
-                        </button>
-                    )}
-                    <button onClick={saveEntry} className="px-4 py-1.5 bg-white/10 rounded-full text-xs font-bold hover:bg-white/20 active:scale-95 transition-transform">
-                        保存
+            <div className="bg-[#1a1a1a]/90 backdrop-blur-md text-white shrink-0 z-30" style={{ paddingTop: 'var(--chrome-top)' }}>
+                <div className="h-12 px-4 flex items-center justify-between">
+                    <button onClick={() => setMode('calendar')} className="p-2 -ml-2 text-white/60 hover:text-white rounded-full active:bg-white/10 transition-colors">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
                     </button>
+                    <div className="flex gap-3">
+                        {/* Toggle Char Sticker Visibility Button */}
+                        {activeTab === 'char' && (
+                            <button
+                                onClick={() => setHideCharStickers(!hideCharStickers)}
+                                className={`p-2 rounded-full transition-colors ${hideCharStickers ? 'bg-red-500/20 text-red-400' : 'bg-white/10 text-white/60'}`}
+                                title={hideCharStickers ? "显示贴纸" : "隐藏贴纸"}
+                            >
+                                {hideCharStickers ? (
+                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M3.98 8.223A10.477 10.477 0 0 0 1.934 12C3.226 16.338 7.244 19.5 12 19.5c.993 0 1.953-.138 2.863-.395M6.228 6.228A10.451 10.451 0 0 1 12 4.5c4.756 0 8.773 3.162 10.065 7.498a10.522 10.522 0 0 1-4.293 5.774M6.228 6.228 3 3m3.228 3.228 3.65 3.65m7.894 7.894L21 21m-3.228-3.228-3.65-3.65m0 0a3 3 0 1 0-4.243-4.243m4.242 4.242L9.88 9.88" /></svg>
+                                ) : (
+                                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M2.036 12.322a1.012 1.012 0 0 1 0-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178Z" /><path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" /></svg>
+                                )}
+                            </button>
+                        )}
+
+                        {currentEntry?.chatCardMessageId && (
+                            <div className="px-3 py-1 rounded-full text-[10px] font-bold bg-emerald-500/15 text-emerald-300 flex items-center gap-1.5" title="该日记已自动同步为聊天卡片">
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-3 h-3"><path strokeLinecap="round" strokeLinejoin="round" d="m4.5 12.75 6 6 9-13.5" /></svg>
+                                已同步聊天
+                            </div>
+                        )}
+                        {currentEntry?.isArchived && (
+                            <div className="px-3 py-1 rounded-full text-[10px] font-bold bg-amber-500/15 text-amber-300 flex items-center gap-1.5" title="该日记已归档进神经链接">
+                                <Archive size={11} weight="fill" />
+                                已归档
+                            </div>
+                        )}
+                        {/* 老日记 (本次更新前留下的, autoSync 未设) 且角色已回复 → 右上角出现归档按钮.
+                            新日记走自动同步聊天那条线, 不显示这个按钮防止重复入库. */}
+                        {currentEntry && !currentEntry.autoSync && currentEntry.charPage && !currentEntry.isArchived && (
+                            <button
+                                onClick={() => handleArchiveDiary(currentEntry)}
+                                disabled={archivingId === currentEntry.id}
+                                className={`px-3 py-1.5 rounded-full text-xs font-bold shadow-lg transition-all flex items-center gap-1.5 ${archivingId === currentEntry.id ? 'bg-amber-700/60 text-amber-200 cursor-wait' : 'bg-amber-500 text-white hover:bg-amber-400 active:scale-95'}`}
+                                title={'把这篇老日记归档进神经链接' + (selectedChar?.memoryPalaceEnabled ? ' / 记忆宫殿' : '')}
+                            >
+                                {archivingId === currentEntry.id ? (
+                                    <>
+                                        <div className="w-3 h-3 border-2 border-amber-200/40 border-t-amber-100 rounded-full animate-spin"></div>
+                                        归档中
+                                    </>
+                                ) : (
+                                    <>
+                                        <Archive size={12} weight="fill" />
+                                        归档
+                                    </>
+                                )}
+                            </button>
+                        )}
+                        <button onClick={saveEntry} className="px-4 py-1.5 bg-white/10 rounded-full text-xs font-bold hover:bg-white/20 active:scale-95 transition-transform">
+                            保存
+                        </button>
+                    </div>
                 </div>
             </div>
 

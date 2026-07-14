@@ -4,6 +4,7 @@ import { useChatAI } from '../hooks/useChatAI';
 import { DB } from '../utils/db';
 import { Message } from '../types';
 import { Plugs, Power, Trash, Plug } from '@phosphor-icons/react';
+import { CharacterGroupFilterBar, filterCharactersByGroup, GROUP_FILTER_ALL } from '../components/character/CharacterGroupFilter';
 
 const LS = {
   wsUrl: 'qqBridge:wsUrl',
@@ -41,6 +42,7 @@ const formatTs = (ts: number) => {
 const QQBridge: React.FC = () => {
   const {
     characters,
+    characterGroups,
     apiConfig,
     userProfile,
     groups,
@@ -49,6 +51,7 @@ const QQBridge: React.FC = () => {
     updateCharacter,
     closeApp,
   } = useOS();
+  const [pickerGroupId, setPickerGroupId] = useState<string>(GROUP_FILTER_ALL); // 回复角色的分组筛选
 
   const [wsUrl, setWsUrl] = useState(() => localStorage.getItem(LS.wsUrl) || 'ws://127.0.0.1:3001');
   const [token, setToken] = useState(() => localStorage.getItem(LS.token) || '');
@@ -279,15 +282,17 @@ const QQBridge: React.FC = () => {
   return (
     <div className="h-full w-full bg-slate-50/50 flex flex-col font-light relative">
       {/* Header */}
-      <div className="h-20 bg-white/85 flex items-end pb-3 px-4 border-b border-white/40 shrink-0 z-10 sticky top-0">
-        <div className="flex items-center gap-2 w-full">
-          <button onClick={closeApp} className="p-2 -ml-2 rounded-full hover:bg-black/5 active:scale-90 transition-transform">
-            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6 text-slate-600">
-              <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" />
-            </svg>
-          </button>
-          <h1 className="text-xl font-medium text-slate-700 tracking-wide">QQ 桥</h1>
-          <span className={`ml-auto text-[10px] font-bold px-2 py-1 rounded-full ${statusColor}`}>{statusText}</span>
+      <div className="bg-white/85 border-b border-white/40 shrink-0 z-10 sticky top-0" style={{ paddingTop: 'var(--safe-top)' }}>
+        <div className="flex items-center px-4 py-3">
+          <div className="flex items-center gap-2 w-full">
+            <button onClick={closeApp} className="p-2 -ml-2 rounded-full hover:bg-black/5 active:scale-90 transition-transform">
+              <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6 text-slate-600">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" />
+              </svg>
+            </button>
+            <h1 className="text-xl font-medium text-slate-700 tracking-wide">QQ 桥</h1>
+            <span className={`ml-auto text-[10px] font-bold px-2 py-1 rounded-full ${statusColor}`}>{statusText}</span>
+          </div>
         </div>
       </div>
 
@@ -358,8 +363,12 @@ const QQBridge: React.FC = () => {
           {characters.length === 0 ? (
             <div className="text-xs text-slate-500">还没有角色，请先去「神经链接」创建一个。</div>
           ) : (
+            <>
+            {/* 分组筛选（没建分组时不渲染）：只影响显示，已选角色不受影响 */}
+            <CharacterGroupFilterBar characters={characters} groups={characterGroups}
+              value={pickerGroupId} onChange={setPickerGroupId} className="mb-2" />
             <div className="grid grid-cols-2 gap-2">
-              {characters.map(c => {
+              {filterCharactersByGroup(characters, characterGroups, pickerGroupId).map(c => {
                 const selected = c.id === charId;
                 return (
                   <button
@@ -381,6 +390,7 @@ const QQBridge: React.FC = () => {
                 );
               })}
             </div>
+            </>
           )}
         </section>
 

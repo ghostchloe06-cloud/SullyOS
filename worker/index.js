@@ -31,6 +31,47 @@ function jsonResponse(obj, { status = 200, origin } = {}) {
   });
 }
 
+// ---- /fetch-webpage 用: SSRF 防护 + body 大小上限 ----
+// 网页分享代理只抓用户粘贴的公网网页, 拒绝 loopback / 私有网段 / link-local / 内网后缀。
+function isUnsafeFetchTarget(parsed) {
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return true;
+  const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  if (host === 'localhost' || host.endsWith('.local') || host.endsWith('.internal')) return true;
+  if (host === '::1' || host === '0.0.0.0') return true;
+  const v4 = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (v4) {
+    const a = Number(v4[1]), b = Number(v4[2]);
+    if (a === 127 || a === 10 || a === 0) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 169 && b === 254) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+  }
+  // IPv6 唯一本地 (fc00::/7) / link-local (fe80::/10)
+  if (/^f[cd][0-9a-f]{2}:/i.test(host) || /^fe[89ab][0-9a-f]:/i.test(host)) return true;
+  return false;
+}
+
+// 读 Response body, 累加到 maxBytes 就停 (防超大页面打爆 worker)。
+async function readBodyCapped(res, maxBytes) {
+  const reader = (res.body && res.body.getReader) ? res.body.getReader() : null;
+  if (!reader) return await res.text();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value) {
+      total += value.length;
+      chunks.push(value);
+      if (total >= maxBytes) { try { await reader.cancel(); } catch (e) { /* ignore */ } break; }
+    }
+  }
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const c of chunks) { merged.set(c.subarray(0, total - offset), offset); offset += c.length; }
+  return new TextDecoder('utf-8', { fatal: false }).decode(merged);
+}
+
 function route(url) {
   const p = url.pathname.replace(/\/+$/, "");
   if (p === "" || p === "/") return { kind: "web" };
@@ -1490,6 +1531,124 @@ export default {
       }
     }
 
+    // ========== 短链展开 (/expand-url) ==========
+    // 跟随 HTTP 重定向返回最终 URL。小红书短链 xhslink.com 不含 note id/xsec_token，
+    // 前端展开后才能提取，再走小红书 Lite 抓详情。见 utils/webpageExtractor.ts expandShortUrl。
+    if (url.pathname === '/expand-url') {
+      if (request.method !== 'POST') {
+        return jsonResponse({ error: 'Method not allowed. Use POST.' }, { status: 405, origin });
+      }
+      let b = {};
+      try { b = await request.json(); } catch (e) { /* allow empty */ }
+      const raw = (b && typeof b.url === 'string') ? b.url.trim() : '';
+      if (!raw) return jsonResponse({ error: 'Missing url' }, { status: 400, origin });
+      let target;
+      try { target = new URL(raw); } catch { return jsonResponse({ error: 'Invalid URL' }, { status: 400, origin }); }
+      if (isUnsafeFetchTarget(target)) {
+        return jsonResponse({ error: '只允许展开公网 http(s) 链接' }, { status: 400, origin });
+      }
+      const c = new AbortController();
+      const t = setTimeout(() => c.abort(), 8000);
+      try {
+        const res = await fetch(target.toString(), {
+          method: 'GET',
+          redirect: 'follow',
+          headers: { 'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1' },
+          signal: c.signal,
+        });
+        const finalUrl = res.url || target.toString();
+        console.log('expand-url', target.toString(), '→', finalUrl);
+        return jsonResponse({ success: true, data: { finalUrl } }, { origin });
+      } catch (e) {
+        const aborted = e && e.name === 'AbortError';
+        return jsonResponse({ error: aborted ? '展开超时' : `展开失败: ${String((e && e.message) || e)}` }, { status: aborted ? 504 : 502, origin });
+      } finally {
+        clearTimeout(t);
+      }
+    }
+
+    // ========== 网页分享代理 (/fetch-webpage) ==========
+    // 前端把用户粘贴的链接发来，worker 抓回正文（绕过浏览器 CORS），存成 webpage_card 让角色"看见"。
+    // 见 utils/webpageExtractor.ts。两段式：
+    //   1) Jina Reader (r.jina.ai)：后端渲染 JS/SPA + 正文提取，MSN/微博/知乎这类动态页也能读到正文；
+    //   2) 失败/限速时回退裸抓 HTML，前端用 DOMParser 兜底提取。
+    // 返回 data.mode 区分：'reader'(干净正文 content) / 'raw'(原始 html)。
+    // 可选 env.JINA_API_KEY 提升 Jina 速率（无 key 也能用，走 IP 限速）。SSRF 防护 + 2MB 截断。
+    if (url.pathname === '/fetch-webpage') {
+      if (request.method !== 'POST') {
+        return jsonResponse({ error: 'Method not allowed. Use POST.' }, { status: 405, origin });
+      }
+      let reqBody = {};
+      try { reqBody = await request.json(); } catch (e) { /* allow empty */ }
+      const rawUrl = (reqBody && typeof reqBody.url === 'string') ? reqBody.url.trim() : '';
+      if (!rawUrl) {
+        return jsonResponse({ error: 'Missing url' }, { status: 400, origin });
+      }
+      let target;
+      try { target = new URL(rawUrl); } catch {
+        return jsonResponse({ error: 'Invalid URL' }, { status: 400, origin });
+      }
+      if (isUnsafeFetchTarget(target)) {
+        return jsonResponse({ error: '只允许抓取公网 http(s) 网页' }, { status: 400, origin });
+      }
+
+      // 1) Jina Reader 优先（渲染 + 正文提取）。失败静默回退裸抓，不影响整体。
+      {
+        const jc = new AbortController();
+        const jt = setTimeout(() => jc.abort(), 20000); // 渲染慢，给 20s
+        try {
+          const jh = { 'Accept': 'application/json', 'X-Return-Format': 'markdown' };
+          if (env && env.JINA_API_KEY) jh['Authorization'] = `Bearer ${env.JINA_API_KEY}`;
+          const jr = await fetch(`https://r.jina.ai/${target.toString()}`, { method: 'GET', headers: jh, signal: jc.signal });
+          if (jr.ok) {
+            const jj = await jr.json().catch(() => null);
+            const d = jj && jj.data;
+            const content = (d && typeof d.content === 'string') ? d.content.trim() : '';
+            if (content) {
+              console.log('fetch-webpage[jina]', target.toString(), '→', content.length, 'chars');
+              return jsonResponse({ success: true, data: { mode: 'reader', title: (d.title || '').trim(), content, finalUrl: d.url || target.toString() } }, { origin });
+            }
+          }
+          console.log('fetch-webpage[jina] miss → raw fallback, status', jr.status);
+        } catch (jinaErr) {
+          console.log('fetch-webpage[jina] error → raw fallback:', String((jinaErr && jinaErr.message) || jinaErr));
+        } finally { clearTimeout(jt); }
+      }
+
+      // 2) 裸抓 HTML 兜底
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 8000);
+      try {
+        const upstream = await fetch(target.toString(), {
+          method: 'GET',
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (compatible; SullyOS-WebpageBot/1.0; +https://github.com/sully)',
+            'Accept': 'text/html,application/xhtml+xml',
+          },
+          redirect: 'follow',
+          signal: controller.signal,
+        });
+        if (!upstream.ok) {
+          return jsonResponse({ error: `目标站点返回 HTTP ${upstream.status}` }, { status: 502, origin });
+        }
+        const ct = upstream.headers.get('content-type') || '';
+        if (ct && !/text\/html|application\/xhtml\+xml|text\/plain/i.test(ct)) {
+          return jsonResponse({ error: `不支持的内容类型: ${ct}` }, { status: 415, origin });
+        }
+        const html = await readBodyCapped(upstream, 2 * 1024 * 1024);
+        console.log('fetch-webpage[raw]', target.toString(), '→', upstream.status, html.length, 'chars');
+        return jsonResponse({ success: true, data: { mode: 'raw', html, finalUrl: upstream.url || target.toString(), contentType: ct } }, { origin });
+      } catch (e) {
+        const aborted = e && e.name === 'AbortError';
+        return jsonResponse(
+          { error: aborted ? '抓取超时' : `抓取出错: ${String((e && e.message) || e)}` },
+          { status: aborted ? 504 : 502, origin }
+        );
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
     // ========== GitHub 代理 ==========
     // 给国内连不上 github.com 的用户兜底用。只放行 api.github.com 和
     // uploads.github.com，方法用 X-GitHub-Method 头携带。
@@ -2550,6 +2709,39 @@ export default {
       }
     }
 
+    // ========== 鱼声 Fish Audio TTS 代理 (静态部署绕 CORS, 纯透传) ==========
+    // 前端 POST /fishaudio/tts?model=s2.1-pro  + Authorization: Bearer <fish key>
+    // body = { text, reference_id, format, ... }；返回二进制音频(mp3)。
+    // model 走 query：避免自定义 'model' header 触发 CORS 预检失败。
+    // Worker 不读不存 key，只做 CORS + 转发 https://api.fish.audio/v1/tts。
+    if (url.pathname === '/fishaudio/tts') {
+      if (request.method !== 'POST') {
+        return jsonResponse({ error: 'Method not allowed' }, { status: 405, origin });
+      }
+      const auth = request.headers.get('Authorization');
+      if (!auth) {
+        return jsonResponse({ error: 'Missing Authorization header (Fish API key)' }, { status: 401, origin });
+      }
+      const model = (url.searchParams.get('model') || 's2.1-pro').trim();
+      try {
+        const upstream = await fetch('https://api.fish.audio/v1/tts', {
+          method: 'POST',
+          headers: {
+            'Authorization': auth,
+            'Content-Type': request.headers.get('Content-Type') || 'application/json',
+            'model': model,
+          },
+          body: await request.text(),
+        });
+        const respHeaders = new Headers(corsHeaders(origin));
+        respHeaders.set('Content-Type', upstream.headers.get('Content-Type') || 'audio/mpeg');
+        respHeaders.set('Access-Control-Expose-Headers', 'Content-Length, Content-Type');
+        return new Response(upstream.body, { status: upstream.status, headers: respHeaders });
+      } catch (e) {
+        return jsonResponse({ error: 'Fish Audio upstream fetch failed', detail: String(e && e.message || e) }, { status: 502, origin });
+      }
+    }
+
     // ========== 麦当劳 MCP 代理 (浏览器 CORS 兜底, 纯透传) ==========
     // 前端 POST /mcp/mcd  + Authorization: Bearer <user_mcp_token>
     // body 即 MCP JSON-RPC 报文 (initialize / tools/list / tools/call ...)
@@ -2586,6 +2778,46 @@ export default {
         return new Response(text, { status: upstream.status, headers: respHeaders });
       } catch (e) {
         return jsonResponse({ error: 'McDonald MCP upstream fetch failed', detail: String(e && e.message || e) }, { status: 502, origin });
+      }
+    }
+
+    // ========== 瑞幸 MCP 代理 (浏览器 CORS 兜底, 纯透传) ==========
+    // 前端 POST /mcp/luckin  + Authorization: Bearer <user_mcp_token>
+    // body 即 MCP JSON-RPC 报文 (initialize / tools/list / tools/call ...)
+    // Worker 不读不存 token, 只做 CORS + 转发 https://gwmcp.lkcoffee.com/order/user/mcp
+    // token 来源: 登录 https://open.lkcoffee.com 复制 (有效期约 1 个月)
+    if (url.pathname === '/mcp/luckin') {
+      if (request.method !== 'POST') {
+        return jsonResponse({ error: 'Method not allowed' }, { status: 405, origin });
+      }
+      const auth = request.headers.get('Authorization');
+      if (!auth) {
+        return jsonResponse({ error: 'Missing Authorization header (Luckin MCP token)' }, { status: 401, origin });
+      }
+      try {
+        const fwdHeaders = {
+          'Authorization': auth,
+          'Content-Type': request.headers.get('Content-Type') || 'application/json',
+          'Accept': request.headers.get('Accept') || 'application/json, text/event-stream',
+          'User-Agent': 'aetheros-mcp-proxy/1.0',
+        };
+        const sid = request.headers.get('Mcp-Session-Id') || request.headers.get('mcp-session-id');
+        if (sid) fwdHeaders['Mcp-Session-Id'] = sid;
+        const upstream = await fetch('https://gwmcp.lkcoffee.com/order/user/mcp', {
+          method: 'POST',
+          headers: fwdHeaders,
+          body: await request.text(),
+        });
+        const text = await upstream.text();
+        const respHeaders = new Headers(corsHeaders(origin));
+        const ct = upstream.headers.get('Content-Type');
+        if (ct) respHeaders.set('Content-Type', ct);
+        else respHeaders.set('Content-Type', 'application/json; charset=utf-8');
+        const upSid = upstream.headers.get('Mcp-Session-Id') || upstream.headers.get('mcp-session-id');
+        if (upSid) respHeaders.set('Mcp-Session-Id', upSid);
+        return new Response(text, { status: upstream.status, headers: respHeaders });
+      } catch (e) {
+        return jsonResponse({ error: 'Luckin MCP upstream fetch failed', detail: String(e && e.message || e) }, { status: 502, origin });
       }
     }
 

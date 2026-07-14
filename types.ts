@@ -35,6 +35,9 @@ export enum AppID {
   Handbook = 'handbook', // 手账 — 跨角色聚合的生活留痕本（LLM 代笔 + 角色生活流陪伴）
   QQBridge = 'qq_bridge', // QQ 桥接 — 通过 NapCat 把 QQ 私聊接入当前角色，共享 IndexedDB 上下文
   HotNews = 'hot_news', // 热点 — 分时段召回的多平台热榜可视化（决定角色可能聊起的话题）
+  VRWorld = 'vrworld', // 彼方 — 角色自主登入的虚拟世界（定时驱动，房间里看小说/听歌/留言，产出活动卡注入聊天+记忆）
+  CharCreatorDev = 'char_creator_dev', // 捏脸系统开发模式 — 仅开发模式可见，向捏人器指定类目追加自定义部件
+  WorldHome = 'world_home', // 家园 — 同世界观多角色共同生活的大世界（观测驱动演绎，每角色独立 LLM 调用 + NPC 世界引擎）
 }
 
 export interface SystemLog {
@@ -73,14 +76,24 @@ export interface OSTheme {
   wallpaper: string;
   darkMode: boolean;
   contentColor?: string;
+  /** 桌面整体皮肤。'animalcrossing' = 动森风格（NookPhone 彩色圆角图标 + 暖色界面）；
+   *  'mobilegame' = 二次元手游首页风格（角色卡 + 等级经验条 + 货币栏 + 网格卡 + 罗盘 dock）；
+   *  'tamagotchi' = 电子宠物养成机（桌面即角色的小屋舞台 + 四颗糖果实体键）。默认 'default'。 */
+  skin?: 'default' | 'animalcrossing' | 'mobilegame' | 'tamagotchi';
+  /** 动森皮肤下，聊天 App 是否也跟随换成动森界面。默认 true（undefined 视为 true）。关掉则聊天保持原样式。 */
+  acnhChatSync?: boolean;
   launcherWidgetImage?: string; // DEPRECATED: always stripped on load — never renders.
   launcherWidgets?: Record<string, string>; // slots: 'tl' | 'tr' | 'wide' | 'dsq' (legacy 'bl' / 'br' are banned)
+  /** 默认皮肤桌面「正在播放」音乐卡片改用浅色系样式（默认 false = 深色玻璃）。 */
+  nowPlayingWidgetLight?: boolean;
   desktopDecorations?: DesktopDecoration[];
   customFont?: string;
   hideStatusBar?: boolean;
   // Chat UI customization (global)
   chatAvatarShape?: 'circle' | 'rounded' | 'square';
   chatAvatarSize?: 'small' | 'medium' | 'large';
+  /** 聊天表情包大小三挡：小 96px（默认）/ 中 128px / 大 160px（旧版尺寸）。经 --sully-emoji-size CSS 变量生效 */
+  chatEmojiSize?: 'small' | 'medium' | 'large';
   chatAvatarMode?: 'grouped' | 'every_message';
   chatBubbleStyle?: 'modern' | 'flat' | 'outline' | 'shadow' | 'wechat' | 'ios';
   chatMessageSpacing?: 'compact' | 'default' | 'spacious';
@@ -95,6 +108,14 @@ export interface OSTheme {
   chatSendButtonStyle?: 'circle' | 'pill' | 'minimal';
   /** Instant Push 用户气泡左侧的"准备中"圆点动画。默认开启。 */
   chatPendingIndicator?: boolean;
+  /** 聊天「白框」自定义 CSS：作用于 .sully-chat-header / .sully-chat-inputbar / .sully-chat-root，
+   *  以及顶栏各零件 .sully-chat-back / .sully-chat-avatar / .sully-chat-name / .sully-chat-status /
+   *  .sully-chat-buffs / .sully-chat-token / .sully-chat-trigger。可换色 / 贴图 / 改外形 / 挪位。 */
+  chatChromeCustomCss?: string;
+  /** 全局默认「白框提示音」：某角色未单独设提示音时回落到这里。src 同角色版（内置 key / 音频直链 / data:audio）。 */
+  chatSound?: { src: string; volume?: number };
+  /** 隐藏顶栏的情绪 buff 栏。 */
+  chatHideHeaderBuffs?: boolean;
 }
 
 export interface AppearancePreset {
@@ -136,6 +157,10 @@ export interface VirtualTime {
 
 export type MinimaxRegion = 'domestic' | 'overseas';
 
+// 语音合成（TTS）服务商。'minimax'（默认）走 MiniMax T2A；'fishaudio' 走鱼声 Fish Audio。
+// 全局二选一：切换后所有语音场景（聊天语音条 / 约会 / 电话）统一用同一家。
+export type TtsProvider = 'minimax' | 'fishaudio';
+
 export interface APIConfig {
   baseUrl: string;
   apiKey: string;
@@ -145,6 +170,24 @@ export interface APIConfig {
   // 'overseas' → https://api.minimax.io  (海外站)
   // Missing / unknown falls back to domestic.
   minimaxRegion?: MinimaxRegion;
+  // 语音服务商二选一。缺省 → 'minimax'。
+  ttsProvider?: TtsProvider;
+  // 鱼声 Fish Audio API Key（https://fish.audio/）。仅 ttsProvider === 'fishaudio' 时使用。
+  fishAudioApiKey?: string;
+  // 鱼声默认模型（s2.1-pro / s2-pro / s1）。缺省 → 's2.1-pro'。
+  // 角色 voiceProfile.fishModel 优先于这个全局默认。
+  fishAudioModel?: string;
+  // 用户自定义「语音表演指南」——注入到角色 system prompt、教模型怎么写出有情绪的语音台词。
+  // minimax / fishaudio：聊天 + 电话共用，按 TTS 服务商分别存（两家标记体系不同，不能共用一份）；
+  //   留空 → 用内置默认（minimaxTts.VOICE_ACTING_GUIDE / fishAudioTts.FISH_VOICE_ACTING_GUIDE）。
+  // dateVoice：见面（DateApp）专用的 [v:xxx] 语音情绪规则，与服务商无关、单独一份；
+  //   留空 → 用内置默认（datePrompts.DATE_VOICE_GUIDE）。
+  // 在「设置 → 其他 API → 语音提示词」里二次编辑，存 localStorage（随 apiConfig）。
+  voicePrompts?: {
+    minimax?: string;
+    fishaudio?: string;
+    dateVoice?: string;
+  };
   // Replicate token (r8_xxx) for ACE-Step song generation in 写歌 App.
   aceStepApiKey?: string;
   model: string;
@@ -306,8 +349,8 @@ export interface CharacterBuff {
 export interface RealtimeConfig {
   // 天气配置
   weatherEnabled: boolean;
-  weatherApiKey: string;  // OpenWeatherMap API Key
-  weatherCity: string;    // 城市名
+  weatherApiKey: string;  // OpenWeatherMap API Key（可选；留空走免 key 的 Open-Meteo）
+  weatherCity: string;    // 城市名（如 "北京"、"Beijing"）
 
   // 新闻配置
   newsEnabled: boolean;
@@ -394,10 +437,24 @@ export interface SkinSet {
   sprites: Record<string, string>; // emotion -> image URL or base64
 }
 
+// 见面模式文风配置。由「场景布置」面板调整，datePrompts 构建 VN 提示词时读取，
+// 改动即时生效于后续生成（system prompt 每次请求重建）。
+export interface DateStyleConfig {
+  /** 写作风格预设 id，见 datePrompts.DATE_STYLE_PRESETS；缺省 = cinematic（电影感） */
+  style?: string;
+  /** 叙事人称：third-name=「B看着A」 third-you=「B看着你」 first-you=「我看着你」；缺省 = 不注入人称指令 */
+  pov?: 'third-name' | 'third-you' | 'first-you';
+  /** 细节深挖引导：教模型从任意输入里挖素材 + 每轮轮换聚焦线索，对冲"没话找话"式的模型八股；缺省 = 开启 */
+  digDeeper?: boolean;
+  /** 自定义补充文风要求，原样追加进风格块 */
+  extra?: string;
+}
+
 export interface RoomItem {
     id: string;
     name: string;
-    type: 'furniture' | 'decor';
+    /** rug=地毯：永远铺在最底层，角色与其它家具都压在它上面 */
+    type: 'furniture' | 'decor' | 'rug';
     image: string;
     x: number;
     y: number;
@@ -424,6 +481,23 @@ export interface RoomNote {
     relatedMessageId?: number; 
 }
 
+/** 小剧场的一拍（one beat）：一行叙述 / 动作 / 台词，emotion 是该行氛围标记（emoji 或短词）。 */
+export interface TheaterLine {
+    emotion?: string;   // 该行的氛围标记，渲染成小标签（一个 emoji 或 2-4 字短词）
+    text: string;       // 这一拍的叙述 / 动作 / 台词
+}
+
+/**
+ * 小剧场（窥视演出）。挂在某个 ScheduleSlot 上：用户点该时段的播放按钮，
+ * 第三人称「上帝视角」生成角色在这个时间点的一小段行为演出，逐行播放。
+ * 生成一次即缓存进 slot，可反复重看，不重复烧 token。
+ */
+export interface SlotTheater {
+    lines: TheaterLine[];
+    mood?: string;        // 整段演出的氛围一句话（可选，展示用）
+    generatedAt: number;
+}
+
 export interface ScheduleSlot {
     startTime: string;    // "08:00"
     activity: string;     // "晨跑"
@@ -431,6 +505,7 @@ export interface ScheduleSlot {
     emoji?: string;       // "🏃"
     location?: string;    // "河边"
     innerThought?: string; // 该时段的内心独白，生成时由AI写好，运行时直接注入
+    theater?: SlotTheater; // 该时段的小剧场（窥视演出），按需生成并缓存
 }
 
 export interface DailySchedule {
@@ -533,22 +608,269 @@ export interface ChatTheme {
 export interface PhoneCustomApp {
     id: string;
     name: string;
-    icon: string; 
-    color: string; 
-    prompt: string; 
+    icon: string;
+    color: string;
+    prompt: string;
+    layout?: 'generic' | 'shop' | 'feed' | 'forum' | 'novel'; // 参考样板 UI 风格，默认 generic
 }
 
 export interface PhoneEvidence {
     id: string;
-    type: 'chat' | 'order' | 'social' | 'delivery' | string; 
-    title: string; 
-    detail: string; 
+    type: 'chat' | 'order' | 'social' | 'delivery' | string;
+    title: string;
+    detail: string;
     timestamp: number;
-    systemMessageId?: number; 
-    value?: string; 
+    systemMessageId?: number;
+    value?: string;
+    /** 人际关系系统：本条记录归属的联系人（phoneState.contacts 里的 id） */
+    contactId?: string;
 }
 
-export interface Worldbook {
+/**
+ * 人际关系系统 · 联系人。
+ * 角色（机主）通讯录里的一个人，可能是神经链接里真实存在的角色（real），
+ * 也可能是纯按人设虚构的路人（npc）。
+ */
+/** 聊天话题盒的一条总结记忆（某一侧第一人称、带主观色彩，由一段原文浓缩而来；可编辑/删除） */
+export interface ConvTopic {
+    id: string;
+    text: string;
+    createdAt: number;
+    /** 这条记忆浓缩了多少条原文（信息用） */
+    span?: number;
+}
+
+export interface PhoneContact {
+    id: string;
+    name: string;
+    /** 身份/关系标签，如「辅导员」「中间人」 */
+    identity?: string;
+    /** 机主对此人的备注（用户/机主手写的「已确立事实」，对话里当真遵守，不被自动覆盖） */
+    note?: string;
+    /**
+     * 机主通过相处「逐渐了解到」的关于此人的认识——由对话里 [[了解:…]] 累积而来。
+     * 注意：这是机主的「印象/判断」，来源是对方在聊天里自己说的，**未必属实**（对方可能在编）。
+     * 与 note（事实）分开存、分开注入。
+     */
+    learned?: string;
+    /**
+     * 聊天话题盒：这一侧（第一人称、带主观色彩）对这段对话的**总结记忆**。
+     * 每聊满 100 条触发一次总结、追加一条；用作聊天上下文（原文从上下文里隐藏，但仍存 record.detail 供用户查看）。
+     * 可长按删除/修改。
+     */
+    topicBox?: ConvTopic[];
+    /** 已被总结归档的原文条数（水位线）：record.detail 里这之前的内容不再进上下文，只进话题盒 */
+    archivedThru?: number;
+    avatar?: string;
+    /** 真假甄别结果：real=神经链接里真有这人；npc=纯虚构 */
+    kind: 'real' | 'npc';
+    /** kind==='real' 时绑定的真实角色 id（指向 characters 里的某个角色） */
+    linkedCharId?: string;
+    /** 机主对此人的好感度，-100..100（负=厌恶，可触发自动删友；正=亲近） */
+    affinity: number;
+    /** 关系状态 */
+    status: 'friend' | 'pending' | 'blocked' | 'deleted';
+    lastInteraction?: number;
+    createdAt: number;
+}
+
+/**
+ * 智能体 App · AI 服务种类。机主（被查手机的角色）自己也在玩 AI：
+ * - assistant：工具型 AI 助手（豆包/通义/ChatGPT 那种），问实用 & 尴尬问题。
+ * - claude：树洞型深度对话 AI（Claude 那种），说当面不会说的真心话。
+ * - tavern：酒馆 / SillyTavern 式 AI 角色扮演，自己捏卡跟 AI 对戏。
+ */
+export type AiServiceKind = 'assistant' | 'claude' | 'tavern';
+
+/** 智能体 App · 一段机主与 AI 的会话（被偷看到的记录） */
+export interface AiSession {
+    id: string;
+    service: AiServiceKind;
+    /** 服务/对象名：助手名(豆包) / 树洞名(Claude) / 酒馆卡片名 */
+    serviceName: string;
+    /** 会话标题（在聊什么） */
+    title: string;
+    /**
+     * 对话脚本，「我:/对方:」逐行（走 parseTranscript 无损解析）。
+     * assistant/claude：我=机主，对方=AI。
+     * tavern：我=机主(玩家)，对方=AI 扮演的卡片角色。
+     */
+    transcript: string;
+    /** tavern：关联的角色卡 id */
+    cardId?: string;
+    /** 长会话自动总结出的「前情提要」（参考 TRPG：超 100 条触发，把旧剧情压成小说梗概） */
+    summaries?: { id: string; content: string; createdAt: number }[];
+    /** 被折叠归档的旧原文（不删除，UI 可展开回看；总结后从 transcript 移到这里） */
+    archived?: string;
+    updatedAt: number;
+}
+
+/** 智能体 App · 机主在酒馆里建的角色卡 */
+export interface TavernCard {
+    id: string;
+    name: string;
+    /** 卡类型：character=单个角色卡；world=大型世界卡（跑团/修仙/西幻等） */
+    kind?: 'character' | 'world';
+    /** 角色人设 / 世界设定 */
+    persona: string;
+    /** 剧情背景 / 初始场景（酒馆的 scenario） */
+    scenario?: string;
+    emoji: string;
+    /** 是否照着用户（查手机的人）捏的——最偷窥感的一项 */
+    basedOnUser?: boolean;
+    /** 这张卡照着谁捏的（现实里 TA 在意的某个人的名字）：可能是用户，也可能是 TA 人设/羁绊里更深的某个人 */
+    basedOn?: string;
+    createdAt: number;
+}
+
+// 「人格模拟」演出运行时脚本模型（生成后驱动播放，也用于生活记录重播）
+export type SimBeatKind = 'lock' | 'thought' | 'notification' | 'app' | 'flashback' | 'end';
+export interface SimBeat {
+    time?: string;
+    kind: SimBeatKind;
+    monologue?: string;
+    pace?: 1 | 2 | 3;
+    vibe?: 'calm' | 'chaotic' | 'happy' | 'anxious' | 'numb' | 'tender';
+    notif?: { app: string; title: string; body: string; tone?: 'push' | 'sms' | 'system' | 'flashback' };
+    app?: {
+        name: string;
+        view: 'chat' | 'search' | 'photo' | 'music' | 'notes' | 'browser' | 'weather' | 'compose' | 'generic';
+        chat?: { name: string; lines: { me: boolean; text: string }[] };
+        search?: { engine?: string; queries: { q: string; deleted?: boolean }[] };
+        photo?: { caption?: string; date?: string; tint?: string };
+        music?: { song: string; artist: string; state?: string };
+        notes?: { title?: string; items: string[] };
+        browser?: { tabs: string[] };
+        weather?: { city: string; temp: number; desc: string };
+        compose?: { to?: string; drafts: string[]; sent?: string | null };
+        text?: string;
+    };
+    flashback?: { label?: string; caption?: string; date?: string; tint?: string };
+}
+export interface SimScript {
+    title: string;
+    ending?: string;
+    beats: SimBeat[];
+    summary: string;
+    buff?: { name?: string; label: string; emoji?: string; color?: string; intensity?: 1 | 2 | 3; description?: string };
+}
+
+// 「人格模拟」演出结束后写入「生活记录」的一条留存（角色不记得，仅作为用户的体验档案）
+export interface PhoneSimLog {
+    id: string;
+    mode: 'daily' | 'event';
+    theme: string;        // 体验内容（如「平凡的周二」）
+    title: string;        // 演出标题
+    summary: string;      // 收尾留白文字
+    ending?: string;      // 多结局版本标签
+    beatsCount: number;
+    buff?: { label: string; emoji?: string; color?: string };
+    memoryText?: string;  // 演出可读梗概，作为回忆发给角色时用（让角色真的"知道"发生了什么）
+    timestamp: number;
+    script?: SimScript;   // 完整脚本快照——存在则「生活记录」可原样重播（旧记录没有，仅可发送）
+}
+
+// ============================================================
+//  梦境演出系统 (Dream Theater) — 偷看一场角色已经忘记的梦。
+//  与「人格模拟」演出不同：梦不写实、不连贯、允许中度幻觉与矛盾，
+//  以拼贴诗 / 电影字幕 / 碎片记忆的方式呈现，留白与沉默本身就是演出。
+// ============================================================
+export type DreamArchetype =
+    | 'sweet'      // 甜梦
+    | 'nightmare'  // 噩梦
+    | 'flower'     // 花之梦
+    | 'flying'     // 飞翔之梦
+    | 'falling'    // 坠落之梦
+    | 'starry'     // 星空之梦
+    | 'ocean'      // 海之梦
+    | 'childhood'  // 童年之梦
+    | 'anxiety'    // 焦虑之梦
+    | 'forgotten'  // 遗忘之梦
+    | 'prophetic'  // 预言之梦
+    | 'lucid'      // 清醒梦
+    | 'deepsleep'; // 隐藏 · 深眠（无梦，沉默即是奖励）
+
+// 一个梦境碎片 —— 不同 kind 决定它在屏幕上的排版与呈现方式
+export type DreamFragmentKind =
+    | 'line'       // 一句飘过的字幕
+    | 'word'       // 单字 / 单词，巨大、孤立
+    | 'silence'    // 留白 · 沉默（空行，长停顿）
+    | 'repeat'     // 同一个词反复
+    | 'dialogue'   // 极短的对话碎片
+    | 'stage'      // 舞台提示（[门在微笑]）
+    | 'list'       // 清单
+    | 'screenplay' // 剧本片段
+    | 'diary'      // 日记残页
+    | 'message'    // 发给无人的消息
+    | 'image';     // 象征性画面 + 配文
+
+export interface DreamFragment {
+    kind: DreamFragmentKind;
+    text?: string;          // line / word / stage / diary / message / repeat 的词
+    lines?: string[];       // dialogue / list / screenplay 的多行
+    count?: number;         // repeat 的重复次数
+    caption?: string;       // image 的配文
+    date?: string;          // diary / image 的模糊日期口径
+    tint?: string;          // image 的色调 hex
+    emphasis?: 'whisper' | 'normal' | 'loud' | 'fade'; // 视觉强弱
+    align?: 'left' | 'center' | 'right';
+    pace?: 1 | 2 | 3;       // 停留时长：1 普通 / 2 稍慢 / 3 漫长
+}
+
+export interface DreamScript {
+    archetype: DreamArchetype;
+    title?: string;         // 梦的标题（可以晦涩、诗意）
+    fragments: DreamFragment[];
+    afterglow?: string;     // 醒来时残留的感觉（留白，不解释）
+    buff?: { name?: string; label: string; emoji?: string; color?: string; intensity?: 1 | 2 | 3; description?: string };
+}
+
+// 一场梦的留存（角色不记得，仅作为用户偷看到的档案 · 「梦的残页」）
+export interface DreamLog {
+    id: string;
+    archetype: DreamArchetype;
+    title?: string;
+    afterglow?: string;
+    fragmentsCount: number;
+    buff?: { label: string; emoji?: string; color?: string };
+    timestamp: number;
+    script?: DreamScript;   // 完整快照 → 可原样重看
+}
+
+export type WorldbookPosition = 0 | 1 | 2 | 3 | 4 | 5 | 6;
+export type WorldbookDepthRole = 0 | 1 | 2;
+export type WorldbookSelectiveLogic = 0 | 1 | 2 | 3;
+
+export interface WorldbookEntryConfig {
+    /** Primary activation keywords. Empty for constant entries. */
+    key?: string[];
+    /** Optional secondary activation keywords. */
+    keysecondary?: string[];
+    /** Always active when true; legacy SullyOS entries default to true. */
+    constant?: boolean;
+    selective?: boolean;
+    selectiveLogic?: WorldbookSelectiveLogic;
+    order?: number;
+    position?: WorldbookPosition;
+    disable?: boolean;
+    probability?: number;
+    useProbability?: boolean;
+    depth?: number;
+    role?: WorldbookDepthRole | null;
+    scanDepth?: number | null;
+    caseSensitive?: boolean | null;
+    matchWholeWords?: boolean | null;
+    sourceUid?: number;
+}
+
+export interface MountedWorldbook extends WorldbookEntryConfig {
+    id: string;
+    title: string;
+    content: string;
+    category?: string;
+}
+
+export interface Worldbook extends WorldbookEntryConfig {
     id: string;
     title: string;
     content: string; 
@@ -596,6 +918,678 @@ export interface NovelBook {
     segments: NovelSegment[];
     createdAt: number;
     lastActiveAt: number;
+}
+
+// =====================================================================
+// --- VR WORLD ("彼方") TYPES ---
+// 角色自主登入的虚拟世界。定时器驱动每个角色独立调用一次 LLM，在某个房间
+// 完成一次活动（v1：图书馆看小说），产出一张活动卡注入该角色的 1v1 聊天，
+// 天然被上下文与记忆总结捕捉。
+// =====================================================================
+
+/** 虚拟世界里的房间。 */
+export type VRRoomId = 'library' | 'music' | 'guestbook' | 'gym' | 'postoffice' | 'theater' | 'signal' | 'cafe';
+
+/** 全局小说库里的一本书（所有角色共享原文，各自留批注、各自书签）。 */
+export interface VRWorldNovel {
+    id: string;
+    title: string;
+    author?: string;
+    /** 简介，喂给角色当背景，也用于 UI 展示 */
+    summary?: string;
+    /** 原文按阅读单元切好的段落块（每块 ~数百字，便于定位批注与推进书签）。 */
+    segments: VRNovelSegment[];
+    /** 总字数（缓存，UI 展示用） */
+    totalChars: number;
+    createdAt: number;
+    updatedAt: number;
+}
+
+/** 小说里的一个阅读单元（原文段落块）。 */
+export interface VRNovelSegment {
+    /** 段落索引（0-based，等于在 segments 数组里的位置，持久化以防重排） */
+    idx: number;
+    /** 原文内容 */
+    text: string;
+    /** 字数（缓存） */
+    chars: number;
+}
+
+/**
+ * 一条批注。挂在 (novelId, segIdx) 上，可被任何角色吐槽（targetAnnotationId 指向被吐槽的批注）。
+ * 全局存在 VRWorldNovel 之外的独立集合里——见 db 的 vr_annotations 字段。
+ */
+export interface VRNovelAnnotation {
+    id: string;
+    novelId: string;
+    /** 批注锚定的段落索引 */
+    segIdx: number;
+    /** 作者角色 id（user 留批注时为 'user'） */
+    authorId: string;
+    /** 作者展示名（落库冗余，避免角色删除后丢名） */
+    authorName: string;
+    /** 批注/吐槽正文 */
+    content: string;
+    /** 若是"吐槽别人的吐槽"，指向被吐槽的批注 id */
+    targetAnnotationId?: string;
+    createdAt: number;
+}
+
+/** 角色在虚拟世界里的个人状态（挂在 CharacterProfile.vrState）。 */
+export interface VRWorldCharState {
+    /** 是否启用该角色的自主登入（独立于主动发消息 proactiveConfig） */
+    enabled: boolean;
+    /** 自主登入间隔（分钟，30 对齐；默认 120 = 2h） */
+    intervalMinutes: number;
+    /**
+     * 每本小说的独立书签：novelId -> 下一次该从第几个 segment 开始读。
+     * 这是"每个角色书签不一样"的落点。
+     */
+    novelBookmarks?: Record<string, number>;
+    /** 最近一次活动落在哪个房间（UI 立绘站位用） */
+    currentRoom?: VRRoomId;
+    /** 最近一次活动时间戳（UI / 调度展示用） */
+    lastActiveAt?: number;
+    /** 该角色专属 API 覆盖（用户可单独为「彼方」活动配 api）；不设则回落全局 apiConfig。 */
+    api?: { baseUrl: string; apiKey: string; model: string };
+    /**
+     * 角色在「彼方」里的 chibi 形象（Q版小人）。启用自主登入时要求设定，可随时编辑。
+     * img 不设时回退到角色立绘/头像。
+     */
+    chibi?: {
+        /** 形象图（透明背景 PNG，来自特别时光的捏人器 transparentDataUrl） */
+        img: string;
+        /** 捏人器导出的完整状态，回填用于再编辑（state.selected 可作为 presets） */
+        state?: any;
+        /** 站位缩放（默认 1） */
+        scale?: number;
+        /** 垂直微调（px，负数上移，默认 0） */
+        offsetY?: number;
+        /** 是否水平翻转 */
+        flip?: boolean;
+    };
+}
+
+/** 注入聊天的 vr_card 消息的 metadata 结构。 */
+export interface VRCardMeta {
+    vrCard: true;
+    room: VRRoomId;
+    /** 活动概述（steam 提示式，UI 标题） */
+    activity: string;
+    novelId?: string;
+    novelTitle?: string;
+    /** 本次读到的段落范围 [from, to)（仅 library） */
+    segRange?: [number, number];
+    /** 本次写下的批注摘要（保留正文，原文省略） */
+    annotationExcerpts?: string[];
+    /** 带段落锚点的批注引用（用于从动态点回原文跳转） */
+    annotationRefs?: { segIdx: number; text: string }[];
+    // --- 听歌房专用 ---
+    /** 本次评/听的当前歌（名 - 歌手） */
+    songLabel?: string;
+    /** 本次点/排进队列的自己的歌 */
+    queuedLabel?: string;
+    /** 此刻的行为描述（盯着跳/跟唱/给user录…；娱乐室也用） */
+    behavior?: string;
+    // --- 留言簿专用 ---
+    /** 本次发到留言簿的话（保留正文） */
+    boardPost?: string;
+    /** 本次发到留言簿的所有发言（原样，含回复对象），用于同步进 1v1 聊天/记忆 */
+    boardPosts?: { content: string; replyToName?: string }[];
+    /** 回复了谁 */
+    boardReplyToName?: string;
+    /** 这条卡片是"用户在留言簿发言"广播给该 char 的 */
+    userBoardPost?: boolean;
+    // --- 邮局专用 ---
+    /** 本次写信/回信的正文摘要 */
+    letterExcerpt?: string;
+    // --- 信号坠落处（跨用户接龙诗）专用 ---
+    /** 这次贡献所在的诗的标题 */
+    poemTitle?: string;
+    /** 这次写下的那一句 */
+    signalLine?: string;
+    /** 这一句在诗里是第几句（1-based） */
+    poemLineSeq?: number;
+    /** 这首诗 roll 到的总篇幅（句数） */
+    poemTargetLines?: number;
+    /** 本次是「起新篇」（写标题+第一句）还是「接龙」（续一句） */
+    signalIsNew?: boolean;
+    /** 截至本次贡献后这首诗的全文（逐句），供卡片展示 */
+    poemLinesSoFar?: string[];
+    /** 所在册子的标题（如「低电量合唱」），UI 展示 */
+    bookletTitle?: string;
+    /** 用户参与时留给角色的耳语（不进诗，只随卡片进聊天/记忆） */
+    signalWhisper?: string;
+}
+
+// ============================================================
+// 信号坠落处（VR 房间 'signal'）—— 跨用户接龙现代诗
+// ============================================================
+// 复用漂流瓶（post-office worker）的匿名 deviceId / 笔名马赛克 / 限流基建，
+// 但走独立的 po_poems / po_poem_lines 表。一本册子定死规格（多少首诗 /
+// 每首 roll 几句 / 每句几字），所有用户的角色共写同一份「当前」诗：读到
+// 的永远是最新全文，谁登入谁接一句，写满篇幅即封存进诗集。user 不参与。
+
+/** 信号坠落处的一句（来自某用户某角色，跨实例匿名）。 */
+export interface SignalPoemLine {
+    seq: number;
+    pen: string;
+    content: string;
+    createdAt: number;
+    /** 仅当请求带本机 device 时由后端标注：这一句是不是「我的 char」写的（认领用，不暴露别人 device） */
+    mine?: boolean;
+}
+
+/** 一首接龙诗（后端是源头，前端按需拉取）。 */
+export interface SignalPoem {
+    id: string;
+    bookletId: string;
+    title: string;
+    /** 发起者拟的主题/方向（给后来者接龙做参考的一段引导） */
+    brief?: string;
+    /** roll 到的篇幅（总句数） */
+    targetLines: number;
+    /** 已有句数 */
+    lineCount: number;
+    status: 'open' | 'sealed';
+    lines: SignalPoemLine[];
+    createdAt: number;
+    sealedAt?: number;
+    /** 仅当请求带本机 device 时：这首诗里有几句是「我的」（>0 = 我参与过，星图打光晕） */
+    mineCount?: number;
+}
+
+/** 一本册子（容器 + 规格）。 */
+export interface SignalBooklet {
+    id: string;
+    title: string;
+    subtitle?: string;
+    theme?: string;
+    /** 写满多少首诗算这本完成 */
+    poemsTarget: number;
+    /** 已封存诗数 */
+    poemCount: number;
+    /** 每首诗句数 roll 区间 */
+    linesMin: number;
+    linesMax: number;
+    /** 每句字数上限 */
+    charsPerLine: number;
+    status: 'open' | 'done';
+    createdAt: number;
+}
+
+// ============================================================
+// 家园（WorldHome）—— 同世界观多角色共同生活的大世界
+// ============================================================
+
+/**
+ * user 在该世界里的存在感模式：
+ * - light: 轻度——只是观察角色的一个切面，角色依旧以 user 为最重要的人（与 chatapp 聊天人设一致）
+ * - medium: 中度——user 是世界中普通的一份子，不特殊
+ * - heavy: 重度——user 不存在 / 是透明的幽灵，演绎中完全无视（通常用于看角色之间的关系）
+ */
+export type WorldHomeMode = 'light' | 'medium' | 'heavy';
+
+/**
+ * 时间模式（与存在感模式 WorldHomeMode 正交，创建时单独选）：
+ * - real: 真实时间——演绎进各角色的聊天与记忆（world_card），适合「真实系角色」。
+ *         真实使用里中间会穿插大量真人聊天，卡片自然稀疏，不会刷屏。
+ * - sim:  模拟时间——可自定义起始年月日，**不进记忆/聊天**；适合给 OC 们开小剧场图一乐。
+ *         每 20 天（= 80 轮，一天四段：早/中/晚/凌晨）自动结一卷：生成一份小说体总结（含人物关系动态走向
+ *         与评价），归档这 20 天原文，往后只把「该角色单方面视角的总结 + ta 最后一天 +
+ *         本卷沉淀的氛围」分开喂回各角色——避免角色被迫开上帝视角。
+ */
+export type WorldTimeMode = 'real' | 'sim';
+
+/** 模拟时间的起始日期（sim 模式专用）。 */
+export interface WorldSimDate {
+    year: number;
+    month: number;
+    day: number;
+}
+
+/** 世界里的 NPC：没有记忆系统，完全服务于世界观，由"世界引擎"一次 LLM 调用全部演绎。 */
+export interface WorldNPC {
+    id: string;
+    name: string;
+    /** 一句话人设（职业/性格/与谁有关） */
+    persona: string;
+    /** 可视化兜底 emoji（NPC 不走捏人系统） */
+    emoji?: string;
+}
+
+/** 居住安排：一间小屋及其住户。不在任何小屋里的成员视为独居（各自的小屋）。 */
+export interface WorldHouse {
+    id: string;
+    name: string;
+    residentIds: string[];
+}
+
+/** 成员（或 NPC）之间的**有向**关系条：from 对 to 的看法，与 to 对 from 的可以不对等。 */
+export interface WorldRelationship {
+    fromId: string;
+    toId: string;
+    /** from 眼中这段关系的名字（我视ta为挚友 / ta是我死对头…），用户可编辑，演绎不强行改 */
+    label?: string;
+    /** 0-100，from 对 to 的好感/亲近度，演绎产出的 delta 会落在这里 */
+    value: number;
+}
+
+/** 世界内消息（私聊/群聊通用）。fromId 可以是成员 charId 或 NPC id。 */
+export interface WorldChatMessage {
+    id: string;
+    fromId: string;
+    fromName: string;
+    text: string;
+    /** 发出时的轮数与剧情时间（手机 UI 按轮分隔显示） */
+    round: number;
+    storyTime: string;
+    timestamp: number;
+}
+
+/**
+ * 世界内消息线程。这是"手机是真手机"的落点：
+ * A 先演绎时发出的私聊/群聊立刻落线程，B 后演绎时就能在自己的手机上下文里
+ * 看到并回应——消息跨角色、跨轮交替传递，而不是各自的独白。
+ */
+export interface WorldThread {
+    /** dm 线程 id = 'dm_' + 两个 charId 排序后拼接；群聊 = 'group_main' */
+    id: string;
+    kind: 'dm' | 'group';
+    /** 群聊名（dm 不用） */
+    name?: string;
+    memberIds: string[];
+    messages: WorldChatMessage[];
+}
+
+/** 大段正文的文风。 */
+export type WorldNarrativeStyle = 'warm' | 'inner' | 'drama' | 'breezy' | 'sitcom' | 'custom';
+
+/**
+ * 伏笔：角色这半天瞒下的事（timeline 里 shared=false 对应的内幕）。
+ * 躺在世界的伏笔栏里，用户可点击"引爆"——下一轮演绎时注入给被瞒者
+ * （你发现了…）与当事人（你瞒的事败露了…），生成冲突。
+ */
+export interface WorldSeed {
+    id: string;
+    charId: string;
+    charName: string;
+    /** 瞒下的事 */
+    text: string;
+    /** 瞒着谁（成员名；空数组 = 瞒着所有人） */
+    hideFrom: string[];
+    round: number;
+    storyTime: string;
+    /** pending=躺着 / armed=用户已点引爆，下一轮爆发 / resolved=已爆发 */
+    status: 'pending' | 'armed' | 'resolved';
+}
+
+/**
+ * 用户对某角色"内心冲动"的决策/留言（想辞职？想告白？）。
+ * 下一轮演绎时以"内心的声音"注入该角色（light 模式下会联想到 user），注入后消费掉。
+ */
+export interface WorldDirective {
+    id: string;
+    charId: string;
+    /** 冲动原文（注入时引用） */
+    impulseText: string;
+    /** 用户的意见 */
+    text: string;
+    createdRound: number;
+}
+
+/** 一个"世界"的完整定义（IndexedDB worlds 表）。 */
+export interface WorldProfile {
+    id: string;
+    name: string;
+    /** 世界观总述（这个世界是什么样的，发生在哪，大家以什么身份生活） */
+    worldview: string;
+    mode: WorldHomeMode;
+    /** 时间模式（创建时选定，默认 real 真实时间；旧世界无此字段时按 real 处理） */
+    timeMode?: WorldTimeMode;
+    /** sim 模式的起始日期（不设时按创建当天） */
+    simStartDate?: WorldSimDate;
+    /** real 模式：世界已演到的「现实段」（早/中/晚/凌晨跟着真实时钟走）。dayKey=YYYY-MM-DD，
+     *  seg=0早/1中/2晚/3凌晨（凌晨发生在 dayKey **次日**的 0~5 点，排在该剧情日末尾以保证段序单调）。
+     *  只能补当天错过的段，过了今天就补不了；未演过时为空。 */
+    realClock?: { dayKey: string; seg: number };
+    /** sim 模式：已被卷入章节总结的剧情时钟数（round ≤ 此值的原文已归档，不再喂原文） */
+    simSummarizedClock?: number;
+    /** sim 模式：每 20 天结一卷的章节总结（按 index 升序累积；最新一卷参与下一卷的上文喂养） */
+    chapters?: WorldChapter[];
+    /** 大段正文的文风（默认 warm 细腻日常） */
+    narrativeStyle?: WorldNarrativeStyle;
+    /** narrativeStyle='custom' 时的自定义文风提示词 */
+    narrativeStyleCustom?: string;
+    /** 大段正文的叙述人称：first=第一人称(我) / second=第二人称(你) / third=第三人称(名字/ta)。默认 first */
+    narrationPerson?: 'first' | 'second' | 'third';
+    /** 参与的角色（CharacterProfile.id） */
+    memberIds: string[];
+    npcs: WorldNPC[];
+    houses: WorldHouse[];
+    relationships: WorldRelationship[];
+    /** 世界内消息线程（私聊 + 世界群聊），随演绎累积，每线程截留最近若干条 */
+    threads?: WorldThread[];
+    /** 伏笔栏 */
+    seeds?: WorldSeed[];
+    /** 待注入的用户决策（消费后移除） */
+    directives?: WorldDirective[];
+    /** 社交动态的互动：key = `${round}_${charId}_${postIdx}`，值含点赞数 + 评论（NPC/路人）。 */
+    feedReactions?: Record<string, { likes: number; comments: { from: string; text: string }[] }>;
+    /** 每天离线 tick 的时段（凌晨/早/午/晚），空数组 = 仅手动观测推进 */
+    offlineTickSlots?: ('latenight' | 'morning' | 'noon' | 'evening')[];
+    /** 剧情时钟：累计推进的段数（0 = 第1天早上；一天四段：早/中/晚/凌晨） */
+    storyClock: number;
+    /** storyClock/simSummarizedClock 的「每天段数」版本：旧存档（无此字段）= 3 段（早中晚），
+     *  4 = 含凌晨的四段制。加载/演绎时经 migrateWorldDaySegs 自动迁移。 */
+    clockSegs?: number;
+    /** 生成内容是否注入各成员的 1v1 聊天（默认 true） */
+    injectToChat?: boolean;
+    /** 该世界专属 API 覆盖；不设则回落全局 apiConfig */
+    api?: { baseUrl: string; apiKey: string; model: string };
+    createdAt: number;
+    updatedAt: number;
+}
+
+/** 一轮演绎中单个角色的产出（一次独立 LLM 调用，确保没人开上帝视角）。 */
+export interface WorldCharBeat {
+    charId: string;
+    charName: string;
+    /** 角色根据环境自判定的主要位置 */
+    location: string;
+    /** 大段正文：聚焦一件有意义的事/一次内心拉扯（按世界设定的文风），私人视角，不外传 */
+    narrative: string;
+    /** 心情（一两个词） */
+    mood: string;
+    /** 数值面板（体力/心情值/自定义键） */
+    statusPanel?: Record<string, number | string>;
+    /**
+     * 这半天的具体时间轴。shared=false 的条目是角色想瞒着的——
+     * 不会传递给其他角色，并会被提炼进伏笔栏（secrets）。
+     */
+    timeline?: { time: string; place: string; event: string; shared: boolean }[];
+    /** 备忘录（完全私人：只有本人和屏幕外的用户看得到） */
+    memo?: string[];
+    /** 状态背后的冲动/待决策（想辞职/想告白…），用户可以帮忙拿主意 */
+    impulse?: { text: string; options?: string[] };
+    /** 瞒下的事（→ 伏笔栏）。hideFrom 空数组 = 瞒所有人 */
+    secrets?: { text: string; hideFrom?: string[] }[];
+    /** 手机内容（dms/group 会立刻落进 world.threads，链内后续角色与下一轮都能收到） */
+    phone?: {
+        posts?: string[];
+        dms?: { to: string; lines: string[] }[];
+        /** 发到世界群聊的话 */
+        group?: string[];
+    };
+    /** 共处时当面对在场成员说的话（不是手机）——对话对象的演绎轮里会完整听到并被要求回应 */
+    dialogues?: { with: string; lines: string[] }[];
+    /** 本轮产出的关系变化（按名字回填到 world.relationships）。newLabel：仅在关系重大转折时，
+     *  角色对这段关系的新看法/称呼（覆盖 label，平时不给）。 */
+    relationshipDeltas?: { withName: string; delta: number; reason?: string; newLabel?: string }[];
+}
+
+/** 一轮演绎（"观测"或离线 tick 触发，推进半天剧情时间；IndexedDB world_episodes 表）。 */
+export interface WorldEpisode {
+    id: string;
+    worldId: string;
+    /** 第几轮（= 演绎完成后的 storyClock） */
+    round: number;
+    /** 剧情时间标签（第N天 白天/夜晚） */
+    storyTime: string;
+    trigger: 'observe' | 'tick';
+    /** NPC 群像（一次调用全部 NPC） */
+    npcScene?: string;
+    /** NPC 留下的、可被下一轮角色接住的事件钩子 */
+    npcHooks?: string[];
+    beats: WorldCharBeat[];
+    /** 本轮没演出来（LLM 调用/解析失败）的成员 charId——UI 提示用户可重 roll */
+    failedCharIds?: string[];
+    /** 机械拼接的本轮梗概，喂给下一轮做连续性 */
+    summary: string;
+    createdAt: number;
+}
+
+/**
+ * sim（模拟时间）模式下每 20 天结的一卷「章节总结」。
+ *
+ * 喂养路径（同样严格防上帝视角）：
+ *   - synopsis / relationshipEval：全知小说体梗概，**只给屏幕外的用户看**（图一乐），绝不喂角色。
+ *   - atmosphere：这一卷沉淀下来的氛围基调，可喂给所有角色（不含隐私）。
+ *   - perspectives[charId]：每个角色「单方面视角」的回顾——只含 ta 知道/经历的，
+ *     往后单独喂回对应角色，作为 ta 对这 20 天的记忆。
+ *   - lastDayBeats：每个角色这一卷最后一天的 beat，连同其单视角总结作为下一卷的上文。
+ */
+export interface WorldChapter {
+    id: string;
+    worldId: string;
+    /** 第几卷（1 起） */
+    index: number;
+    /** 覆盖的剧情时钟区间（含） */
+    fromClock: number;
+    toClock: number;
+    /** 区间起止的时间文本（sim 模式是日期） */
+    fromLabel: string;
+    toLabel: string;
+    /** 全知小说体梗概（给用户看，含人物关系动态走向与评价） */
+    synopsis: string;
+    /** 关系网这一卷的走向评价 */
+    relationshipEval?: string;
+    /** 这一卷沉淀的氛围基调（影响下一卷，喂给所有角色） */
+    atmosphere?: string;
+    /** 每个角色的单方面视角总结（分开喂回各自） */
+    perspectives: { charId: string; charName: string; text: string }[];
+    /** 每个角色这一卷最后一天的 beat（作为下一卷上文） */
+    lastDayBeats: WorldCharBeat[];
+    createdAt: number;
+}
+
+/** 注入聊天的 world_card 消息的 metadata 结构。 */
+export interface WorldCardMeta {
+    worldCard: true;
+    worldId: string;
+    worldName: string;
+    mode: WorldHomeMode;
+    round: number;
+    storyTime: string;
+    location?: string;
+    mood?: string;
+    narrative?: string;
+    statusPanel?: Record<string, number | string>;
+    timeline?: { time: string; place: string; event: string; shared: boolean }[];
+    memo?: string[];
+    impulse?: { text: string; options?: string[] };
+    phonePosts?: string[];
+    /** 发到世界群聊的话 */
+    phoneGroup?: string[];
+}
+
+/** 邮局：一封信收到的回复（留档用）。 */
+export interface VRLetterReply {
+    pen: string;
+    content: string;
+    createdAt: number;
+}
+
+/**
+ * 邮局信件（本地存档 + 队列）。
+ * box='outbox'：我方角色写的漂流信（待寄出→已寄出→收到回复留档）。
+ * box='inbox' ：从别的用户那抽到的信（待回信→待发送回信→已发送）。
+ */
+export interface VRLetter {
+    id: string;                 // 本地 id
+    box: 'outbox' | 'inbox';
+    pen: string;                // 笔名（写信角色名 / 远端寄信方笔名）
+    content: string;
+    createdAt: number;
+    charId?: string;            // 写这封信/回信的角色
+
+    // outbox
+    status?: 'queued' | 'sent' | 'archived' | 'sealed';  // 待寄出 / 已寄出 / 收到回复留档 / 角色已读并封存
+    remoteId?: string;          // 寄出后服务端分配的远端 id
+    released?: boolean;         // 作者已「停止传播」：后端已删、退出公共池，本地仍留档
+    sentAt?: number;
+    repliesReceived?: VRLetterReply[];
+    /** 原作者角色读过回信后的感触（写完即封存，使命完成） */
+    reaction?: { content: string; createdAt: number };
+
+    // inbox
+    remoteLetterId?: string;    // 远端信 id（回信时用）
+    replyStatus?: 'none' | 'queued' | 'sent'; // 未回 / 待发送回信 / 已发送
+    reply?: { charId: string; pen: string; content: string; createdAt: number; userNote?: string };
+    fetchedAt?: number;
+
+    // 互动热度缓存（服务端为准；UI 即时反馈用）
+    likes?: number;             // 点赞数
+    dislikes?: number;          // 点踩(=举报)数
+    views?: number;             // 被抽到/浏览次数
+    myVote?: 1 | -1 | 0;        // 我对这封信的投票（inbox 抽到的信）
+}
+
+/** 听歌房队列项。 */
+export interface VRMusicQueueItem {
+    song: CharPlaylistSong;
+    charId: string;
+    charName: string;
+}
+
+/** 留言簿（共享版聊墙）的一条留言。 */
+export interface VRGuestbookMessage {
+    id: string;
+    /** 'user' = 用户本人，其余为 charId */
+    authorId: string;
+    authorName: string;
+    content: string;
+    /** 若是回复某条留言 */
+    replyToId?: string;
+    replyToName?: string;
+    createdAt: number;
+}
+
+/** 留言簿共享状态（单例，所有角色 + 用户共用一面墙）。 */
+export interface VRGuestbookState {
+    id: string; // 'board' 单例
+    messages: VRGuestbookMessage[];
+    updatedAt: number;
+}
+
+/** 听歌房共享状态（单例，所有角色共用一个循环队列）。 */
+export interface VRMusicRoomState {
+    id: string; // 'state' 单例
+    nowPlaying?: {
+        song: CharPlaylistSong;
+        charId: string;
+        charName: string;
+        /** 选曲心境/理由 */
+        vibe?: string;
+        since: number;
+    };
+    queue: VRMusicQueueItem[];
+    updatedAt: number;
+}
+
+// ============ 剧院 / 话剧部门 ============
+
+/** 剧本里的一个登场角色（名字 + 大致性格，供选角匹配/演绎用）。 */
+export interface VRPlayRole {
+    name: string;
+    persona: string;
+}
+
+/** 一份投稿剧本（角色创作 / 用户写 / LLM 代写 / 上传）。 */
+export interface VRScript {
+    id: string;
+    title: string;
+    /** 一句话简介（"创作了关于 xxx 的舞台剧"用） */
+    logline: string;
+    roles: VRPlayRole[];
+    /** 完整剧本正文（固定格式：幕/场 + 角色台词 + （旁白）） */
+    body: string;
+    /** 作者 id：'user' | charId | 'llm' */
+    authorId: string;
+    authorName: string;
+    source: 'char' | 'user' | 'llm' | 'upload';
+    createdAt: number;
+}
+
+/** 编排时的 LLM 调用模式：逐角色各调一次（精准，N 次）/ 固定两次（省，可能 OOC）。 */
+export type VRStageMode = 'per-role' | 'two-call';
+
+/** 选角：剧本角色 → 演员（char 或 临时 NPC）。 */
+export interface VRCastAssign {
+    roleName: string;
+    actorId: string;   // charId | npc_xxx
+    actorName: string;
+    isNpc: boolean;
+    /** NPC 的捏脸立绘（透明 PNG dataUrl） */
+    npcChibi?: string;
+}
+
+/** 某演员读完剧本后给导演的意见（吐槽 / 改台词动作 / 配不配合）。 */
+export interface VRActorNote {
+    actorId: string;
+    actorName: string;
+    roleName: string;
+    /** 一句吐槽 / 想法（UI 展示） */
+    note: string;
+    /** 角色按自己本色重写过的"我这部分台词 / 怎么演"（可空 = 照原本演） */
+    lines?: string;
+    /** 绝对禁忌：导演绝不能让该角色做的事（硬红线，可空） */
+    taboo?: string;
+    /** 给导演的写作指导（这条线该怎么处理，可空） */
+    direction?: string;
+    /** 态度光谱：欣然 / 配合 / 勉强 / 隐忍 / 抵触 / 拒演（按角色性子自然落点，不必都硬刚） */
+    attitude?: string;
+    /** 是否配合（由 attitude 推导：抵触/拒演 = false） */
+    cooperative: boolean;
+}
+
+/** 最终演出脚本的一拍（台词气泡 / 旁白 / 上场 / 下场）。 */
+export interface VRStageLine {
+    kind: 'line' | 'narration' | 'enter' | 'exit';
+    /** line/enter/exit 时是谁 */
+    actorName?: string;
+    /** 台词气泡内容 / 旁白文字 */
+    text: string;
+}
+
+/** 一场已收录的演出（导演整合后的成品 + 观众锐评 + 评级）。 */
+export interface VRStagedPlay {
+    id: string;
+    scriptId: string;
+    title: string;
+    logline: string;
+    cast: VRCastAssign[];
+    notes: VRActorNote[];
+    /** 导演整合后的可演出脚本 */
+    stage: VRStageLine[];
+    /** 赛博观众锐评 */
+    reviews: { critic: string; text: string }[];
+    /** 评级（如 S / A / ★★★★☆） */
+    rating: string;
+    createdAt: number;
+}
+
+/**
+ * 捏脸系统自定义部件（开发模式追加）。运行时由 CreatorIframe 读出，随 like520_init
+ * 以 extraItems 注入捏人器，合并进对应类目的 PARTS。520 / 彼方 都会拿到。
+ */
+export interface CustomCreatorPart {
+    id: string;
+    /** 归属类目 key（如 skin / fronthair / outfit …，须与捏人器 PARTS 的 key 对应） */
+    categoryKey: string;
+    /** 面板里显示的名字 */
+    name: string;
+    /** 部件图（透明 PNG 的 data URL，须与捏人器画布同尺寸/同锚点） */
+    src: string;
+    /** 是否可被换色（对应 item.tintable） */
+    tintable?: boolean;
+    /**
+     * 部件投到下方图层上的阴影（如刘海投在耳发/脸上的影子）。
+     * 透明 PNG data URL，同尺寸/同锚点；PSD 里的正片叠底层导入时已预转成
+     * 黑色+alpha 的普通图层，渲染时垫在本部件颜色层下方、不参与染色。
+     */
+    shadowSrc?: string;
+    createdAt: number;
 }
 
 // --- SONGWRITING APP TYPES ---
@@ -708,7 +1702,67 @@ export interface SongSheet {
 // --- DATE APP TYPES ---
 export interface DialogueItem {
     text: string;
+    /** 立绘情绪 key（[happy]/[sad]/…）—— 只驱动立绘表情，不再直接当语音情绪。 */
     emotion?: string;
+    /** 语音情绪，来自独立标记 [v:xxx]，跟立绘分开。仅取合法 MiniMax emotion，否则 undefined。 */
+    voiceEmotion?: string;
+}
+
+/**
+ * 「观测协议 OBSERVE」结构化观测数据：开启后由 LLM 在正文最前面输出一段
+ * ⟦OBSERVE⟧ 块，前端解析成这四个维度，渲染成可独立查看的全息 HUD。
+ * 所有字段可缺省——模型偶尔漏写某项时不应让面板崩掉。
+ */
+export interface DateObservation {
+    /** 时间：结合场景的当前时刻（不一定等于系统时间） */
+    time?: string;
+    /** 地点：角色此刻所在的具体地点 */
+    place?: string;
+    /** 状态：角色的身心状态 */
+    state?: string;
+    /** 细节：正在发生的动作 / 微小细节 */
+    detail?: string;
+    /** 用户追加的自定义维度的值，按 DateObserveCustomField.id 存 */
+    extra?: Record<string, string>;
+}
+
+/**
+ * 观测协议追加的自定义维度（在 时间/地点/状态/细节 之外另开一格）。
+ * label 同时是「线格式字段名」和「HUD 标签」——解析时按 label 匹配回该维度。
+ */
+export interface DateObserveCustomField {
+    id: string;        // 稳定 id，作为 DateObservation.extra 的 key
+    label: string;     // 字段名 / HUD 标签（如「天气」「穿着」）
+    hint?: string;     // 生成提示：这一格写什么
+    enabled?: boolean; // 默认 true
+}
+
+/** 观测协议 OBSERVE 的 HUD 视觉样式 id */
+export type DateObserveStyleId = 'hologram' | 'ink' | 'neon' | 'crystal' | 'terminal';
+
+/**
+ * 观测协议单个维度的自定义：显示标签 + 生成提示 + 是否启用。任一项留空即回落默认。
+ * 注意：自定义 label 只影响 HUD 展示——注入提示词时字段名始终用固定中文 key
+ * （时间/地点/状态/细节），保证解析稳定，用户改名不会让 extractObservation 失配。
+ */
+export interface DateObserveFieldConfig {
+    /** HUD 上显示的标签（仅展示用，不参与解析） */
+    label?: string;
+    /** 注入提示词：这个维度具体要生成什么内容 */
+    hint?: string;
+    /** 是否启用该维度（默认 true）。关掉则不注入提示、HUD 也不渲染该行。 */
+    enabled?: boolean;
+}
+
+/** 观测协议 OBSERVE 的 per-character 配置 */
+export interface DateObserveConfig {
+    enabled?: boolean;
+    /** HUD 视觉样式，默认 hologram */
+    style?: DateObserveStyleId;
+    /** 四个维度的标签 / 提示自定义；不填回落默认值 */
+    fields?: Partial<Record<keyof DateObservation, DateObserveFieldConfig>>;
+    /** 用户追加的自定义维度（在四个默认维度之外） */
+    custom?: DateObserveCustomField[];
 }
 
 export interface DateState {
@@ -719,7 +1773,9 @@ export interface DateState {
     currentSprite: string;
     isNovelMode: boolean;
     timestamp: number;
-    peekStatus: string; 
+    peekStatus: string;
+    /** 当前批次解析出的观测数据（开了 OBSERVE 才有），用于恢复会话时回填 HUD */
+    observation?: DateObservation;
 }
 
 
@@ -730,6 +1786,32 @@ export interface SpecialMomentRecord {
     source?: 'generated' | 'migrated';
     /** Free-form per-event extra data (e.g. like520 captureface state, anchors, etc.) */
     customData?: Record<string, any>;
+}
+
+// --- QQ捏人工坊（神经链接） ---
+
+/** 工坊槽位：room=小小窝房间立绘 / vr=彼方 chibi / like520=特别时光 520 大头贴 */
+export type ChibiStudioSlotId = 'room' | 'vr' | 'like520';
+
+export interface ChibiStudioSlot {
+    /** 捏人器导出的完整 state（选件+换色+翻转…），再编辑时经 init.savedState 整套还原 */
+    state?: any;
+    /**
+     * 透明 PNG dataURL 兜底展示图。room/vr 的形象本体以各 App 自己的字段为准
+     * （sprites.chibi / vrState.chibi.img）；like520 未通关时靠这里展示 + 预填活动捏人器。
+     */
+    img?: string;
+    updatedAt?: number;
+}
+
+/**
+ * QQ捏人工坊：统一管理一只角色在三处的 Q 版形象，可各捏各的、也可一键同步。
+ * 图片本体写进各 App 自己的消费字段，这里主要存「再编辑用的完整 state」。
+ */
+export interface ChibiStudioData {
+    room?: ChibiStudioSlot;
+    vr?: ChibiStudioSlot;
+    like520?: ChibiStudioSlot;
 }
 
 // --- BANK / SHOP GAME TYPES (NEW) ---
@@ -965,6 +2047,8 @@ export interface CharacterProfile {
   description: string;
   systemPrompt: string;
   worldview?: string;
+  /** 角色分组：指向 CharacterGroup.id；空或指向已删分组 = 未分组。仅本地组织用，不随角色卡导出 */
+  groupId?: string;
   memories: MemoryFragment[];
   refinedMemories?: Record<string, string>;
   activeMemoryMonths?: string[];
@@ -972,7 +2056,7 @@ export interface CharacterProfile {
   writerPersona?: string;
   writerPersonaGeneratedAt?: number;
 
-  mountedWorldbooks?: { id: string; title: string; content: string; category?: string }[];
+  mountedWorldbooks?: MountedWorldbook[];
 
   impression?: UserImpression;
 
@@ -989,9 +2073,15 @@ export interface CharacterProfile {
   dateLightReading?: boolean;   // Light reading mode for novel/text view in date
   dateSkinSets?: SkinSet[];     // Multiple skin sets for portrait mode
   activeSkinSetId?: string;     // Currently active skin set ID
+  dateStyleConfig?: DateStyleConfig; // 见面模式文风（写作风格 / 叙事人称 / 自定义补充）
+  /** 观测协议 OBSERVE：开启后每条回复注入「时间/地点/状态/细节」结构化观测，渲染成全息 HUD（样式/字段可自定义） */
+  dateObserve?: DateObserveConfig;
 
   savedDateState?: DateState;
   specialMomentRecords?: Record<string, SpecialMomentRecord>;
+
+  /** QQ捏人工坊（神经链接）：三处 Q 版形象的捏人器 state 与 520 兜底图，见 ChibiStudioData */
+  chibiStudio?: ChibiStudioData;
 
   // 小红书 per-character toggle
   xhsEnabled?: boolean;
@@ -1019,12 +2109,29 @@ export interface CharacterProfile {
 
   phoneState?: {
       records: PhoneEvidence[];
-      customApps?: PhoneCustomApp[]; 
+      customApps?: PhoneCustomApp[];
+      simLogs?: PhoneSimLog[]; // 「生活记录」：人格模拟演出留存
+      chatReadAt?: number;     // 上次打开 Messages 的时间戳，用于计算未读
+      sendToChat?: boolean;    // 查手机生成的内容是否同步到私聊（默认 true）
+      contacts?: PhoneContact[]; // 人际关系系统：机主的通讯录
+      allowFictionalContacts?: boolean; // 是否允许生成虚构 NPC 联系人；false=只与神经链接里的真实角色来往（默认 true）
+      aiAgent?: {                 // 智能体 App：偷看到的「AI 也在玩 AI」记录
+          sessions: AiSession[];
+          cards?: TavernCard[];  // 酒馆里建的角色卡
+      };
   };
+
+  // 「梦的残页」：在小屋里偷看到的梦境演出留存（角色不记得，仅供用户回看）
+  dreamLogs?: DreamLog[];
 
   voiceProfile?: {
       provider?: 'minimax' | 'custom';
       voiceId?: string;
+      // 鱼声 Fish Audio 音色：从 fish.audio 语音库复制的 reference_id。
+      // 与 MiniMax 的 voiceId 不通用，单独保存，切换 provider 时各取各的。
+      fishReferenceId?: string;
+      // 该角色单独指定的鱼声模型（覆盖全局 fishAudioModel）。
+      fishModel?: string;
       voiceName?: string;
       source?: 'system' | 'voice_cloning' | 'voice_generation' | 'custom';
       model?: string;
@@ -1037,11 +2144,38 @@ export interface CharacterProfile {
       pitch?: number;
   };
 
+  // 时间感知强化：开启（默认）时会向上下文注入「距离上次聊天已过去多久」的强化提示，
+  // 让角色强化时间观念、主动匹配现实世界时间。关掉后不再注入这组提示词
+  // （注意：历史消息本身仍带时间戳，关掉后弱化程度取决于模型自身理解）。
+  timeAwarenessEnabled?: boolean;
+
+  // 自定义时区（异国恋 / 角色身处异国等场景）。与「时间感知强化」完全独立、可任意组合：
+  // 开启后，注入给该角色的「当前时间 / 消息时间戳 / 夜间判断」都按 customTimezone 折算，
+  // 让 ta 活在自己的本地时间里，并知道与用户之间存在时差。
+  customTimezoneEnabled?: boolean;
+  customTimezone?: string; // IANA 时区 id，如 'Asia/Tokyo'
+
+  // 线下时间感知（约会 / 见面 App）：开启（默认）时向见面 system prompt 注入「当前真实时间」。
+  // 关掉后见面场景不再注入时间，让剧情脱离现实时间线。独立开关。
+  dateTimeAwarenessEnabled?: boolean;
+
+  // ─── 生活记录注入（档案 App「生活记录」→ 聊天提示词，per-character）───
+  // 总开关：默认关（opt-in）。开启后才注入「用户生活记录」section（潜意识背景约束 +
+  // 各模块今日摘要 + [[LIFE:...]] 代记指令说明）。关闭时连指令说明都不给角色看。
+  lifeRecordEnabled?: boolean;
+  // 小开关：默认开（!== false 即开），受总开关统辖；分别控制对应模块的数据摘要与代记指令。
+  lifeRecordPeriodEnabled?: boolean;    // 生理期
+  lifeRecordMedEnabled?: boolean;       // 药盒
+  lifeRecordExpenseEnabled?: boolean;   // 记账（打通银行 bank_transactions）
+  lifeRecordExerciseEnabled?: boolean;  // 锻炼
+
   // Chat & Date voice TTS settings
   chatVoiceEnabled?: boolean;
   chatVoiceLang?: string;
   dateVoiceEnabled?: boolean;
   dateVoiceLang?: string;
+  // Call (voice phone) — remembered translation language for this character
+  callVoiceLang?: string;
 
   // Cross-session guidebook insights: what char has discovered about user across games
   guidebookInsights?: string[];
@@ -1088,9 +2222,11 @@ export interface CharacterProfile {
   personalityStyle?: 'emotional' | 'narrative' | 'imagery' | 'analytical';
   ruminationTendency?: number;  // 反刍倾向 0-1，默认 0.3
   memoryPalaceInjection?: string;  // 记忆宫殿检索结果，注入到 System Prompt（运行时填充，不持久化）
+  roomPlatesInjection?: string;    // 房间门牌（常驻语义层），注入到 System Prompt（运行时填充，来源 room_plates 表）
 
-  // 自我领悟词条：消化过程中 self_room 反刍产生的常驻认知
-  // 像情绪 buff 一样注入到 contextBuilder 的角色设定下方
+  // 自我领悟词条【已冻结，只读遗留】：旧版消化把 self_room 领悟追加到这里，
+  // 只进不出、无上限、无合并。新领悟的归宿已改为 self_room 门牌（room_plates），
+  // 此字段不再增长；存量仍照常注入 contextBuilder，避免老角色突然"失忆"。
   selfInsights?: string[];
 
   // 音乐人格 — 角色自己的网易云式歌单 / 品味 / 正在听
@@ -1121,6 +2257,14 @@ export interface CharacterProfile {
    */
   htmlModeEnabled?: boolean;
   htmlModeCustomPrompt?: string;
+  /** 该角色专属的聊天「白框」自定义 CSS（叠加在全局 osTheme.chatChromeCustomCss 之上）。 */
+  chromeCustomCss?: string;
+  /** 白框「提示音」：仅当 ta 新发的消息成为会话最后一条时播放一次。src 可为内置音效 key / 音频直链 / 上传后内联的 data:audio。
+   *  存储位置取决于 chatSoundBound：解绑（默认）时独立存于此字段、可单独分享；绑定时写进 chromeCustomCss 的
+   *  `/* @sully-sound … *​/` 指令注释、跟白框一起分享。播放时两处择一（指令优先）。 */
+  chatSound?: { src: string; volume?: number };
+  /** 提示音是否「绑定」到白框：true=提示音随白框 CSS 一起分享（写进指令注释）；false/undefined=独立存于 chatSound、白框分享码保持轻量。 */
+  chatSoundBound?: boolean;
 
   /**
    * 思考过程展示（per-character / 会话级）。
@@ -1137,9 +2281,17 @@ export interface CharacterProfile {
    * - 'echo' (default)：暗紫底 + 暖金描边「回响」二次元卡牌
    * - 'whisper'：米色羊皮纸「心声」轻盈版
    * - 'minimal'：无装饰单色简洁版
+   * - 'ink'：宣纸底墨色 + 朱印「墨迹」水墨卷轴
+   * - 'neon'：深蓝紫底 + 青光扫描线「脑域」赛博终端
+   * - 'terminal'：黑底绿字等宽「内核」日志
+   * - 'stellar'：深空蓝缀星「星语」夜航
+   * - 'tama'：粉壳液晶点阵「心宠」拓麻歌子
+   * - 'pixel'：JRPG 白粗框硬影「任务」像素对话框
+   * - 'muji'：暖灰米白「独白」性冷淡留白
+   * - 'ins'：白卡软影「碎碎念」feed 风
    * - 'custom'：使用 thinkingChainCustomColors 给的配色
    */
-  thinkingChainStyle?: 'echo' | 'whisper' | 'minimal' | 'custom';
+  thinkingChainStyle?: 'echo' | 'whisper' | 'minimal' | 'ink' | 'neon' | 'terminal' | 'stellar' | 'tama' | 'pixel' | 'muji' | 'ins' | 'custom';
   /** 自定义风格用的配色组（仅 thinkingChainStyle === 'custom' 生效） */
   thinkingChainCustomColors?: {
     bg?: string;       // 卡片背景
@@ -1148,6 +2300,31 @@ export interface CharacterProfile {
   };
   /** 用户追加的思考提示词（不替换原生，只在最后追加一段「用户额外要求」） */
   thinkingChainCustomPrompt?: string;
+  /**
+   * 心象卡片的自定义 CSS（叠加在任意风格之上，机制同气泡工坊 customCss）。
+   * 选择器限定以 .sully-psyche 开头（子元素类：-card / -title / -preview / -body），
+   * 由 Chat.tsx 原样 <style> 注入。
+   */
+  thinkingChainCustomCss?: string;
+
+  /**
+   * 虚拟世界「彼方」的个人状态：是否自主登入、登入间隔、各本小说的独立书签等。
+   * 独立于 proactiveConfig（主动发消息），互不挤占触发。
+   */
+  vrState?: VRWorldCharState;
+}
+
+/**
+ * 角色分组（神经链接里的"文件夹"）：纯组织用途，解决角色太多时选择列表过长的问题。
+ * 注意与下面的 GroupProfile（群聊）无关——角色通过 CharacterProfile.groupId 指向分组，
+ * 删除分组只会让组内角色回到「未分组」，不会删角色。
+ */
+export interface CharacterGroup {
+    id: string;
+    name: string;
+    /** 排序权重（暂未在 UI 暴露，缺省按 createdAt 先后） */
+    order?: number;
+    createdAt?: number;
 }
 
 export interface GroupProfile {
@@ -1156,14 +2333,62 @@ export interface GroupProfile {
     members: string[];
     avatar?: string;
     createdAt: number;
+    /** 群聊公共话题盒：由热区以前的群消息总结而成，所有成员共享、可编辑/删除。 */
+    topicBoxes?: GroupTopicBox[];
+    /** 公共话题盒已覆盖到的最后一条群消息 ID；仅用于防止重复成盒，不与任何角色私聊水位混用。 */
+    archivedThroughMessageId?: number;
+    /** 公共话题盒整理模式：auto 满阈值自动成盒；manual 只累计，用户手动触发。默认 auto。 */
+    topicArchiveMode?: 'auto' | 'manual';
     /**
      * 私聊里"近期群活动"上下文从这个群最多取最后多少条消息。
      * 不设默认 80。设大点能让活跃群更完整，设小点节省 token、避免某个活跃群把其他群挤掉。
      */
     privateContextCap?: number;
+    /**
+     * 群提示词里每个成员"私聊+群聊合并时间线"的条数上限（合并排序后取末 N 条）。
+     * 不设默认 40。这条时间线是角色群聊表现与私聊感情衔接的关键上下文。
+     */
+    memberTimelineCap?: number;
+    /**
+     * 群回复生成模式：director = 一次调用生成整轮（默认，快、省 token）；
+     * roundRobin = 每位成员单独调用一次 API，按成员顺序逐个发言（更真实、防串号，token ≈ 成员数倍）。
+     */
+    replyMode?: 'director' | 'roundRobin';
+    /**
+     * 成员独立气泡：true = 每位成员的气泡用其私聊 bubbleStyle 主题的 AI 侧；
+     * false/undefined = 全员统一（现状白色）。
+     */
+    memberBubbleIndependent?: boolean;
+    /** 用户在本群的气泡主题 id（预设或 customThemes，取 user 侧）；undefined = 现状紫色 */
+    userBubbleThemeId?: string;
+    /** 群聊白框自定义 CSS（.sully-chat-* 钩子），与私聊 char.chromeCustomCss 同机制 */
+    chromeCustomCss?: string;
+    /** 群提示音（未绑定白框时的独立存储）；绑定时以 chromeCustomCss 里的 @sully-sound 注释为准 */
+    chatSound?: { src: string; volume?: number };
+    /** 提示音是否绑定进白框 CSS（跟着白框分享码走） */
+    chatSoundBound?: boolean;
+    /** HTML 模块模式：开启后角色可输出 [html] 卡片 */
+    htmlModeEnabled?: boolean;
+    /** HTML 模式自定义提示词（追加在内置提示词之后） */
+    htmlModeCustomPrompt?: string;
 }
 
-export interface CharacterExportData extends Omit<CharacterProfile, 'id' | 'memories' | 'refinedMemories' | 'activeMemoryMonths' | 'impression'> {
+export interface GroupTopicBox {
+    id: string;
+    groupId: string;
+    title: string;
+    summary: string;
+    sourceStartMessageId: number;
+    sourceEndMessageId: number;
+    messageCount: number;
+    participants: string[];
+    /** 成盒当时收到私聊卡片的成员；成员之后退群，编辑/删除仍能同步其旧卡片。 */
+    deliveredMemberIds?: string[];
+    createdAt: number;
+    updatedAt: number;
+}
+
+export interface CharacterExportData extends Omit<CharacterProfile, 'id' | 'memories' | 'refinedMemories' | 'activeMemoryMonths' | 'impression' | 'groupId'> {
     version: number;
     type: 'sully_character_card';
     embeddedTheme?: ChatTheme;
@@ -1173,6 +2398,30 @@ export interface UserProfile {
     name: string;
     avatar: string;
     bio: string;
+    /**
+     * 用户本人接入「彼方」的状态：捏的 chibi、此刻所在房间、在干嘛。可随时改。
+     * enabled=false（登出）时，聊天里给角色的"用户在彼方"提示词随之消失。
+     */
+    vrState?: UserVRState;
+}
+
+export interface UserVRState {
+    /** 是否接入彼方（登出后不再向角色注入"用户在彼方"提示） */
+    enabled: boolean;
+    /** 用户此刻把自己挂在哪个房间 */
+    currentRoom?: VRRoomId;
+    /** 用户自己写的"在彼方干嘛"，会注入聊天提示词 + 广播成行为卡片 */
+    activity?: string;
+    /** 最近一次更新时间 */
+    updatedAt?: number;
+    /** 用户在彼方里的 chibi 形象（同角色 chibi 结构，来自 mode="user" 的捏人器） */
+    chibi?: {
+        img: string;
+        state?: any;
+        scale?: number;
+        offsetY?: number;
+        flip?: boolean;
+    };
 }
 
 export interface Toast {
@@ -1468,6 +2717,82 @@ export interface TrackerEntry {
     updatedAt: number;
 }
 
+// ─── 生活记录（档案 App「生活记录」：生理期 / 药盒 / 记账 / 锻炼）───
+// 注意：内部标识用 LifeRecord，避开 PersonaSim 已占用的「生活记录 simLogs」概念。
+// 记账模块不独立存储——直接读写 BankApp 的 bank_transactions；角色代记的支出
+// 会额外落一条 module='expense' 的 LifeRecord（带 bankTxId）以支撑卡片确认/否决回滚。
+
+export type LifeRecordModule = 'period' | 'med' | 'expense' | 'exercise';
+
+export interface LifeRecord {
+    id: string;
+    module: LifeRecordModule;
+    /** period: 'start' | 'end'；med: 'taken'；expense: 'expense'；exercise: 'session' */
+    kind: string;
+    date: string;              // YYYY-MM-DD（事件归属日）
+    timestamp: number;
+    /**
+     * med:      { name, planId?, time? }
+     * expense:  { amount, note }（真实流水在 bank_transactions，此处仅镜像展示用）
+     * exercise: { activity, duration?, note? }
+     * period:   {}
+     */
+    payload: Record<string, any>;
+    /** 'user' = 用户在档案 App 手动记录；否则为代记角色的 charId */
+    recordedBy: string;
+    recordedByName?: string;
+    /**
+     * 卡片复核状态（仅角色代记的记录有意义；用户手记直接 'confirmed'）：
+     * active = 默认生效（用户未点卡片）；confirmed = 用户点了确认；
+     * rejected = 用户否决，不再计入注入摘要，且欠该角色一条反馈。
+     */
+    reviewStatus: 'active' | 'confirmed' | 'rejected';
+    /** 否决后待注入给代记角色的一次性反馈标记，注入后清除 */
+    pendingFeedback?: boolean;
+    /** expense 专用：对应 bank_transactions 里的流水 id（否决时回滚删除） */
+    bankTxId?: string;
+    note?: string;
+}
+
+/**
+ * 药盒「计划」：像设长期闹钟一样只写一次，每天按频率派生"今日待服"
+ * （打卡产生 module='med' 的 LifeRecord）。
+ * - planKind 'longterm'：长期在服（保健品等），无期限；
+ * - planKind 'course'：短期疗程，startDate ~ endDate 之间才生效。
+ * - intervalDays：服药频率，1=每天（默认）、2=每隔一天、3=每三天…
+ *   锚点日取 startDate（无则取创建当天），按天数差取模判断今天是否该吃。
+ * 旧数据无这些字段 → 视为长期 + 每天，行为与旧版一致。
+ */
+export interface MedPlan {
+    id: string;
+    name: string;              // 药名
+    time: string;              // HH:MM
+    dosage?: string;           // 剂量（"1粒" / "5mg"）
+    note?: string;
+    enabled: boolean;
+    createdAt: number;
+    planKind?: 'longterm' | 'course';
+    intervalDays?: number;     // 默认 1（每天）
+    startDate?: string;        // YYYY-MM-DD（course 必填；也作为 interval 锚点）
+    endDate?: string;          // YYYY-MM-DD（course 专用，含当天）
+}
+
+/** 生活记录全局设置（单例 id='main'） */
+export interface LifeRecordSettings {
+    id: string;                // 'main'
+    cycleLength?: number;      // 平均周期天数，默认 28
+    periodLength?: number;     // 平均经期天数，默认 5
+    /**
+     * 全局隐藏的模块（长按模块页签 →「是否不需要这个功能？」）。
+     * 隐藏 = 前端不再显示 + 对所有角色断掉该模块注入与代记（优先级高于角色小开关）。
+     */
+    hiddenModules?: LifeRecordModule[];
+    /** 锻炼周计划：每周目标次数（角色会据此监督执行） */
+    exerciseWeeklyGoal?: number;
+    /** 锻炼周计划：文字规划（如"周一跑步 / 周四力量"），会注入给角色 */
+    exercisePlanNote?: string;
+}
+
 export interface HandbookEntry {
     id: string;               // = date 'YYYY-MM-DD'
     date: string;
@@ -1611,15 +2936,26 @@ export interface GameActionOption {
 export interface GameLog {
     id: string;
     role: 'gm' | 'player' | 'character' | 'system';
-    speakerName?: string; 
+    speakerName?: string;
     content: string;
     timestamp: number;
     diceRoll?: {
         result: number;
         max: number;
-        check?: string; 
+        check?: string;
         success?: boolean;
     };
+    // 自动总结后，被归档折叠的日志会标记为 archived（不删除，UI 灰显折叠）
+    archived?: boolean;
+}
+
+// 自动总结产出的「前情提要」存档，像写小说一样记录起因经过结果与人物关系变化
+export interface GameSummary {
+    id: string;
+    content: string;       // 小说式总结（起因/经过/结果 + 人物关系变化）
+    logCount: number;      // 本段总结覆盖了多少条日志
+    logIds?: string[];     // 本段总结覆盖的日志 id（用于把原文与总结对应展示）
+    createdAt: number;
 }
 
 export interface GameSession {
@@ -1637,12 +2973,17 @@ export interface GameSession {
         inventory: string[];
     };
     sanityLocked?: boolean;
+    diceDisabled?: boolean;      // 关闭骰子：行动不再自动骰 D20，默认直接成功
+    // 归档模式：'auto' 满20条自动总结并送进角色 chatapp；'manual' 自动总结但不送，仅手动归档时送。
+    // 旧存档无此字段，按 'manual' 处理（不污染旧角色的聊天上下文）。
+    archiveMode?: 'auto' | 'manual';
     suggestedActions?: GameActionOption[];
+    summaries?: GameSummary[];   // 自动总结归档的前情提要
     createdAt: number;
     lastPlayedAt: number;
 }
 
-export type MessageType = 'text' | 'image' | 'emoji' | 'interaction' | 'transfer' | 'system' | 'social_card' | 'chat_forward' | 'xhs_card' | 'score_card' | 'music_card' | 'mcd_card' | 'html_card' | 'news_card';
+export type MessageType = 'text' | 'image' | 'emoji' | 'interaction' | 'transfer' | 'system' | 'social_card' | 'chat_forward' | 'xhs_card' | 'score_card' | 'music_card' | 'mcd_card' | 'luckin_card' | 'html_card' | 'news_card' | 'vr_card' | 'trpg_card' | 'novel_card' | 'world_card' | 'sim_card' | 'phone_card' | 'webpage_card' | 'theater_card' | 'room_card' | 'life_card' | 'group_topic_card';
 
 export interface Message {
     id: number;
@@ -1687,7 +3028,8 @@ export interface FullBackupData {
     customIcons?: Record<string, string>;
     appearancePresets?: AppearancePreset[];
     characters?: CharacterProfile[];
-    groups?: GroupProfile[]; 
+    characterGroups?: CharacterGroup[];
+    groups?: GroupProfile[];
     messages?: Message[];
     customThemes?: ChatTheme[];
     savedEmojis?: Emoji[]; 
@@ -1708,6 +3050,25 @@ export interface FullBackupData {
     roomCustomAssets?: { id?: string; name: string; image: string; defaultScale: number; description?: string; visibility?: 'public' | 'character'; assignedCharIds?: string[] }[]; 
     
     novels?: NovelBook[];
+    vrNovels?: VRWorldNovel[];          // 虚拟世界「彼方」全局小说库
+    vrAnnotations?: VRNovelAnnotation[]; // 虚拟世界小说批注
+    customCreatorParts?: CustomCreatorPart[]; // 捏脸系统自定义部件
+    vrMusicRoom?: VRMusicRoomState;            // 听歌房共享状态
+    vrGuestbook?: VRGuestbookState;            // 留言簿共享状态
+    vrScripts?: VRScript[];                     // 剧院·投稿剧本库
+    vrStagedPlays?: VRStagedPlay[];             // 剧院·历史舞台剧
+    vrPresets?: { key: string; name: string; prompt: string; blurb?: string }[]; // 剧院·用户自定义写作风格预设
+    vrLetters?: VRLetter[];                    // 邮局信件（本地存档+队列）
+    vrSettings?: any[];                        // 彼方设置（独立 API + 调用记录）
+    worlds?: WorldProfile[];                   // 家园·世界定义
+    worldEpisodes?: WorldEpisode[];            // 家园·演绎历史
+    vrPostOffice?: Record<string, string>;     // 邮局本机配置：身份 deviceId / 后端地址（存 localStorage）
+    vrSignal?: Record<string, string>;         // 信号坠落处本机记录：句子归属「你·角色」+ 反复用清单（存 localStorage）
+    worldHomeLocal?: Record<string, string>;   // 家园本机配置：全局 API + 文风收藏（存 localStorage）
+    luckinLocal?: Record<string, string>;      // 瑞幸：token + 启用状态（存 localStorage）
+    mcdLocal?: Record<string, string>;         // 麦当劳：token + 启用状态（存 localStorage）
+    mcpLocal?: Record<string, string>;         // 通用 MCP：用户自配的服务器列表（存 localStorage）
+    desktopSkinLocal?: Record<string, string>; // 桌面皮肤偏好：电子宠物/手游风的界面配色 + 看板 banner（存 localStorage；看板图令牌导出时解析为 data URL）
     songs?: SongSheet[]; // Songwriting app data
     
     // Bank Data
@@ -1766,6 +3127,8 @@ export interface FullBackupData {
     topicBoxes?: any[];
     anticipations?: any[];
     eventBoxes?: any[];
+    roomPlates?: any[];      // 房间门牌（情景→语义固化层）
+    digestReports?: any[];   // 消化日志（每角色最近 30 条）
     memoryPalaceHighWaterMarks?: Record<string, number>; // charId → lastProcessedMsgId
     memoryPalaceFlags?: Record<string, string>; // mp_personality_tried_* / mp_first_archive_notice_* 等 UI 标记
     cloudBackupConfig?: CloudBackupConfig;
@@ -1780,6 +3143,11 @@ export interface FullBackupData {
     // 手账 Tracker（健康/生活打卡引擎）
     trackers?: Tracker[];
     trackerEntries?: TrackerEntry[];
+
+    // 生活记录（档案 App：生理期 / 药盒 / 锻炼；记账走 bankTransactions）
+    lifeRecords?: LifeRecord[];
+    medPlans?: MedPlan[];
+    lifeRecordSettings?: LifeRecordSettings[];
 
     // Memory Palace 批次处理元数据
     memoryBatches?: any[];
@@ -1808,6 +3176,8 @@ export interface FullBackupData {
     lastActiveCharId?: string;
     eventNotifFlags?: Record<string, string>;  // sullyos_* 事件通知标记
     hotNewsSnapshots?: HotNewsSnapshot[];
+    dreamCollection?: Record<string, { firstAt: number; count: number }>;  // 梦境盲盒收藏册（os_dream_collection，账号级 localStorage）
+    gotchiAccentHue?: string;  // 桌面电子宠物主题主色调偏好（tama_accent_hue，账号级 localStorage）
 }
 
 // --- CLOUD BACKUP TYPES ---

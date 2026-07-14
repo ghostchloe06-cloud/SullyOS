@@ -5,13 +5,17 @@
  * 文档: https://open.mcd.cn/mcp/doc
  * Token: https://open.mcd.cn/mcp 申请, 每个用户独立, 存 localStorage
  *
- * 浏览器无法直连 mcd.cn (CORS), 走自家 Cloudflare Worker 透传:
- *   POST  https://sullymeow.ccwu.cc/mcp/mcd
+ * 浏览器无法直连 mcd.cn (CORS), 走中心配置的 Cloudflare Worker 透传 (默认
+ * https://sullymeow.ccwu.cc, 用户可在「设置 → 自定义网络代理」里改):
+ *   POST  <worker>/mcp/mcd
  *   Authorization: Bearer <user_mcp_token>
  *   body: 标准 JSON-RPC 2.0 报文
  */
 
-const MCP_PROXY_URL = 'https://sullymeow.ccwu.cc/mcp/mcd';
+import { getProxyWorkerUrl } from './proxyWorker';
+
+// 走中心配置的主代理 worker（用户可在设置里换成自部署实例）
+const mcpProxyUrl = (): string => `${getProxyWorkerUrl()}/mcp/mcd`;
 const MCP_TOKEN_KEY = 'aetheros.mcd.mcpToken';
 const MCP_ENABLED_KEY = 'aetheros.mcd.mcpEnabled';
 
@@ -85,6 +89,23 @@ export const isMcdConfigured = (): boolean => {
     return isMcdEnabled() && getMcdToken().length > 0;
 };
 
+// ── 备份用：把麦当劳的 token + 启用状态随「设置 → 导出/导入备份」一起带走（存 localStorage） ──
+export function exportMcdLocal(): Record<string, string> | undefined {
+    try {
+        const out: Record<string, string> = {};
+        const tk = localStorage.getItem(MCP_TOKEN_KEY); if (tk) out[MCP_TOKEN_KEY] = tk;
+        const en = localStorage.getItem(MCP_ENABLED_KEY); if (en) out[MCP_ENABLED_KEY] = en;
+        return Object.keys(out).length ? out : undefined;
+    } catch { return undefined; }
+}
+export function importMcdLocal(data: Record<string, string> | null | undefined): void {
+    if (!data || typeof data !== 'object') return;
+    try {
+        if (typeof data[MCP_TOKEN_KEY] === 'string') localStorage.setItem(MCP_TOKEN_KEY, data[MCP_TOKEN_KEY]);
+        if (typeof data[MCP_ENABLED_KEY] === 'string') localStorage.setItem(MCP_ENABLED_KEY, data[MCP_ENABLED_KEY]);
+    } catch { /* ignore */ }
+}
+
 // ========== JSON-RPC 会话状态 (内存, 进程级) ==========
 
 let requestIdCounter = 0;
@@ -137,7 +158,7 @@ const post = async (
     };
     if (sessionId) headers['Mcp-Session-Id'] = sessionId;
 
-    const resp = await fetch(MCP_PROXY_URL, {
+    const resp = await fetch(mcpProxyUrl(), {
         method: 'POST',
         headers,
         body: JSON.stringify(body),

@@ -306,7 +306,7 @@ CRITICAL: Stay in character. If there's conversation context, your comment shoul
     const renderDetail = () => selectedImage && (
         <div className="flex flex-col h-full bg-black relative animate-fade-in">
             {/* Header */}
-            <div className="absolute top-0 left-0 w-full p-4 flex justify-between items-start z-50 pointer-events-none">
+            <div className="absolute top-0 left-0 w-full p-4 flex justify-between items-start z-50 pointer-events-none" style={{ paddingTop: 'max(1rem, var(--safe-top))' }}>
                 <button onClick={() => setView('grid')} className="text-white bg-black/40 backdrop-blur-md p-2 rounded-full pointer-events-auto active:scale-95 transition-transform hover:bg-black/60 border border-white/10">
                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
                 </button>
@@ -317,7 +317,7 @@ CRITICAL: Stay in character. If there's conversation context, your comment shoul
 
             {/* Date badge */}
             {selectedImage.savedDate && (
-                <div className="absolute top-16 left-1/2 -translate-x-1/2 z-50">
+                <div className="absolute left-1/2 -translate-x-1/2 z-50" style={{ top: 'max(4rem, calc(var(--safe-top) + 0.5rem))' }}>
                     <span className="text-[10px] text-white/60 bg-black/40 backdrop-blur-sm px-3 py-1 rounded-full font-mono">{selectedImage.savedDate}</span>
                 </div>
             )}
@@ -402,14 +402,16 @@ CRITICAL: Stay in character. If there's conversation context, your comment shoul
 
             {/* Header */}
             {view !== 'detail' && (
-                <div className="h-16 bg-white/80 backdrop-blur-xl flex items-center px-4 border-b border-slate-100/60 shrink-0 z-10 sticky top-0">
-                    <button onClick={handleBack} className="p-2 -ml-2 rounded-full hover:bg-black/5 active:scale-90 transition-transform">
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6 text-slate-600"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
-                    </button>
-                    <h1 className="text-lg font-semibold text-slate-800 ml-2 tracking-tight">
-                        {view === 'albums' ? '相册' : characters.find(c => c.id === activeCharId)?.name || '相册'}
-                    </h1>
-                    {view === 'grid' && <span className="text-xs text-slate-400 ml-2 font-mono">{images.length}</span>}
+                <div className="bg-white/80 backdrop-blur-xl border-b border-slate-100/60 shrink-0 z-10 sticky top-0" style={{ paddingTop: 'var(--safe-top)' }}>
+                    <div className="h-16 flex items-center px-4">
+                        <button onClick={handleBack} className="p-2 -ml-2 rounded-full hover:bg-black/5 active:scale-90 transition-transform">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6 text-slate-600"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
+                        </button>
+                        <h1 className="text-lg font-semibold text-slate-800 ml-2 tracking-tight">
+                            {view === 'albums' ? '相册' : characters.find(c => c.id === activeCharId)?.name || '相册'}
+                        </h1>
+                        {view === 'grid' && <span className="text-xs text-slate-400 ml-2 font-mono">{images.length}</span>}
+                    </div>
                 </div>
             )}
 

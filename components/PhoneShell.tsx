@@ -1,57 +1,152 @@
 
 
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, lazy, Suspense } from 'react';
 import { IMPORT_IN_PROGRESS_KEY, useOS } from '../context/OSContext';
 import StatusBar from './os/StatusBar';
 import Launcher from '../apps/Launcher';
-import Settings from '../apps/Settings';
-import Character from '../apps/Character';
-import Chat from '../apps/Chat'; 
-import GroupChat from '../apps/GroupChat'; 
-import ThemeMaker from '../apps/ThemeMaker';
-import Appearance from '../apps/Appearance';
-import Gallery from '../apps/Gallery'; 
-import DateApp from '../apps/DateApp'; 
-import UserApp from '../apps/UserApp';
-import JournalApp from '../apps/JournalApp'; 
-import ScheduleApp from '../apps/ScheduleApp'; 
-import RoomApp from '../apps/RoomApp'; 
-import CheckPhone from '../apps/CheckPhone';
-import SocialApp from '../apps/SocialApp'; 
-import StudyApp from '../apps/StudyApp'; 
-import FAQApp from '../apps/FAQApp'; 
-import GameApp from '../apps/GameApp'; 
-import WorldbookApp from '../apps/WorldbookApp';
-import NovelApp from '../apps/NovelApp'; 
-import BankApp from '../apps/BankApp';
-import XhsStockApp from '../apps/XhsStockApp';
-import XhsFreeRoamApp from '../apps/XhsFreeRoamApp';
-import BrowserApp from '../apps/BrowserApp';
-import SongwritingApp from '../apps/SongwritingApp';
-import MusicApp from '../apps/MusicApp';
-import CallApp from '../apps/CallApp';
-import VoiceDesignerApp from '../apps/VoiceDesignerApp';
-import GuidebookApp from '../apps/GuidebookApp';
-import LifeSimApp from '../apps/LifeSimApp';
-import MemoryPalaceApp from '../apps/MemoryPalaceApp';
-import HandbookApp from '../apps/HandbookApp';
-import QQBridge from '../apps/QQBridge';
-import HotNewsApp from '../apps/HotNewsApp';
-import { SpecialMomentsApp } from './ValentineEvent';
+
+// 按需懒加载各 App —— 切到对应 App 时才下载/解析其代码块，首屏只加载 Launcher 与外壳，
+// 大体积 App（MemoryPalace / VRWorld / Songwriting 等）不再压在主包里。
+// 默认导出直接 lazy；命名导出（SpecialMomentsApp）用 .then 适配成 { default }。
+// Launcher 保持静态导入：桌面常驻、需要秒开，不走懒加载。
+//
+// lazyApp：在 lazy 之外把 import 工厂挂到 .preload 上，使各 chunk 可被「预取」。
+// 桌面就绪后空闲时按优先级后台预热（见下方 useEffect），真正打开 App 时代码已在内存，
+// React.lazy 几乎同步解析 —— 过场层几乎不再出现，从根本上消除「每次进 App 都要加载」。
+type PreloadableLazy = React.LazyExoticComponent<React.ComponentType<any>> & { preload: () => Promise<unknown> };
+const lazyApp = (factory: () => Promise<{ default: React.ComponentType<any> }>): PreloadableLazy => {
+  const Comp = lazy(factory) as PreloadableLazy;
+  Comp.preload = factory;
+  return Comp;
+};
+
+// 预热 React.lazy 的「负载」本身：不仅下载模块，还把 lazy 内部状态推进到 resolved，
+// 使首次渲染该 App 时不再 suspend —— 杜绝切换瞬间露出外壳粉紫底色（深色 App 上尤其扎眼）的那一帧闪烁。
+// _payload / _init 为 React.lazy 内部结构（本项目锁定 React 18，形态稳定）；带防御，取不到则退化为仅预热 Vite 模块。
+// 注意：仅解析负载、不挂载组件，因此不会触发各 App 的副作用/数据读取。
+const LAZY_UNINITIALIZED = -1;
+const LAZY_PENDING = 0;
+const LAZY_REJECTED = 2;
+const warmLazy = (Comp: PreloadableLazy): void => {
+  try {
+    const payload: any = (Comp as any)?._payload;
+    const init: any = (Comp as any)?._init;
+    if (!payload || typeof init !== 'function' || payload._status !== LAZY_UNINITIALIZED) {
+      Comp.preload(); // 已在加载/已加载，或拿不到内部结构 → 仅预热 Vite 模块
+      return;
+    }
+    init(payload); // 触发下载 + 解析负载
+    // 关键防护：若空闲预取阶段加载失败，把负载复位为「未初始化」，避免该 App 被永久钉死为错误态；
+    // 真正打开时按 React 正常流程重试（再失败才交给错误边界），与预取前行为一致。
+    const thenable = payload._result;
+    if (payload._status === LAZY_PENDING && thenable && typeof thenable.then === 'function') {
+      thenable.then(undefined, () => {
+        if (payload._status === LAZY_REJECTED) {
+          payload._status = LAZY_UNINITIALIZED;
+          payload._result = Comp.preload; // 还原工厂，供 React 重新调用
+        }
+      });
+    }
+  } catch {
+    try { Comp.preload(); } catch { /* ignore */ }
+  }
+};
+
+const Settings = lazyApp(() => import('../apps/Settings'));
+const Character = lazyApp(() => import('../apps/Character'));
+const Chat = lazyApp(() => import('../apps/Chat'));
+const GroupChat = lazyApp(() => import('../apps/GroupChat'));
+const ThemeMaker = lazyApp(() => import('../apps/ThemeMaker'));
+const Appearance = lazyApp(() => import('../apps/Appearance'));
+const Gallery = lazyApp(() => import('../apps/Gallery'));
+const DateApp = lazyApp(() => import('../apps/DateApp'));
+const UserApp = lazyApp(() => import('../apps/UserApp'));
+const JournalApp = lazyApp(() => import('../apps/JournalApp'));
+const ScheduleApp = lazyApp(() => import('../apps/ScheduleApp'));
+const RoomApp = lazyApp(() => import('../apps/RoomApp'));
+const CheckPhone = lazyApp(() => import('../apps/CheckPhone'));
+const SocialApp = lazyApp(() => import('../apps/SocialApp'));
+const StudyApp = lazyApp(() => import('../apps/StudyApp'));
+const FAQApp = lazyApp(() => import('../apps/FAQApp'));
+const GameApp = lazyApp(() => import('../apps/GameApp'));
+const WorldbookApp = lazyApp(() => import('../apps/WorldbookApp'));
+const NovelApp = lazyApp(() => import('../apps/NovelApp'));
+const BankApp = lazyApp(() => import('../apps/BankApp'));
+const XhsStockApp = lazyApp(() => import('../apps/XhsStockApp'));
+const XhsFreeRoamApp = lazyApp(() => import('../apps/XhsFreeRoamApp'));
+const BrowserApp = lazyApp(() => import('../apps/BrowserApp'));
+const SongwritingApp = lazyApp(() => import('../apps/SongwritingApp'));
+const MusicApp = lazyApp(() => import('../apps/MusicApp'));
+const CallApp = lazyApp(() => import('../apps/CallApp'));
+const VoiceDesignerApp = lazyApp(() => import('../apps/VoiceDesignerApp'));
+const GuidebookApp = lazyApp(() => import('../apps/GuidebookApp'));
+const LifeSimApp = lazyApp(() => import('../apps/LifeSimApp'));
+const MemoryPalaceApp = lazyApp(() => import('../apps/MemoryPalaceApp'));
+const HandbookApp = lazyApp(() => import('../apps/HandbookApp'));
+const QQBridge = lazyApp(() => import('../apps/QQBridge'));
+const HotNewsApp = lazyApp(() => import('../apps/HotNewsApp'));
+const VRWorldApp = lazyApp(() => import('../apps/VRWorldApp'));
+const WorldHomeApp = lazyApp(() => import('../apps/WorldHomeApp'));
+const CharCreatorDevApp = lazyApp(() => import('../apps/CharCreatorDevApp'));
+const SpecialMomentsApp = lazyApp(() => import('./ValentineEvent').then(m => ({ default: m.SpecialMomentsApp })));
+
+// 预取优先级：高频/常驻 App 先预热，其余随后；逐个在空闲时触发，避免与交互抢主线程/带宽。
+const APP_PRELOAD_ORDER: PreloadableLazy[] = [
+  Chat, Character, GroupChat, SocialApp, RoomApp, Settings, Appearance,
+  CheckPhone, JournalApp, ScheduleApp, MusicApp, CallApp, Gallery, DateApp, UserApp,
+  StudyApp, GameApp, NovelApp, BankApp, WorldbookApp, MemoryPalaceApp, HandbookApp,
+  VRWorldApp, WorldHomeApp, LifeSimApp, SongwritingApp, GuidebookApp, FAQApp, HotNewsApp,
+  XhsStockApp, XhsFreeRoamApp, BrowserApp, VoiceDesignerApp, ThemeMaker, QQBridge,
+  SpecialMomentsApp, CharCreatorDevApp,
+];
+
+const ROLE_ENTRY_PRELOAD_ORDER: PreloadableLazy[] = [
+  Character,
+  CallApp,
+  RoomApp,
+];
+
+// AppID → 懒加载组件，供「按下即预取」连 React.lazy 负载一起解析（消除切换瞬间露底色的闪烁）。
+// AppID 由下方 import 引入，ES 模块提升后全模块可用。
+const APP_BY_ID: Partial<Record<AppID, PreloadableLazy>> = {
+  [AppID.Settings]: Settings, [AppID.Character]: Character, [AppID.Chat]: Chat,
+  [AppID.GroupChat]: GroupChat, [AppID.ThemeMaker]: ThemeMaker, [AppID.Appearance]: Appearance,
+  [AppID.Gallery]: Gallery, [AppID.Date]: DateApp, [AppID.User]: UserApp,
+  [AppID.Journal]: JournalApp, [AppID.Schedule]: ScheduleApp, [AppID.Room]: RoomApp,
+  [AppID.CheckPhone]: CheckPhone, [AppID.Social]: SocialApp, [AppID.Study]: StudyApp,
+  [AppID.FAQ]: FAQApp, [AppID.Game]: GameApp, [AppID.Worldbook]: WorldbookApp,
+  [AppID.Novel]: NovelApp, [AppID.Bank]: BankApp, [AppID.XhsStock]: XhsStockApp,
+  [AppID.XhsFreeRoam]: XhsFreeRoamApp, [AppID.Browser]: BrowserApp, [AppID.Songwriting]: SongwritingApp,
+  [AppID.Music]: MusicApp, [AppID.Call]: CallApp, [AppID.VoiceDesigner]: VoiceDesignerApp,
+  [AppID.Guidebook]: GuidebookApp, [AppID.LifeSim]: LifeSimApp, [AppID.MemoryPalace]: MemoryPalaceApp,
+  [AppID.Handbook]: HandbookApp, [AppID.QQBridge]: QQBridge, [AppID.HotNews]: HotNewsApp,
+  [AppID.VRWorld]: VRWorldApp, [AppID.CharCreatorDev]: CharCreatorDevApp, [AppID.SpecialMoments]: SpecialMomentsApp,
+  [AppID.WorldHome]: WorldHomeApp,
+};
+// 注入负载预热器：AppIcon 的 pointerdown → preloadApp(id) → 这里 warmLazy，连 React.lazy 负载一起解析。
+setAppPayloadWarmer((id: AppID) => { const c = APP_BY_ID[id]; if (c) warmLazy(c); });
+
 import { Like520Controller, shouldShowLike520Popup } from './Like520Event';
 import { UpdateNotificationController, shouldShowUpdateNotification } from './UpdateNotificationEvent';
 import { WorkerUpdateReminderController, shouldShowWorkerUpdateReminder } from './WorkerUpdateReminderEvent';
+import { BackupReminderController } from './BackupReminderEvent';
+import { shouldShowBackupReminder, markBackupReminderShown } from '../utils/backupReminder';
 import { formatBytes } from '../utils/format';
 import { AppID } from '../types';
+import { shellHandlesSafeArea } from '../utils/safeAreaApps';
 import { App as CapApp } from '@capacitor/app';
 import { StatusBar as CapStatusBar, Style as StatusBarStyle } from '@capacitor/status-bar';
 import { LocalNotifications } from '@capacitor/local-notifications';
 import { Capacitor } from '@capacitor/core';
-import { isIOSStandaloneWebApp } from '../utils/iosStandalone';
+import { isIOSStandaloneWebApp, isStatusBarHidden } from '../utils/iosStandalone';
 import AppErrorBoundary from './os/AppErrorBoundary';
 import GlobalMiniPlayer from './os/GlobalMiniPlayer';
+import PersonaSimIndicator from './os/PersonaSimIndicator';
+import DreamSimIndicator from './os/DreamSimIndicator';
 import ErrorDialog from './os/ErrorDialog';
+import BootSequence from './os/BootSequence';
+import { setAppPayloadWarmer } from './os/appPreload';
 
 /*
 // Internal Error Boundary Component
@@ -319,9 +414,107 @@ const ImportRecoveryPopup: React.FC<{
   );
 };
 
+// App 懒加载占位：关键是「延迟出现」。chunk 命中缓存/快速加载只需几十毫秒，这种时长用户
+// 本就无感——但 Suspense fallback 会立刻渲染，占位一闪反而把无感瞬切变成能被看见的打断
+// （loading spinner 闪烁反模式）。所以前 ~220ms 一律渲染空（无感），只有真的慢才浮现。
+// 刻意「零动画开销」：之前那套呼吸/涟漪/上升微尘的持续动画在 iOS 上会引起卡顿，且预热命中后
+// 这屏几乎不出现 —— 收益小、代价大。现在只一次性淡入一个静态柔光点（无 infinite 动画），
+// 透明底让外壳虚化壁纸透出来。真卡住（>7s）才换成可点的刷新/返回兜底。
+const AppLoadingFallback: React.FC<{ onReturn?: () => void }> = ({ onReturn }) => {
+  const [show, setShow] = useState(false);
+  const [stalled, setStalled] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => setShow(true), 220);
+    // 卡死逃生口：iOS standalone PWA 从后台恢复 / 弱网时，动态 import 可能既不 resolve 也不 reject，
+    // Suspense 会永远停在这一屏（不报错 → 错误边界不触发 → 不会自动刷新），用户狂点中心光点却毫无反应。
+    // 超过 STALL_MS 仍未加载完 → 把「看着像按钮其实不是」的光点换成真正可点的「刷新/返回」按钮，
+    // 既明确告诉用户该点哪里，又把静默卡死变成一键可恢复。只动占位 UI，不碰 import 逻辑。
+    const stall = setTimeout(() => setStalled(true), 7000);
+    return () => { clearTimeout(t); clearTimeout(stall); };
+  }, []);
+  if (stalled) {
+    return (
+      <div className="w-full h-full flex flex-col items-center justify-center bg-slate-900/95 text-white p-6 text-center space-y-4" style={{ animation: 'appLoadIn 320ms ease-out both' }}>
+        <style>{`@keyframes appLoadIn{from{opacity:0}to{opacity:1}}`}</style>
+        <h2 className="text-base font-bold">加载有点慢…</h2>
+        <p className="text-xs text-slate-300 max-w-xs leading-relaxed">
+          这个发光的圆点是加载动画，不是按钮——点它不会有反应。常见于刚更新版本或网络瞬断，刷新一次即可恢复。
+        </p>
+        <div className="flex flex-col gap-3 w-full max-w-xs">
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            className="w-full px-6 py-3 bg-red-600 rounded-full font-bold text-sm shadow-lg active:scale-95 transition-transform"
+          >
+            刷新恢复
+          </button>
+          {onReturn && (
+            <button
+              type="button"
+              onClick={onReturn}
+              className="w-full px-4 py-2 bg-slate-700 rounded-full text-xs font-bold active:scale-95 transition-transform"
+            >
+              返回桌面
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
+  if (!show) return null;
+  // 静态柔光点：仅一次性淡入，之后无任何持续动画（零运行时开销），透明底透出壁纸。
+  return (
+    <div className="w-full h-full flex items-center justify-center bg-transparent" style={{ animation: 'appLoadIn 280ms ease-out both' }}>
+      <style>{`@keyframes appLoadIn{from{opacity:0}to{opacity:1}}`}</style>
+      <div className="relative" style={{ width: 72, height: 72 }}>
+        {/* 静态柔光 */}
+        <div className="absolute inset-0" style={{ borderRadius: '9999px', filter: 'blur(8px)', background: 'radial-gradient(circle, hsla(var(--primary-hue),75%,72%,0.42) 0%, hsla(var(--primary-hue),70%,60%,0.10) 50%, transparent 70%)' }} />
+        {/* 静态内核 */}
+        <div className="absolute" style={{ left: '50%', top: '50%', width: 10, height: 10, transform: 'translate(-50%,-50%)', borderRadius: '9999px', background: 'radial-gradient(circle, #fff, hsla(var(--primary-hue),80%,75%,0.6) 60%, transparent)', boxShadow: '0 0 10px hsla(var(--primary-hue),80%,75%,0.6)' }} />
+      </div>
+    </div>
+  );
+};
+
 const PhoneShell: React.FC = () => {
   const { theme, isLocked, unlock, activeApp, closeApp, openApp, virtualTime, isDataLoaded, toasts, unreadMessages, characters, handleBack, suspendedCall, resumeCall, activeCharacterId, errorDialog, dismissError } = useOS();
   const useIOSStandaloneLayout = isIOSStandaloneWebApp();
+
+  // 顶部时钟/电量条是否隐藏（外观「隐藏顶部时间栏」开关 + 平台默认：iOS 全屏 PWA 系统已有状态栏，默认隐藏避免双显）。
+  // 隐藏时把 --chrome-top 退化成 --safe-top，让用 chrome-top 让位的顶栏（交换日记/彼方/剧场）不再为已隐藏的状态栏多留 1.5rem。
+  const statusBarHidden = isStatusBarHidden(theme.hideStatusBar);
+  useEffect(() => {
+    document.documentElement.classList.toggle('sully-statusbar-hidden', statusBarHidden);
+  }, [statusBarHidden]);
+
+  // 冷启动「世界入场」是否已结束。结束前由 BootSequence 接管整屏（同时取代旧的黑屏 spinner）。
+  const [bootDone, setBootDone] = useState(false);
+
+  // 从根本上消除「每次进 App 都要加载」：数据一就绪就在后台按优先级逐个预热各 App 的代码块。
+  // 关键：不等开机动画（bootDone）结束就开始 —— 否则用户在开机那 ~2 秒内点开 Chat 时 chunk 还没热，
+  // 会现下载+解析 300KB+，首次进聊天卡好几秒。预热与开机动画并行（只下载/解析负载、不挂载、无副作用）。
+  // 逐个、空闲触发（requestIdleCallback），不与首屏交互抢主线程/带宽。
+  useEffect(() => {
+    if (!isDataLoaded) return;
+    ROLE_ENTRY_PRELOAD_ORDER.forEach(warmLazy);
+  }, [isDataLoaded]);
+
+  useEffect(() => {
+    if (!isDataLoaded) return;
+    if (useIOSStandaloneLayout) return;
+    let cancelled = false;
+    let idx = 0;
+    const ric: (cb: () => void) => number = (window as any).requestIdleCallback
+      ? (cb) => (window as any).requestIdleCallback(cb, { timeout: 1500 })
+      : (cb) => window.setTimeout(cb, 200);
+    const step = () => {
+      if (cancelled || idx >= APP_PRELOAD_ORDER.length) return;
+      warmLazy(APP_PRELOAD_ORDER[idx++]); // 下载 chunk + 解析 React.lazy 负载 → 首次打开不再 suspend、无底色闪烁
+      if (!cancelled) ric(step);
+    };
+    const startId = window.setTimeout(() => ric(step), 150); // 让首帧先绘制一拍，随即开始（含开机动画期间）
+    return () => { cancelled = true; window.clearTimeout(startId); };
+  }, [isDataLoaded, useIOSStandaloneLayout]);
 
   // Disclaimer popup for first-time users
   const [showDisclaimer, setShowDisclaimer] = useState(() => {
@@ -362,6 +555,9 @@ const PhoneShell: React.FC = () => {
     openApp(AppID.Settings);
   };
 
+  // 「致用户的一封信」已下线：常量置 false，保留变量让下面弹窗链的条件继续成立（恒真/恒不显示）。
+  const showAuthorLetter = false;
+
   // Version update popup (2026-04) — forced once per user who hasn't seen it yet
   const [showUpdateNotification, setShowUpdateNotification] = useState(() => {
     try {
@@ -370,30 +566,48 @@ const PhoneShell: React.FC = () => {
   });
 
   useEffect(() => {
-    if (!showDisclaimer && !showImportRecoveryPrompt && !showUpdateNotification) {
+    if (!showDisclaimer && !showImportRecoveryPrompt && !showAuthorLetter && !showUpdateNotification) {
       if (shouldShowUpdateNotification()) {
         setShowUpdateNotification(true);
       }
     }
-  }, [showDisclaimer, showImportRecoveryPrompt, showUpdateNotification]);
+  }, [showDisclaimer, showImportRecoveryPrompt, showAuthorLetter, showUpdateNotification]);
 
   // 520 特别活动弹窗（2026-05-20 当天，且没被 dismiss / completed）
   // 一次性：用户点过任何按钮就标记 dismissed，下次刷新不再出现；
   // API 配置改成弹窗内嵌，配完直接进活动，不再需要把弹窗暂存让位给 Settings。
   const [showLike520Popup, setShowLike520Popup] = useState(false);
   useEffect(() => {
-    if (showDisclaimer || showImportRecoveryPrompt || showUpdateNotification) return;
+    if (showDisclaimer || showImportRecoveryPrompt || showAuthorLetter || showUpdateNotification) return;
     if (!isDataLoaded) return;
     if (shouldShowLike520Popup()) setShowLike520Popup(true);
-  }, [showDisclaimer, showImportRecoveryPrompt, showUpdateNotification, isDataLoaded]);
+  }, [showDisclaimer, showImportRecoveryPrompt, showAuthorLetter, showUpdateNotification, isDataLoaded]);
 
   // Worker 后端更新提醒 — 只对启用了 Instant Push 的用户弹，且当前 worker 版本未确认过
   const [showWorkerUpdateReminder, setShowWorkerUpdateReminder] = useState(false);
   useEffect(() => {
-    if (showDisclaimer || showImportRecoveryPrompt || showUpdateNotification || showLike520Popup) return;
+    if (showDisclaimer || showImportRecoveryPrompt || showAuthorLetter || showUpdateNotification || showLike520Popup) return;
     if (!isDataLoaded) return;
     if (shouldShowWorkerUpdateReminder()) setShowWorkerUpdateReminder(true);
-  }, [showDisclaimer, showImportRecoveryPrompt, showUpdateNotification, showLike520Popup, isDataLoaded]);
+  }, [showDisclaimer, showImportRecoveryPrompt, showAuthorLetter, showUpdateNotification, showLike520Popup, isDataLoaded]);
+
+  // 「该备份啦」提醒 — local-first 数据只在本机，隔 N 天（默认 7，可在设置里改）没导出就弹一次
+  const [showBackupReminder, setShowBackupReminder] = useState(false);
+  useEffect(() => {
+    if (showDisclaimer || showImportRecoveryPrompt || showAuthorLetter || showUpdateNotification || showLike520Popup || showWorkerUpdateReminder) return;
+    if (!isDataLoaded || isLocked) return;
+    if (shouldShowBackupReminder()) setShowBackupReminder(true);
+  }, [showDisclaimer, showImportRecoveryPrompt, showAuthorLetter, showUpdateNotification, showLike520Popup, showWorkerUpdateReminder, isDataLoaded, isLocked]);
+
+  const dismissBackupReminder = () => {
+    markBackupReminderShown();
+    setShowBackupReminder(false);
+  };
+  const goBackupFromReminder = () => {
+    markBackupReminderShown();
+    setShowBackupReminder(false);
+    openApp(AppID.Settings);
+  };
 
   // Capacitor Native Handling
   useEffect(() => {
@@ -463,8 +677,15 @@ const PhoneShell: React.FC = () => {
     });
   }, [theme.wallpaper]);
 
+  // 冷启动：先放「世界入场」cinematic（数据没就绪时它持续呼吸等待，绝不出现 spinner）。
+  // BootSequence 在「数据就绪 + 停留够时长」后推进退场，再交还控制权给下方的锁屏/桌面。
+  if (!bootDone) {
+    return <BootSequence dataReady={isDataLoaded} wallpaper={theme.wallpaper} onDone={() => setBootDone(true)} />;
+  }
+
+  // 兜底：理论上 bootDone 时数据已就绪；万一未就绪（极端慢）退化为最简静态深色屏，不闪 spinner。
   if (!isDataLoaded) {
-    return <div className="w-full h-full bg-black flex items-center justify-center"><div className="w-8 h-8 border-2 border-white/20 border-t-white rounded-full animate-spin"></div></div>;
+    return <div className="w-full h-full" style={{ background: '#05060f' }} />;
   }
 
   const getBgStyle = (wp: string) => {
@@ -474,6 +695,7 @@ const PhoneShell: React.FC = () => {
 
   const bgImageValue = getBgStyle(theme.wallpaper);
   const contentColor = theme.contentColor || '#ffffff';
+  const acnhSkin = theme.skin === 'animalcrossing'; // 动森彩蛋：锁屏换暖色草地点缀
 
   if (isLocked) {
     const unreadCount = Object.values(unreadMessages).reduce((a,b) => a+b, 0);
@@ -490,15 +712,37 @@ const PhoneShell: React.FC = () => {
             unlock();
         }}
         className="relative w-full h-full bg-cover bg-center cursor-pointer overflow-hidden group font-light select-none overscroll-none"
-        style={{ backgroundImage: bgImageValue, color: contentColor }}
+        style={{ backgroundImage: bgImageValue, color: contentColor, animation: 'lockReveal 600ms ease-out both' }}
       >
-        <div className="absolute inset-0 bg-black/5 backdrop-blur-sm transition-all group-hover:backdrop-blur-none group-hover:bg-transparent duration-700" />
-        
+        {/* 锁屏柔和淡入：与开机「世界入场」退场衔接；body 背景本就是壁纸，故是无缝融入而非硬切。 */}
+        <style>{`@keyframes lockReveal{from{opacity:0}to{opacity:1}}`}</style>
+        {acnhSkin ? (
+            <div className="absolute inset-0 transition-all duration-700 group-hover:opacity-0"
+                 style={{ background: 'linear-gradient(180deg, rgba(188,231,245,0.25) 0%, rgba(255,247,176,0.15) 45%, rgba(124,186,76,0.28) 100%)' }} />
+        ) : (
+            <div className="absolute inset-0 bg-black/5 backdrop-blur-sm transition-all group-hover:backdrop-blur-none group-hover:bg-transparent duration-700" />
+        )}
+
+        {/* 动森彩蛋：锁屏飘叶 */}
+        {acnhSkin && (
+            <div className="absolute inset-0 pointer-events-none overflow-hidden">
+                <svg viewBox="0 0 100 100" className="absolute w-14 h-14 opacity-80 -rotate-[25deg]" style={{ left: '10%', top: '12%' }}><path d="M50 8 C78 20 88 50 78 82 C74 92 60 96 50 92 C40 96 26 92 22 82 C12 50 22 20 50 8Z" fill="#9ED25F"/><path d="M50 14 L50 88" stroke="#5c8a30" strokeWidth="3" fill="none" opacity="0.5"/></svg>
+                <svg viewBox="0 0 100 100" className="absolute w-12 h-12 opacity-75 rotate-[30deg] scale-x-[-1]" style={{ right: '12%', top: '20%' }}><path d="M50 8 C78 20 88 50 78 82 C74 92 60 96 50 92 C40 96 26 92 22 82 C12 50 22 20 50 8Z" fill="#7CBA4C"/><path d="M50 14 L50 88" stroke="#4d7a2a" strokeWidth="3" fill="none" opacity="0.5"/></svg>
+                <svg viewBox="0 0 100 100" className="absolute w-16 h-16 opacity-70 rotate-[12deg]" style={{ left: '16%', bottom: '14%' }}><path d="M50 8 C78 20 88 50 78 82 C74 92 60 96 50 92 C40 96 26 92 22 82 C12 50 22 20 50 8Z" fill="#5FAE6E"/><path d="M50 14 L50 88" stroke="#356b3f" strokeWidth="3" fill="none" opacity="0.5"/></svg>
+            </div>
+        )}
+
         <div className="absolute top-24 w-full text-center drop-shadow-[0_2px_4px_rgba(0,0,0,0.3)]">
            <div className="text-8xl tracking-tighter opacity-95 font-bold">
              {virtualTime.hours.toString().padStart(2,'0')}<span className="animate-pulse">:</span>{virtualTime.minutes.toString().padStart(2,'0')}
            </div>
-           <div className="text-lg tracking-widest opacity-90 mt-2 uppercase text-xs font-bold">SullyOS Simulation</div>
+           {acnhSkin ? (
+               <div className="text-lg tracking-widest opacity-90 mt-2 text-xs font-bold flex items-center justify-center gap-1.5">
+                   <span>🍃</span><span>无人岛生活</span><span>🍃</span>
+               </div>
+           ) : (
+               <div className="text-lg tracking-widest opacity-90 mt-2 uppercase text-xs font-bold">SullyOS Simulation</div>
+           )}
         </div>
 
         {unreadCount > 0 && (
@@ -564,19 +808,29 @@ const PhoneShell: React.FC = () => {
       case AppID.QQBridge: return <QQBridge />;
       case AppID.HotNews: return <HotNewsApp />;
       case AppID.SpecialMoments: return <SpecialMomentsApp />;
+      case AppID.VRWorld: return <VRWorldApp />;
+      case AppID.WorldHome: return <WorldHomeApp />;
+      case AppID.CharCreatorDev: return <CharCreatorDevApp />;
       case AppID.Launcher:
       default: return <Launcher />;
     }
   };
 
+  // 安全区策略（方案 B）：自理名单里的 App 已全屏铺底、自己给控件让位，外壳不再加 padding；
+  // 其余尚未迁移、靠外壳兜底的 App，仍由外壳用单一来源变量 --safe-* 统一让出安全区，避免顶栏怼进状态栏。
+  // 自理名单见 utils/safeAreaApps.ts（迁移一个 App = 把它加进名单 + 顶栏用 --chrome-top 自己让位）。
+  // TODO(safe-area-A): 把剩余「未迁移」App 逐个改为自理安全区后，移除外壳这层兜底，实现全屏无色条。
+  const shellPadsSafeArea = shellHandlesSafeArea(activeApp);
+
   return (
     <div className="relative w-full h-full overflow-hidden bg-gradient-to-br from-pink-200 via-purple-200 to-indigo-200 text-slate-900 font-sans select-none overscroll-none">
        {/* Optimized Background Layer */}
-       <div 
-         className="absolute inset-0 bg-cover bg-center transition-all duration-700 ease-[cubic-bezier(0.25,0.1,0.25,1)]"
-         style={{ 
+       {/* 壁纸底层：进 App 时只柔和虚化/压暗作背景，不再做缩放「过场」——
+          进 App 的过渡感统一交给 App 容器的淡入（见下方 animate-fade-in 包裹层）。 */}
+       <div
+         className="absolute inset-0 bg-cover bg-center transition-all duration-500 ease-[cubic-bezier(0.25,0.1,0.25,1)]"
+         style={{
              backgroundImage: bgImageValue,
-             transform: activeApp !== AppID.Launcher ? 'scale(1.1)' : 'scale(1)',
              filter: activeApp !== AppID.Launcher ? 'blur(10px)' : 'none',
              opacity: activeApp !== AppID.Launcher ? 0.6 : 1,
              backfaceVisibility: 'hidden',
@@ -586,28 +840,39 @@ const PhoneShell: React.FC = () => {
        
        <div className={`absolute inset-0 transition-all duration-500 ${activeApp === AppID.Launcher ? 'bg-transparent' : 'bg-white/50 backdrop-blur-3xl'}`} />
        
-       {/* 
-          CRITICAL FIX: 
-          Using 'absolute inset-0' prevents layout collapse.
-          REMOVED 'flex flex-col' to fix layout issues in CheckPhone (gap) and SocialApp (jumping).
-          Now it acts as a pure container for full-screen apps.
-       */}
-      <div 
-  className="absolute inset-0 z-10 w-full h-full overflow-hidden bg-transparent overscroll-none flex flex-col"
-  style={{ 
-      paddingTop: activeApp !== AppID.Launcher ? 'env(safe-area-inset-top)' : 0,
-      paddingBottom: activeApp !== AppID.Launcher ? 'env(safe-area-inset-bottom)' : 0
-  }}
-> 
+       {/* 外壳安全区两种策略：
+          - 未迁移 App：外壳铺满 body（含 --app-height 多出的 +safe-bottom 溢出区），用 padding 让位安全区，
+            内容只画到可见 viewport 内，home 条上方留出 safe-bottom 视觉间隙。
+          - 已迁移 App（彼方/聊天/群聊/桌面）：自理安全区。外壳直接把底边收回到可见 viewport
+            （bottom = --standalone-safe-area-bottom），不让那多出来的 34px 把 App 底部控件压到 home 条上。 */}
+      <div
+        className="sully-shell-content absolute top-0 left-0 right-0 z-10 overflow-hidden bg-transparent overscroll-none flex flex-col"
+        style={
+          shellPadsSafeArea
+            ? { bottom: 0, paddingTop: 'var(--safe-top)', paddingBottom: 'var(--safe-bottom)' }
+            : { bottom: 'var(--standalone-safe-area-bottom, 0px)' }
+        }
+      >
           {/* App Container */}
-         <div className="flex-1 relative overflow-hidden" style={{ contain: useIOSStandaloneLayout ? undefined : 'layout style paint' }}>
-    <AppErrorBoundary onCloseApp={closeApp} resetKey={`${activeApp}:${activeCharacterId || 'none'}`}>
-        {renderApp()}
-    </AppErrorBoundary>
-</div>
+          <div className="flex-1 relative overflow-hidden" style={{ contain: useIOSStandaloneLayout ? undefined : 'layout style paint' }}>
+            <AppErrorBoundary onCloseApp={closeApp} resetKey={`${activeApp}:${activeCharacterId || 'none'}`}>
+              <Suspense fallback={<AppLoadingFallback onReturn={closeApp} />}>
+                {/* 统一「淡入」过渡：每次切换 App 时 key 变化 → 重新挂载并淡入，
+                    让所有 App 都像个人档案那样「渐变进去」，而非瞬间咚一下。
+                    关键：只动 opacity、不做 scale/translate —— 否则会把整棵（常含大量头像图片的）
+                    App 子树栅格化进 transform 图层，角色列表类 App 首帧会卡顿一下（停顿一秒）。
+                    时长也压短，进重 App 时不至于多等。 */}
+                <div key={activeApp} className="w-full h-full" style={{ animation: 'appEnterFade 200ms ease-out both' }}>
+                  <style>{`@keyframes appEnterFade{from{opacity:0}to{opacity:1}}`}</style>
+                  {renderApp()}
+                </div>
+              </Suspense>
+            </AppErrorBoundary>
+          </div>
 
-          {/* Overlays: Status Bar (Top) */}
-          {!theme.hideStatusBar && <StatusBar />}
+          {/* Overlays: Status Bar (Top) —— 常驻渲染：时钟/电量条由开关+平台默认决定显隐（StatusBar 内部 isStatusBarHidden），
+              错误指示器、系统调试终端与开关无关、始终在。 */}
+          <StatusBar />
           
           {/* Overlays: Suspended Call Bar */}
           {suspendedCall && activeApp !== AppID.Call && (
@@ -623,6 +888,12 @@ const PhoneShell: React.FC = () => {
 
           {/* Overlays: Global Mini Player (when music is playing in background) */}
           <GlobalMiniPlayer />
+
+          {/* Overlays: 人格模拟生成全局指示条 */}
+          <PersonaSimIndicator />
+
+          {/* Overlays: 梦境生成全局指示条 */}
+          <DreamSimIndicator />
 
           {/* Overlays: Toasts (Top) */}
           <div className="absolute top-12 left-0 w-full flex flex-col items-center gap-2 pointer-events-none z-[60]">
@@ -658,21 +929,29 @@ const PhoneShell: React.FC = () => {
        )}
 
        {/* Version update popup (2026-04) — forced until acknowledged */}
-       {!showDisclaimer && !showImportRecoveryPrompt && showUpdateNotification && (
+       {!showDisclaimer && !showImportRecoveryPrompt && !showAuthorLetter && showUpdateNotification && (
          <UpdateNotificationController onClose={() => setShowUpdateNotification(false)} />
        )}
 
        {/* 520 特别活动弹窗（2026-05-20 当天，一次性） */}
-       {!showDisclaimer && !showImportRecoveryPrompt && !showUpdateNotification && showLike520Popup && (
+       {!showDisclaimer && !showImportRecoveryPrompt && !showAuthorLetter && !showUpdateNotification && showLike520Popup && (
          <Like520Controller
            onClose={() => setShowLike520Popup(false)}
          />
        )}
 
        {/* Worker 后端更新提醒（仅启用 Instant Push 的用户，每个 worker 版本一次） */}
-       {!showDisclaimer && !showImportRecoveryPrompt && !showUpdateNotification && !showLike520Popup && showWorkerUpdateReminder && (
+       {!showDisclaimer && !showImportRecoveryPrompt && !showAuthorLetter && !showUpdateNotification && !showLike520Popup && showWorkerUpdateReminder && (
          <WorkerUpdateReminderController
            onClose={() => setShowWorkerUpdateReminder(false)}
+         />
+       )}
+
+       {/* 「该备份啦」提醒（local-first 数据只在本机，隔 N 天没导出弹一次） */}
+       {!showDisclaimer && !showImportRecoveryPrompt && !showAuthorLetter && !showUpdateNotification && !showLike520Popup && !showWorkerUpdateReminder && showBackupReminder && (
+         <BackupReminderController
+           onDismiss={dismissBackupReminder}
+           onGoBackup={goBackupFromReminder}
          />
        )}
     </div>

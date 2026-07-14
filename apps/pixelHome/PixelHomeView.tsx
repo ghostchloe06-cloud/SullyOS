@@ -257,7 +257,10 @@ const PixelHomeView: React.FC<Props> = ({ charId, charName, charAvatar, userName
   return (
     <div className="h-full w-full flex flex-col bg-slate-900 overflow-hidden">
       {/* 顶部导航（潜行模式下隐藏，由 MemoryDiveMode 自带头部） */}
-      {viewMode !== 'dive' && <div className="shrink-0 flex items-center justify-between px-4 pt-12 pb-3 bg-slate-800/80 backdrop-blur-sm border-b border-slate-700/50">
+      {viewMode !== 'dive' && <div
+        className="shrink-0 flex items-center justify-between px-4 pb-3 bg-slate-800/80 backdrop-blur-sm border-b border-slate-700/50"
+        style={{ paddingTop: 'max(3rem, var(--safe-top, 0px))' }}
+      >
         <button
           onClick={() => {
             if (viewMode === 'map') { onBack(); return; }
@@ -336,7 +339,7 @@ const PixelHomeView: React.FC<Props> = ({ charId, charName, charAvatar, userName
 
       {/* 底部工具栏 */}
       {viewMode === 'map' && (
-        <div className="shrink-0 bg-slate-800/90 backdrop-blur-sm border-t border-slate-700/50">
+        <div className="shrink-0 bg-slate-800/90 backdrop-blur-sm border-t border-slate-700/50" style={{ paddingBottom: 'var(--safe-bottom, 0px)' }}>
           <div className="flex items-center justify-around px-4 py-2">
             <BottomTab label="家园" active onClick={() => setViewMode('map')} />
             <BottomTab label="🌀潜行" onClick={handleEnterDive} />

@@ -2,9 +2,13 @@
 
 
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" translate="no">
   <head>
     <meta charset="utf-8" />
+    <!-- 关掉浏览器自动翻译：SullyOS 本身就是中文 App，翻译纯属添乱（甚至「中译中」），
+         还会改动 React 托管的 DOM 触发 insertBefore/removeChild 白屏。translate="no" + 这两个 meta
+         覆盖 Chrome/Edge/三星 等主流浏览器。utils/translateCrashGuard 作为兜底护栏仍保留。 -->
+    <meta name="google" content="notranslate" />
     <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=0, viewport-fit=cover, interactive-widget=resizes-content" />
     <title>SullyOS</title>
     
@@ -24,7 +28,7 @@
     <link rel="stylesheet" href="https://unpkg.com/katex@0.16.9/dist/katex.min.css" integrity="sha384-n8MVd4RsNIU0tAv4ct0nTaAbDJwPJzDEaqSD1odI+WdtXRGWt2kTvGFasHpSy3SV" crossorigin="anonymous">
 
     <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Quicksand:wght@300;400;500;600&family=DM+Serif+Display:ital@0;1&family=Caveat:wght@400;500;600;700&family=Shippori+Mincho:wght@400;500;600;700&family=Courier+Prime:ital,wght@0,400;0,700;1,400&family=Ma+Shan+Zheng&family=Long+Cang&family=ZCOOL+KuaiLe&family=ZCOOL+XiaoWei&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Quicksand:wght@300;400;500;600&family=Nunito:wght@400;500;600;700;800;900&family=Noto+Sans+SC:wght@400;500;700;900&family=DM+Serif+Display:ital@0;1&family=Caveat:wght@400;500;600;700&family=Shippori+Mincho:wght@400;500;600;700&family=Courier+Prime:ital,wght@0,400;0,700;1,400&family=Ma+Shan+Zheng&family=Long+Cang&family=ZCOOL+KuaiLe&family=ZCOOL+XiaoWei&display=swap" rel="stylesheet">
     <script>
       tailwind.config = {
         theme: {
@@ -51,6 +55,8 @@
               'glow-pulse': 'glowPulse 3s ease-in-out infinite',
               'shimmer': 'shimmer 2.5s ease-in-out infinite',
               'dot-pulse': 'dotPulse 1.2s ease-in-out infinite',
+              'app-open': 'appOpen 0.4s cubic-bezier(0.16, 1, 0.3, 1)',
+              'notif-pop': 'notifPop 0.5s cubic-bezier(0.34, 1.56, 0.64, 1)',
             },
             keyframes: {
               fadeIn: {
@@ -99,6 +105,15 @@
                 '0%, 80%, 100%': { opacity: '0.3', transform: 'scale(0.8)' },
                 '40%': { opacity: '1', transform: 'scale(1.1)' },
               },
+              appOpen: {
+                '0%': { opacity: '0', transform: 'translateY(8%) scale(0.95)' },
+                '100%': { opacity: '1', transform: 'translateY(0) scale(1)' },
+              },
+              notifPop: {
+                '0%': { opacity: '0', transform: 'translateY(-130%)' },
+                '70%': { opacity: '1', transform: 'translateY(6%)' },
+                '100%': { opacity: '1', transform: 'translateY(0)' },
+              },
             }
           }
         }
@@ -109,10 +124,20 @@
         --primary-hue: 245; 
         --primary-sat: 25%;
         --primary-lightness: 65%;
-        --safe-area-bottom: env(safe-area-inset-bottom);
+        /* 安全区单一来源：原生 env 与 JS 探测值 --standalone-safe-area-*（见 utils/iosStandalone.ts）取大，
+           iOS 全屏 PWA 下原生 env 偶发返回 0 时由探测值兜底。新增 App 一律引用这三个变量。 */
+        --safe-top: max(env(safe-area-inset-top, 0px), var(--standalone-safe-area-top, 0px));
+        --safe-bottom: max(env(safe-area-inset-bottom, 0px), var(--standalone-safe-area-bottom, 0px));
+        /* 全屏界面顶栏让开「安全区 + SullyOS 顶部状态栏(时间/电量, 约 1.5rem)」；背景仍铺满，只挪控件。 */
+        --chrome-top: calc(var(--safe-top) + 1.5rem);
         --app-height: 100lvh;
         --keyboard-inset: 0px;
         --app-font: 'Quicksand', sans-serif;
+      }
+      /* 动森风格皮肤：拉丁/数字用 Nunito（圆润），中文用 ZCOOL KuaiLe（可爱），保留 Noto Sans SC 兜底。
+         选择 html[data-skin] 而非 :root，优先级更高，能盖过运行时注入的 --app-font。 */
+      html[data-skin="animalcrossing"] {
+        --app-font: 'Nunito', 'ZCOOL KuaiLe', 'Noto Sans SC', sans-serif;
       }
       html, body, #root {
         width: 100%;
@@ -132,6 +157,12 @@
         min-height: var(--app-height);
         width: 100vw;
         font-family: var(--app-font);
+      }
+      /* 顶部时钟/电量条被隐藏时（外观开关或平台默认，由 PhoneShell 切换 .sully-statusbar-hidden），
+         chrome-top 不再需要那 1.5rem 状态栏预留，退化成 safe-top，
+         避免用 --chrome-top 让位的顶栏（交换日记/彼方/剧场等）顶部多留空白。 */
+      html.sully-statusbar-hidden {
+        --chrome-top: var(--safe-top);
       }
       body.ios-standalone {
         min-height: var(--app-height);
@@ -162,12 +193,72 @@
         -ms-overflow-style: none;
         scrollbar-width: none;
       }
+      /* 默认细滚动条：盖掉浏览器又粗又灰的原生滚动条（.no-scrollbar 仍可隐藏） */
+      *::-webkit-scrollbar {
+        width: 6px;
+        height: 6px;
+      }
+      *::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      *::-webkit-scrollbar-thumb {
+        background: rgba(140, 140, 160, 0.3);
+        border-radius: 999px;
+      }
+      *::-webkit-scrollbar-thumb:hover {
+        background: rgba(140, 140, 160, 0.5);
+      }
+      /* 阅读器细滚动条（明暗主题通用，半透明） */
+      .vr-reader-scroll {
+        scrollbar-width: thin;
+        scrollbar-color: rgba(140,140,140,0.35) transparent;
+      }
+      .vr-reader-scroll::-webkit-scrollbar {
+        width: 5px;
+      }
+      .vr-reader-scroll::-webkit-scrollbar-track {
+        background: transparent;
+      }
+      .vr-reader-scroll::-webkit-scrollbar-thumb {
+        background: rgba(140,140,140,0.35);
+        border-radius: 999px;
+      }
+      .vr-reader-scroll::-webkit-scrollbar-thumb:hover {
+        background: rgba(140,140,140,0.55);
+      }
       input:focus, textarea:focus, select:focus {
         outline: none;
       }
-      /* Utility for Safe Area */
+      /* Utility for Safe Area —— 统一引用单一来源变量 */
       .pb-safe {
-        padding-bottom: env(safe-area-inset-bottom);
+        padding-bottom: var(--safe-bottom);
+      }
+      /* 软键盘弹出时（iosStandalone 在 body 上挂 .ios-keyboard-open），收掉底部给 home 条留的 safe 间隙，
+         让聊天输入栏直接贴住键盘：① 外壳容器不再把底边钉在 safe 上方，铺到可视区底；② 输入栏收掉自己的 pb-safe 白条。
+         键盘收起后 class 移除，两者各自回到 safe 让位。app 高度跟随可视区由 utils/iosStandalone.ts 处理。
+         （外壳 bottom 用 !important 盖过 PhoneShell 给它设的 inline style。） */
+      .sully-chat-inputbar {
+        transition: padding-bottom 0.18s ease-out;
+      }
+      body.ios-keyboard-open .sully-shell-content {
+        bottom: 0 !important;
+      }
+      body.ios-keyboard-open .sully-chat-inputbar {
+        padding-bottom: 0;
+      }
+      /* 通话页：键盘弹起时收起大头像英雄区（约 300px），把可视区让给消息列表 + 输入框。
+         可视区收到键盘上方后若不收起大头像，会把输入框顶出可视区。用 max-height 过渡平滑收起。 */
+      .sully-call-hero {
+        transition: max-height 0.2s ease-out, opacity 0.2s ease-out, padding 0.2s ease-out;
+        max-height: 420px;
+      }
+      body.ios-keyboard-open .sully-call-hero {
+        max-height: 0;
+        opacity: 0;
+        padding-top: 0;
+        padding-bottom: 0;
+        overflow: hidden;
+        pointer-events: none;
       }
     </style>
   <script type="importmap">

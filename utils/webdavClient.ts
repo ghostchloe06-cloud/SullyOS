@@ -14,8 +14,18 @@
 import { Capacitor, CapacitorHttp } from '@capacitor/core';
 
 import { CloudBackupConfig, CloudBackupFile } from '../types';
+import { getProxyWorkerUrl } from './proxyWorker';
 
-const WORKER_URL = 'https://sullymeow.ccwu.cc';
+// 经 CF Worker 代理上传（web 路径）的请求体上限。Cloudflare Worker 免费版单次请求体约 100MB，
+// 超了会被 Worker/平台直接拒（返回 413 之类），且大请求体上行还可能撞 ~42s 上行超时。所以在发起
+// 上传前先按 blob 大小预检：超限直接给可执行的报错（改用本地导出 / GitHub），别让用户傻等几十秒
+// 才失败。备份 blob 已是压缩 zip，gzip 上行无意义，这里只做大小闸。
+// 注：native 路径（CapacitorHttp 直连上游 WebDAV，不过 Worker）不受此限，上游各家容量不一，
+// 由响应状态兜底；native 端把整个 blob 读进 ArrayBuffer 的额外拷贝是已知内存开销，彻底解需改
+// 「先落临时文件再按路径 PUT」，列为 follow-up。
+const WORKER_MAX_UPLOAD_BYTES = 100 * 1024 * 1024;
+
+const formatMiB = (bytes: number): string => `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
 
 const isNative = (): boolean => {
     try {
@@ -29,7 +39,7 @@ const buildFullUrl = (webdavUrl: string, path: string): string =>
     webdavUrl.replace(/\/+$/, '') + '/' + path.replace(/^\/+/, '');
 
 const buildProxyUrl = (fullUrl: string): string =>
-    `${WORKER_URL}/webdav?url=${encodeURIComponent(fullUrl)}`;
+    `${getProxyWorkerUrl()}/webdav?url=${encodeURIComponent(fullUrl)}`;
 
 const buildAuthHeader = (config: CloudBackupConfig): string =>
     `Basic ${btoa(`${config.username}:${config.password}`)}`;
@@ -180,6 +190,7 @@ export const uploadBackup = async (
     const mapStatus = (s: number) => {
         if (s === 200 || s === 201 || s === 204) return { ok: true, message: '上传成功' };
         if (s === 401) return { ok: false, message: '认证失败' };
+        if (s === 413) return { ok: false, message: `备份文件 ${formatMiB(blob.size)} 超出云端上传上限，请改用「本地导出」或「GitHub 备份」` };
         if (s === 507) return { ok: false, message: '云端空间不足' };
         return { ok: false, message: `上传失败 (${s})` };
     };
@@ -202,6 +213,15 @@ export const uploadBackup = async (
     }
 
     return new Promise((resolve) => {
+        // 大小预检：经 Worker 代理的上传超体积上限时，直接给可执行报错，不发起注定失败的上传。
+        if (blob.size > WORKER_MAX_UPLOAD_BYTES) {
+            resolve({
+                ok: false,
+                message: `备份文件 ${formatMiB(blob.size)} 超过云端代理上传上限（约 ${formatMiB(WORKER_MAX_UPLOAD_BYTES)}），请改用「本地导出」或「GitHub 备份」`,
+            });
+            return;
+        }
+
         const url = buildProxyUrl(buildFullUrl(config.webdavUrl, remotePath));
         const auth = buildAuthHeader(config);
 

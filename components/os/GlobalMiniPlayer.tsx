@@ -11,9 +11,14 @@ import { Play, Pause, SkipForward, SkipBack, CaretDown, X } from '@phosphor-icon
 import { useOS } from '../../context/OSContext';
 import { useMusic } from '../../context/MusicContext';
 import { AppID } from '../../types';
+import { isIOSStandaloneWebApp, readSafeAreaInsets } from '../../utils/iosStandalone';
+import {
+  clampBubblePos,
+  clampExpandedBottom,
+  resolveInsets,
+  resolveSafeTopInset,
+} from '../../utils/floatingBallBounds';
 
-const BUBBLE_SIZE = 40;
-const EDGE_PAD = 8;
 const STORAGE_KEY = 'globalMiniPlayer.bubblePos.v1';
 const HIDDEN_KEY = 'globalMiniPlayer.hidden.v1';
 const EXPANDED_BOTTOM_KEY = 'globalMiniPlayer.expandedBottom.v1';
@@ -40,6 +45,40 @@ const readExpandedBottom = (): number | null => {
   } catch { return null; }
 };
 
+const parsePx = (value: string): number => {
+  const parsed = parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : 0;
+};
+
+const readSafeTopInset = (): number => {
+  if (typeof window === 'undefined' || typeof document === 'undefined') return 0;
+
+  // 优先复用 iosStandalone.ts 写到 :root 的值：iOS standalone 冷启动时 raw env/probe
+  // 可能先给 0，但 --standalone-safe-area-top 已经有 44px 兜底。
+  const standaloneSafeTop = parsePx(
+    window.getComputedStyle(document.documentElement).getPropertyValue('--standalone-safe-area-top'),
+  );
+  if (standaloneSafeTop > 0) return standaloneSafeTop;
+
+  return resolveSafeTopInset({
+    standaloneSafeTop,
+    probedSafeTop: readSafeAreaInsets().top || 0,
+    isIOSStandalone: isIOSStandaloneWebApp(),
+  });
+};
+
+// 把父容器（PhoneShell 外壳）的 padding 与安全区合成球要让出的高度。
+// 只在每次拖拽手势开始（pointerdown）时调一次并缓存进 dragState：
+// safe-area 读取可能触发样式计算 / 探针读取，放进高频 pointermove 会抖。
+const computeInsets = (parent: HTMLElement): { insetTop: number; insetBottom: number } => {
+  const cs = window.getComputedStyle(parent);
+  return resolveInsets({
+    padTop: parseFloat(cs.paddingTop) || 0,
+    padBottom: parseFloat(cs.paddingBottom) || 0,
+    safeTop: readSafeTopInset(),
+  });
+};
+
 const GlobalMiniPlayer: React.FC = () => {
   const { activeApp } = useOS();
   const { current, playing, togglePlay, nextSong, prevSong, progress, duration } = useMusic();
@@ -57,6 +96,8 @@ const GlobalMiniPlayer: React.FC = () => {
     startBottom: number;
     parentH: number;
     selfH: number;
+    insetTop: number;
+    insetBottom: number;
     moved: boolean;
     pointerId: number;
   } | null>(null);
@@ -66,6 +107,7 @@ const GlobalMiniPlayer: React.FC = () => {
     startX: number; startY: number;
     offX: number; offY: number;
     parentW: number; parentH: number;
+    insetTop: number; insetBottom: number;
     moved: boolean;
     pointerId: number | null;
   } | null>(null);
@@ -76,10 +118,18 @@ const GlobalMiniPlayer: React.FC = () => {
   // 即使用户上次已经手动关掉了球、并且当下并没有在听歌。
   // ref 初始化为当前 playing 值：避免挂载瞬间被误判为 false→true 跳变。
   const prevPlayingRef = useRef(playing);
+  // 本次会话是否真正播放过。冷启动/重新进入项目时，MusicContext 会从 localStorage
+  // 恢复 queue+idx（于是 current 非空），但新建的 <audio> 尚未播放（playing=false）。
+  // 这种"恢复出来但没在放"的暂停态不应该弹出悬浮球——只有真正播放过之后，
+  // 会话内的手动暂停才保留显示。
+  const [everPlayed, setEverPlayed] = useState(playing);
   useEffect(() => {
-    if (playing && !prevPlayingRef.current) {
-      setHidden(false);
-      try { sessionStorage.removeItem(HIDDEN_KEY); } catch {}
+    if (playing) {
+      setEverPlayed(true);
+      if (!prevPlayingRef.current) {
+        setHidden(false);
+        try { sessionStorage.removeItem(HIDDEN_KEY); } catch {}
+      }
     }
     prevPlayingRef.current = playing;
   }, [playing]);
@@ -104,11 +154,14 @@ const GlobalMiniPlayer: React.FC = () => {
     const parentRect = parent.getBoundingClientRect();
     const selfRect = el.getBoundingClientRect();
     const currentBottom = parentRect.bottom - selfRect.bottom;
+    const { insetTop, insetBottom } = computeInsets(parent);
     expandedDragState.current = {
       startY: e.clientY,
       startBottom: currentBottom,
       parentH: parentRect.height,
       selfH: selfRect.height,
+      insetTop,
+      insetBottom,
       moved: false,
       pointerId: e.pointerId,
     };
@@ -121,9 +174,12 @@ const GlobalMiniPlayer: React.FC = () => {
     const dy = e.clientY - ds.startY;
     if (!ds.moved && Math.abs(dy) > DRAG_THRESHOLD) ds.moved = true;
     if (!ds.moved) return;
-    let nextBottom = ds.startBottom - dy;
-    const maxBottom = Math.max(0, ds.parentH - ds.selfH - EDGE_PAD);
-    nextBottom = Math.max(EDGE_PAD, Math.min(maxBottom, nextBottom));
+    const nextBottom = clampExpandedBottom(ds.startBottom - dy, {
+      parentH: ds.parentH,
+      selfH: ds.selfH,
+      insetTop: ds.insetTop,
+      insetBottom: ds.insetBottom,
+    });
     setExpandedBottom(nextBottom);
   }, []);
 
@@ -150,6 +206,7 @@ const GlobalMiniPlayer: React.FC = () => {
     if (!parent) return;
     const parentRect = parent.getBoundingClientRect();
     const bubbleRect = el.getBoundingClientRect();
+    const { insetTop, insetBottom } = computeInsets(parent);
 
     dragState.current = {
       startX: e.clientX,
@@ -158,6 +215,8 @@ const GlobalMiniPlayer: React.FC = () => {
       offY: e.clientY - bubbleRect.top,
       parentW: parentRect.width,
       parentH: parentRect.height,
+      insetTop,
+      insetBottom,
       moved: false,
       pointerId: e.pointerId,
     };
@@ -192,11 +251,17 @@ const GlobalMiniPlayer: React.FC = () => {
     const parent = el.parentElement as HTMLElement | null;
     if (!parent) return;
     const parentRect = parent.getBoundingClientRect();
-    let x = e.clientX - parentRect.left - ds.offX;
-    let y = e.clientY - parentRect.top - ds.offY;
-    x = Math.max(EDGE_PAD, Math.min(ds.parentW - BUBBLE_SIZE - EDGE_PAD, x));
-    y = Math.max(EDGE_PAD, Math.min(ds.parentH - BUBBLE_SIZE - EDGE_PAD, y));
-    setPos({ x, y });
+    const next = clampBubblePos(
+      e.clientX - parentRect.left - ds.offX,
+      e.clientY - parentRect.top - ds.offY,
+      {
+        parentW: ds.parentW,
+        parentH: ds.parentH,
+        insetTop: ds.insetTop,
+        insetBottom: ds.insetBottom,
+      },
+    );
+    setPos(next);
   }, []);
 
   const endDrag = useCallback((e: React.PointerEvent<HTMLButtonElement>) => {
@@ -214,6 +279,8 @@ const GlobalMiniPlayer: React.FC = () => {
   }, []);
 
   if (!current) return null;
+  // 重新进入项目时音乐是暂停的（从未真正播放过本次会话）→ 不显示悬浮球
+  if (!everPlayed && !playing) return null;
   if (activeApp === AppID.Music) return null;
   if (activeApp === AppID.Launcher) return null; // Launcher 的 dock 够用了
   if (activeApp === AppID.Call) return null;     // 通话中不打扰

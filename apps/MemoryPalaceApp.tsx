@@ -8,8 +8,29 @@ import {
     manuallyBindMemories, removeMemoryFromBox, unbindAllLiveMemories,
     reviveArchivedMemory,
     wipeAllMemoryPalace,
+    exportMemoryPalace, importMemoryPalace, isMemoryPalaceExportFile,
+    DigestReportDB, PLATE_TITLES,
+    bootstrapPlatesFromHistory, markPlateBootstrapDone,
+    getBootstrapResume, setBootstrapResume, clearBootstrapResume,
 } from '../utils/memoryPalace';
-import type { Anticipation, MigrationProgress, DigestResult, MemoryLink, EventBox } from '../utils/memoryPalace';
+import type { Anticipation, MigrationProgress, DigestResult, MemoryLink, EventBox, DigestReport } from '../utils/memoryPalace';
+import { confirmExportSafety } from '../utils/exportGuard';
+import type { Message } from '../types';
+import { CharacterGroupFilterBar, filterCharactersByGroup, GROUP_FILTER_ALL } from '../components/character/CharacterGroupFilter';
+
+/** 手动总结面板：每页渲染多少条聊天记录（翻页，避免一次性塞几百条 DOM 卡顿） */
+const RANGE_PAGE_SIZE = 100;
+
+/** 手动总结面板：把毫秒时间戳格式化成「2026-03-20 14:30」 */
+const fmtRangeTs = (ts: number): string => {
+    if (!ts) return '';
+    try {
+        return new Date(ts).toLocaleString('zh-CN', {
+            year: 'numeric', month: '2-digit', day: '2-digit',
+            hour: '2-digit', minute: '2-digit',
+        });
+    } catch { return ''; }
+};
 
 /** UI 内部类型：统一描述"关联"来源（EventBox 兄弟 or 旧 MemoryLink） */
 type LinkedMemoryUI = {
@@ -24,8 +45,12 @@ type LinkedMemoryUI = {
 
 // ─── 房间图标映射 ─────────────────────────────────────
 
-/** 顶部安全区 padding：优先用 iOS safe-area-inset-top，没有则退回 40px，避免手机状态栏遮挡按钮 */
-const SAFE_PAD_TOP: React.CSSProperties['paddingTop'] = 'max(40px, calc(env(safe-area-inset-top) + 16px))';
+/**
+ * 顶部安全区 padding：用项目统一的 --safe-top（含刘海/灵动岛高度与 standalone PWA 回退），
+ * 再加 16px 呼吸间距，并保证至少 40px，避免状态栏遮挡按钮。
+ * 各视图的最外层滚动容器（自带背景）直接套这个 paddingTop，让背景顺着填到刘海下方。
+ */
+const SAFE_PAD_TOP: React.CSSProperties['paddingTop'] = 'max(40px, calc(var(--safe-top) + 16px))';
 
 /** 房间图标：用纯线条 SVG 代替 emoji，用 currentColor 跟随房间主题色 */
 const RoomIcon: React.FC<{ room: MemoryRoom; size?: number; style?: React.CSSProperties }> = ({ room, size = 20, style }) => {
@@ -224,6 +249,13 @@ const Icon: React.FC<{ name: string; size?: number; style?: React.CSSProperties 
                     <path d="M18 6 6 18M6 6l12 12" />
                 </svg>
             );
+        case 'pencil':
+            return (
+                <svg {...p}>
+                    <path d="M12 20h9" />
+                    <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+                </svg>
+            );
         case 'book':
             return (
                 <svg {...p}>
@@ -394,8 +426,9 @@ const labelClass = "text-[10px] font-bold text-slate-400 uppercase tracking-wide
 // ─── 主组件 ───────────────────────────────────────────
 
 export default function MemoryPalaceApp() {
-    const { activeCharacterId, characters, updateCharacter, setActiveCharacterId, closeApp, apiPresets, userProfile, memoryPalaceConfig, updateMemoryPalaceConfig, remoteVectorConfig, updateRemoteVectorConfig, addToast } = useOS();
+    const { activeCharacterId, characters, updateCharacter, setActiveCharacterId, closeApp, apiPresets, userProfile, memoryPalaceConfig, updateMemoryPalaceConfig, remoteVectorConfig, updateRemoteVectorConfig, addToast, apiConfig, characterGroups } = useOS();
     const char = characters.find(c => c.id === activeCharacterId);
+    const [selectGroupId, setSelectGroupId] = useState(GROUP_FILTER_ALL); // 选角色页的分组筛选
 
     const [view, setView] = useState<'picker' | 'palace' | 'room' | 'memory' | 'settings' | 'globalSettings' | 'all' | 'boxes'>('picker');
     const [selectedRoom, setSelectedRoom] = useState<MemoryRoom | null>(null);
@@ -416,6 +449,11 @@ export default function MemoryPalaceApp() {
     const [allBoxes, setAllBoxes] = useState<EventBox[]>([]);
     const [expandedBoxId, setExpandedBoxId] = useState<string | null>(null);
     const [boxMembers, setBoxMembers] = useState<Record<string, { summary: MemoryNode | null; live: MemoryNode[]; archived: MemoryNode[] }>>({});
+    // 事件盒名/tag 手动编辑状态（box.name / box.tags 仅用于展示抬头，不参与召回打分）
+    const [editingBoxId, setEditingBoxId] = useState<string | null>(null);
+    const [boxNameDraft, setBoxNameDraft] = useState('');
+    const [boxTagsDraft, setBoxTagsDraft] = useState('');
+    const [savingBox, setSavingBox] = useState(false);
 
     // 迁移状态
     const [migrating, setMigrating] = useState(false);
@@ -427,6 +465,22 @@ export default function MemoryPalaceApp() {
     const [availableChunks, setAvailableChunks] = useState<{ key: string; count: number }[]>([]);
     const [selectedMonths, setSelectedMonths] = useState<Set<string>>(new Set());
 
+    // 手动总结与向量化（保底机制）：圈选聊天区间 → 走一次总结，不碰水位线
+    const [rangeModalOpen, setRangeModalOpen] = useState(false);
+    const [rangeMessages, setRangeMessages] = useState<Message[]>([]);
+    const [rangeLoading, setRangeLoading] = useState(false);
+    const [rangeQuery, setRangeQuery] = useState('');
+    const [rangePage, setRangePage] = useState(0); // 当前页（0 起）
+    const [rangeStartId, setRangeStartId] = useState<number | null>(null);
+    const [rangeEndId, setRangeEndId] = useState<number | null>(null);
+    // 点一条消息先进入"待确认"，弹出[设为起点/设为终点]，避免误触
+    const [rangePendingId, setRangePendingId] = useState<number | null>(null);
+    const [rangeRunning, setRangeRunning] = useState(false);
+    const [rangeProgress, setRangeProgress] = useState('');
+    const [rangeResult, setRangeResult] = useState<string | null>(null);
+    // 完成后的结果弹窗（逐条列出新增记忆，和水位线总结一致）
+    const [rangeResultData, setRangeResultData] = useState<import('../utils/memoryPalace/pipeline').RangeProcessResult | null>(null);
+
     // 全部记忆视图
     const [allNodes, setAllNodes] = useState<MemoryNode[]>([]);
     const [allSortBy, setAllSortBy] = useState<'time' | 'importance'>('time');
@@ -436,11 +490,64 @@ export default function MemoryPalaceApp() {
     // 认知消化状态
     const [digesting, setDigesting] = useState(false);
     const [digestResult, setDigestResult] = useState<string | null>(null);
+    // 消化日志：null=未打开；[]=打开但没有记录
+    const [digestReports, setDigestReports] = useState<DigestReport[] | null>(null);
+    const [expandedReportId, setExpandedReportId] = useState<string | null>(null);
+    useEffect(() => { setDigestReports(null); setExpandedReportId(null); }, [char?.id]);
+    // 门牌历史回填（老用户把积压立牌）
+    const [bootstrapping, setBootstrapping] = useState(false);
+    const [bootstrapStatus, setBootstrapStatus] = useState<string | null>(null);
+
+    const handleBootstrapPlates = async () => {
+        if (!char || bootstrapping) return;
+        const lightApi = memoryPalaceConfig.lightLLM;
+        if (!lightApi?.baseUrl) {
+            setBootstrapStatus('[err]请先在设置中配置副 API');
+            return;
+        }
+        setBootstrapping(true);
+        setBootstrapStatus(null);
+        try {
+            // 每按一次只清一小段（断点续传）：上千条记忆的用户不会被一长串批次吓到，
+            // 也随时可以停——进度存在本地，下次按继续
+            const MANUAL_BATCHES_PER_PRESS = 5;
+            const result = await bootstrapPlatesFromHistory(char.id, char.name, userProfile?.name, lightApi, {
+                startBatch: getBootstrapResume(char.id),
+                maxBatches: MANUAL_BATCHES_PER_PRESS,
+                onProgress: (done, total) => setBootstrapStatus(`正在整理第 ${done}/${total} 批历史记忆…（请留在本页）`),
+            });
+            if (result.totalLines === 0) {
+                setBootstrapStatus('记忆宫殿里还没有可立牌的历史');
+            } else if (result.complete) {
+                markPlateBootstrapDone(char.id);
+                clearBootstrapResume(char.id);
+                setBootstrapStatus(`[ok]历史全部整理完（共 ${result.neededBatches} 批），更新 ${result.updated.length} 块门牌——去神经链接「门牌」页看看`);
+            } else {
+                setBootstrapResume(char.id, result.nextBatch);
+                setBootstrapStatus(`[ok]本次整理了 ${result.batches} 批（总进度 ${result.nextBatch}/${result.neededBatches}），更新 ${result.updated.length} 块门牌。再按一次继续`);
+            }
+        } catch (err: any) {
+            setBootstrapStatus(`[err]整理失败：${err?.message || err}（可再按一次重试，已整理的部分不会重复计入）`);
+        } finally {
+            setBootstrapping(false);
+        }
+    };
 
 
     // 一键清空
     const [wiping, setWiping] = useState(false);
     const [wipeResult, setWipeResult] = useState<string | null>(null);
+
+    // 导出记忆（接入外置记忆库）
+    const [exporting, setExporting] = useState(false);
+    const [exportResult, setExportResult] = useState<string | null>(null);
+    // 默认带上向量：多数用户长期用同一套 embedding 模型，向量可直接复用、免重新向量化
+    const [exportWithVectors, setExportWithVectors] = useState(true);
+
+    // 导入记忆
+    const [importing, setImporting] = useState(false);
+    const [importResult, setImportResult] = useState<string | null>(null);
+    const importInputRef = React.useRef<HTMLInputElement>(null);
 
     // 关联记忆状态（记忆详情页展示 EventBox 兄弟 + 兼容展示遗留 causal link）
     const [linkedMemories, setLinkedMemories] = useState<LinkedMemoryUI[]>([]);
@@ -588,6 +695,35 @@ export default function MemoryPalaceApp() {
         // 依赖用原始字符串字段，避免 memoryPalaceConfig 对象每次新引用都重跑
     }, [char?.id, (char as any)?.personalityStyle, view, lightLLMBaseUrl, lightLLMApiKey]);
 
+    // 手动触发 AI 评估（认知参数设置区的按钮）。和自动检测共用 detecting/pending
+    // 两个状态，所以结果同样走"分析中 → 确认"两屏流程。副 API 没配时退回主
+    // apiConfig —— 跟 useChatAI 里 mpLLM 的 fallback 策略一致。
+    const manualDetectPersonality = () => {
+        if (!char || detectingPersonality) return;
+        const llm = (lightLLMBaseUrl && lightLLMApiKey)
+            ? memoryPalaceConfig.lightLLM
+            : (apiConfig?.baseUrl && apiConfig?.apiKey
+                ? { baseUrl: apiConfig.baseUrl, apiKey: apiConfig.apiKey, model: apiConfig.model }
+                : null);
+        if (!llm) {
+            addToast('请先配置副 API（记忆宫殿全局设置）或主 API', 'error');
+            return;
+        }
+        const detectingCharId = char.id;
+        const persona = [char.systemPrompt || '', char.worldview || ''].filter(Boolean).join('\n');
+        setDetectingPersonality(true);
+        detectPersonalityStyle(detectingCharId, char.name, persona, llm)
+            .then(result => {
+                setPendingPersonality(result);
+                setPendingPersonalityCharId(detectingCharId);
+            })
+            .catch(e => {
+                console.warn('🎭 手动性格评估失败:', e?.message || e);
+                addToast(`评估失败：${e?.message || e}`, 'error');
+            })
+            .finally(() => setDetectingPersonality(false));
+    };
+
     // 判断是否已配置（使用全局配置）
     const hasEmbeddingConfig = !!(memoryPalaceConfig.embedding.baseUrl && memoryPalaceConfig.embedding.apiKey);
     const hasLightApi = !!(memoryPalaceConfig.lightLLM.baseUrl && memoryPalaceConfig.lightLLM.apiKey);
@@ -685,6 +821,40 @@ export default function MemoryPalaceApp() {
             loadStats();
         } catch (e: any) {
             alert(`复活失败：${e?.message || e}`);
+        }
+    };
+
+    /** 进入/退出某盒的名字+tag 编辑态。box.name/box.tags 只决定召回时的展示抬头，
+     *  不参与向量/BM25 检索打分（检索只认成员节点的 content/tags），改它不影响召回结果。 */
+    const startEditBoxMeta = (box: EventBox) => {
+        setEditingBoxId(box.id);
+        setBoxNameDraft(box.name || '');
+        setBoxTagsDraft(box.tags.join(', '));
+    };
+    const cancelEditBoxMeta = () => {
+        setEditingBoxId(null);
+        setBoxNameDraft('');
+        setBoxTagsDraft('');
+    };
+    const handleSaveBoxMeta = async (box: EventBox) => {
+        if (!char) return;
+        setSavingBox(true);
+        try {
+            const fresh = (await EventBoxDB.getById(box.id)) || box;
+            // 名字留空 → 回退默认值，避免存出空标题
+            fresh.name = boxNameDraft.trim() || '未命名事件';
+            fresh.tags = boxTagsDraft.split(/[,，]/).map(t => t.trim()).filter(Boolean).slice(0, 20);
+            fresh.updatedAt = Date.now();
+            await EventBoxDB.save(fresh);
+            // 刷新盒列表（保持原排序：按 updatedAt 倒序）
+            const boxes = await EventBoxDB.getByCharId(char.id);
+            boxes.sort((a, b) => b.updatedAt - a.updatedAt);
+            setAllBoxes(boxes);
+            cancelEditBoxMeta();
+        } catch (e: any) {
+            alert(`保存失败：${e?.message || e}`);
+        } finally {
+            setSavingBox(false);
         }
     };
 
@@ -1115,6 +1285,104 @@ export default function MemoryPalaceApp() {
         } catch { addToast('复制失败', 'error'); }
     };
 
+    // ─── 手动总结与向量化（保底机制） ───────────────────────
+    // 打开区间选择弹窗：加载该角色全部聊天记录（含已被自动总结过的）
+    const openRangeModal = async () => {
+        if (!char) return;
+        setRangeModalOpen(true);
+        setRangeLoading(true);
+        setRangeResult(null);
+        setRangeResultData(null);
+        setRangeProgress('');
+        setRangeStartId(null);
+        setRangeEndId(null);
+        setRangePendingId(null);
+        setRangeQuery('');
+        try {
+            const { DB } = await import('../utils/db');
+            // includeProcessed=true：手动保底要能重总结早已过水位线的旧消息
+            const msgs = await DB.getMessagesByCharId(char.id, true);
+            const list = (msgs || [])
+                .filter((m: Message) => m && typeof m.content === 'string' && m.content.trim().length > 0)
+                .sort((a: Message, b: Message) => a.id - b.id);
+            setRangeMessages(list);
+            // 默认翻到最后一页（最新消息），和聊天记录翻到底部一致
+            setRangePage(Math.max(0, Math.ceil(list.length / RANGE_PAGE_SIZE) - 1));
+        } catch (e: any) {
+            addToast(`加载聊天记录失败：${e?.message || e}`, 'error');
+            setRangeMessages([]);
+        } finally {
+            setRangeLoading(false);
+        }
+    };
+
+    // 点选一条消息：先进入"待确认"，由用户再点[设为起点]/[设为终点]，避免误触
+    const onTapRangeMessage = (id: number) => {
+        setRangePendingId(prev => prev === id ? null : id); // 再点同一条 = 收起菜单
+    };
+    // 从待确认菜单里确认这条是起点 / 终点
+    const confirmRangeEndpoint = (id: number, which: 'start' | 'end') => {
+        if (which === 'start') setRangeStartId(id);
+        else setRangeEndId(id);
+        setRangePendingId(null);
+    };
+
+    // 跑一次区间总结：调 processMessageRange，全程不碰水位线
+    const runRangeSummary = async () => {
+        if (!char || rangeRunning) return;
+        if (rangeStartId == null || rangeEndId == null) {
+            addToast('请先点选起点和终点', 'info');
+            return;
+        }
+        const emb = memoryPalaceConfig.embedding;
+        const llm = memoryPalaceConfig.lightLLM;
+        if (!emb?.baseUrl || !emb?.apiKey) {
+            addToast('请先配置 Embedding API', 'error');
+            return;
+        }
+        if (!llm?.baseUrl || !llm?.apiKey) {
+            addToast('请先配置副 API（用于 LLM 记忆提取）', 'error');
+            return;
+        }
+
+        const lo = Math.min(rangeStartId, rangeEndId);
+        const hi = Math.max(rangeStartId, rangeEndId);
+
+        setRangeRunning(true);
+        setRangeResult(null);
+        setRangeProgress('准备中...');
+        try {
+            const { processMessageRange } = await import('../utils/memoryPalace/pipeline');
+            const r = await processMessageRange(
+                char.id, char.name, emb, llm, lo, hi, userProfile?.name || '',
+                (s) => setRangeProgress(s),
+            );
+            if (r.error === 'lock') {
+                setRangeResult('[err]有其它记忆任务正在运行，请稍后再试');
+            } else if (r.error === 'empty') {
+                setRangeResult('[err]选定区间没有可处理的消息');
+            } else if (r.error === 'no_memories') {
+                setRangeResult('[warn]这段对话没有提取出新记忆（可能内容太碎，或都已存在于记忆里）');
+            } else if (r.error) {
+                setRangeResult(`[err]总结失败：${r.error}`);
+            } else {
+                setRangeResult(`[ok]完成！新增 ${r.stored} 条记忆${r.skipped > 0 ? `，${r.skipped} 条因重复跳过` : ''}（处理了 ${r.processedMessages} 条消息，未改动水位线）`);
+                // 弹出"记忆整理完成"结果弹窗（逐条列出新增内容，和水位线总结一致）
+                setRangeResultData(r);
+                // 复位选择，避免误点再跑同一段
+                setRangeStartId(null);
+                setRangeEndId(null);
+                setRangePendingId(null);
+            }
+            loadStats();
+        } catch (e: any) {
+            setRangeResult(`[err]总结失败：${e?.message || e}`);
+        } finally {
+            setRangeRunning(false);
+            setRangeProgress('');
+        }
+    };
+
     const handleMigrate = async () => {
         if (!char || migrating) return;
         const emb = memoryPalaceConfig.embedding;
@@ -1180,17 +1448,15 @@ export default function MemoryPalaceApp() {
         try {
             const persona = [char.systemPrompt || '', char.worldview || ''].filter(Boolean).join('\n');
             const embApi = memoryPalaceConfig.embedding;
-            const result = await runCognitiveDigestion(char.id, char.name, persona, lightApi, true, userProfile?.name, embApi);
+            const result = await runCognitiveDigestion(
+                char.id, char.name, persona, lightApi, true, userProfile?.name, embApi,
+                (stage) => setDigestResult(stage), // 审视→回填续传→整理门牌, 逐阶段刷给用户看
+            );
             if (!result) {
                 setDigestResult('没有需要消化的内容');
             } else {
-                // 如果产生了新的自我领悟，持久化到角色档案
-                if (result.selfInsights.length > 0) {
-                    const existing = (char as any).selfInsights || [];
-                    const updated = [...existing, ...result.selfInsights];
-                    updateCharacter(char.id, { selfInsights: updated } as any);
-                }
-
+                // 自我领悟的归宿已改为 self_room 门牌（digestion 内部提交），
+                // 不再追加 char.selfInsights；这里只做结果摘要展示
                 const parts: string[] = [];
                 if (result.resolved.length) parts.push(`${result.resolved.length} 条困惑化解`);
                 if (result.deepened.length) parts.push(`${result.deepened.length} 条创伤加深`);
@@ -1201,9 +1467,17 @@ export default function MemoryPalaceApp() {
                 if (result.synthesizedUser.length) parts.push(`${result.synthesizedUser.length} 条用户认知整合`);
                 if (result.selfInsights.length) parts.push(`${result.selfInsights.length} 条自我领悟`);
                 if (result.selfConfused.length) parts.push(`${result.selfConfused.length} 条新困惑`);
+                if (result.worries?.length) parts.push(`${result.worries.length} 条回看担忧`);
+                if (result.aspirations?.length) parts.push(`${result.aspirations.length} 个新期盼`);
+                if (result.distilled?.length) parts.push(`${result.distilled.length} 条沉淀到门牌`);
+                if (result.plateUpdated?.length) parts.push(`${result.plateUpdated.length} 块门牌更新`);
                 setDigestResult(parts.length > 0 ? `[ok]${parts.join('，')}` : '没有变化');
             }
             loadStats();
+            // 消化日志面板开着的话，刷新出刚落的这条报告
+            if (digestReports !== null) {
+                try { setDigestReports(await DigestReportDB.getByCharId(char.id)); } catch { /* ignore */ }
+            }
         } catch (err: any) {
             setDigestResult(`[err]消化失败：${err.message}`);
         } finally {
@@ -1324,6 +1598,85 @@ export default function MemoryPalaceApp() {
             setWipeResult(`[err]清空失败：${e?.message || e}`);
         } finally {
             setWiping(false);
+        }
+    };
+
+    /** 导出当前角色的记忆宫殿为 JSON 文件（接入外置记忆库）。
+     *  含记忆节点 / 事件盒 / 期盼，不含向量（向量与 embedding 模型强绑定，外置库无意义）。 */
+    const handleExportMemories = async () => {
+        if (!char) return;
+        setExporting(true);
+        setExportResult(null);
+        try {
+            const data = await exportMemoryPalace(
+                [{ id: char.id, name: char.name }],
+                { includeVectors: exportWithVectors },
+            );
+            const c = data.characters[0]?.counts;
+            const nodeCount = c?.nodes ?? 0;
+            if (nodeCount === 0) {
+                setExportResult('[warn]当前角色还没有记忆宫殿节点，没什么可导出的');
+                return;
+            }
+            // 导出前明文密钥体检 + 二次确认（记忆宫殿正常不含密钥 → 提示「安全，可分享」）。
+            if (!(await confirmExportSafety(data))) return;
+            const json = JSON.stringify(data, null, 2);
+            const safeName = (char.name || 'character').replace(/[\\/:*?"<>|]/g, '_');
+            const fileName = `${safeName}_记忆宫殿_${new Date().toISOString().slice(0, 10)}.json`;
+            const blob = new Blob([json], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = fileName;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            const vecPart = exportWithVectors ? `、${c.vectors} 条向量` : '';
+            setExportResult(`[ok]已导出 ${nodeCount} 条记忆、${c.eventBoxes} 个事件盒、${c.anticipations} 个期盼${vecPart}`);
+        } catch (e: any) {
+            setExportResult(`[err]导出失败：${e?.message || e}`);
+        } finally {
+            setExporting(false);
+        }
+    };
+
+    /** 选了导入文件后：解析 JSON → 校验 → 合并进当前角色的记忆宫殿。 */
+    const handleImportFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const fileObj = e.target.files?.[0];
+        // 清空 input，方便重复选同一个文件也能再次触发 onChange
+        if (importInputRef.current) importInputRef.current.value = '';
+        if (!fileObj || !char) return;
+        setImporting(true);
+        setImportResult(null);
+        try {
+            const text = await fileObj.text();
+            const data = JSON.parse(text);
+            if (!isMemoryPalaceExportFile(data)) {
+                setImportResult('[err]这不是 SullyOS 记忆宫殿导出文件');
+                return;
+            }
+            const totalNodes = data.characters.reduce((s, c) => s + (c.nodes?.length || 0), 0);
+            const hadVectors = data.includeVectors;
+            if (!confirm(
+                `即将把文件里的 ${totalNodes} 条记忆合并进【${char.name}】的记忆宫殿。\n\n`
+                + `· 不会覆盖现有记忆，是追加合并（重复导入会得到多份副本）。\n`
+                + (hadVectors ? '· 文件含向量，将一并导入。\n' : '· 文件不含向量，导入后这些记忆需重建向量才能被语义检索。\n')
+                + `\n确定继续？`
+            )) return;
+
+            const result = await importMemoryPalace(data, char.id);
+            const vecPart = result.vectors > 0 ? `、${result.vectors} 条向量` : '';
+            const platePart = result.roomPlateEntries > 0 ? `、${result.roomPlateEntries} 条门牌认知` : '';
+            setImportResult(
+                `[ok]已导入 ${result.nodes} 条记忆、${result.eventBoxes} 个事件盒、${result.anticipations} 个期盼${vecPart}${platePart}`
+                + (hadVectors ? '' : '（无向量，建议到「全局设置」重建向量后再用语义检索）')
+            );
+            await loadStats();
+        } catch (err: any) {
+            setImportResult(`[err]导入失败：${err?.message || err}`);
+        } finally {
+            setImporting(false);
         }
     };
 
@@ -1494,6 +1847,10 @@ export default function MemoryPalaceApp() {
                     </div>
                 </div>
 
+                {/* 分组筛选（没建分组时不渲染） */}
+                <CharacterGroupFilterBar characters={characters} groups={characterGroups}
+                    value={selectGroupId} onChange={setSelectGroupId}
+                    className="mb-4 relative z-[1]" />
                 {characters.length === 0 ? (
                     <div
                         style={{
@@ -1507,7 +1864,7 @@ export default function MemoryPalaceApp() {
                     </div>
                 ) : (
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 14, position: 'relative', zIndex: 1 }}>
-                        {characters.map(c => {
+                        {filterCharactersByGroup(characters, characterGroups, selectGroupId).map(c => {
                             const isActive = c.id === activeCharacterId;
                             const palaceOn = !!(c as any).memoryPalaceEnabled;
                             const autoOn = !!(c as any).autoArchiveEnabled;
@@ -2213,7 +2570,7 @@ export default function MemoryPalaceApp() {
                         <div>
                             <label className={labelClass}>BASE URL</label>
                             <input type="text" value={lightUrl} onChange={e => setLightUrl(e.target.value)}
-                                placeholder="https://api.siliconflow.cn/v1" className={inputClass} />
+                                placeholder="https://..." className={inputClass} />
                         </div>
                         <div>
                             <label className={labelClass}>API KEY</label>
@@ -2223,9 +2580,10 @@ export default function MemoryPalaceApp() {
                         <div>
                             <label className={labelClass}>MODEL</label>
                             <input type="text" value={lightModel} onChange={e => setLightModel(e.target.value)}
-                                placeholder="deepseek-ai/DeepSeek-V2.5" className={inputClass} />
+                                placeholder="一个便宜的对话模型名" className={inputClass} />
                             <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 4, paddingLeft: 4 }}>
-                                推荐: deepseek-ai/DeepSeek-V2.5 · Qwen/Qwen2.5-7B-Instruct · GLM-4-Flash
+                                填任意一家便宜的<b>对话模型</b>即可（按主 API 一样的填法），自己挑就好。
+                                注意：这里要的是跑后台文字任务的<b>对话</b>模型，<b>不是</b> embedding 向量模型——别填到下面 Embedding 区才该用的那类。
                             </div>
                         </div>
                     </div>
@@ -2536,13 +2894,7 @@ export default function MemoryPalaceApp() {
                         fontSize: 11, color: '#1e3a8a', lineHeight: 1.7,
                     }}>
                         <div style={{ fontWeight: 700, marginBottom: 4 }}>rerank 是干啥的？</div>
-                        主召回走 embedding + BM25 + 启发式加权，有时会被噪声 spike 稀释。
-                        rerank 用 <b>cross-encoder</b> 模型直接理解 (query, doc) 的语义相关性，
-                        额外挑几条追加到注入，对焦点话题的覆盖率更稳。
-                        <div style={{ marginTop: 6 }}>
-                            <b>只对"这一轮 user 发言"生效</b>——候选池用拼起来的 user 最新发言独立走一次 hybrid（优先云），
-                            再把 pool 交给 rerank 打分，去重后追加 top N（默认 5）。不启用也不影响主召回。
-                        </div>
+                        开了之后能让跟你这句话最相关的记忆更准地被翻出来；可选增强，不开也不影响。
                     </div>
 
                     <div style={{ display: 'flex', flexDirection: 'column', gap: 12, marginTop: 12 }}>
@@ -2920,11 +3272,15 @@ create table if not exists memory_vectors (
                         <div>
                             <label className={labelClass}>认知风格</label>
                             <select
-                                value={(char as any).personalityStyle || 'emotional'}
+                                value={(char as any).personalityStyle || ''}
                                 onChange={e => updateCharacter(char.id, { personalityStyle: e.target.value } as any)}
                                 className={inputClass}
                                 style={{ fontFamily: 'inherit', fontSize: 12 }}
                             >
+                                {/* 未评估时如实显示，而不是假装成"情感型"（检索时按情感型默认值跑） */}
+                                {!(char as any).personalityStyle && (
+                                    <option value="" disabled>未评估（默认按情感型处理）</option>
+                                )}
                                 <option value="emotional">情感型</option>
                                 <option value="narrative">叙事型</option>
                                 <option value="imagery">意象型</option>
@@ -2932,7 +3288,11 @@ create table if not exists memory_vectors (
                             </select>
                         </div>
                         <div>
-                            <label className={labelClass}>反刍倾向 {((char as any).ruminationTendency ?? 0.3).toFixed(1)}</label>
+                            <label className={labelClass}>
+                                反刍倾向 {(char as any).ruminationTendency == null
+                                    ? '未评估（默认 0.3）'
+                                    : ((char as any).ruminationTendency).toFixed(1)}
+                            </label>
                             <input
                                 type="range" min="0" max="1" step="0.1"
                                 value={(char as any).ruminationTendency ?? 0.3}
@@ -2940,11 +3300,376 @@ create table if not exists memory_vectors (
                                 style={{ width: '100%' }}
                             />
                         </div>
+                        <button
+                            onClick={manualDetectPersonality}
+                            disabled={detectingPersonality}
+                            style={{
+                                width: '100%', padding: '10px 0', borderRadius: 10,
+                                border: '1px solid #ddd6fe', background: '#f5f3ff',
+                                fontSize: 12, fontWeight: 700, color: '#7c3aed',
+                                cursor: detectingPersonality ? 'wait' : 'pointer',
+                                opacity: detectingPersonality ? 0.6 : 1,
+                            }}
+                        >
+                            {detectingPersonality ? '评估中…' : 'AI 评估认知参数'}
+                        </button>
                         <div style={{ fontSize: 10, color: '#b0b0b0', lineHeight: 1.5 }}>
-                            由 AI 根据角色人设自动判断，通常无需手动修改。
+                            认知风格影响记忆联想偏好，反刍倾向影响想起旧事的概率。
+                            可手动调整，也可让 AI 根据人设评估（结果需确认后才生效）。
                         </div>
                     </div>
                 </details>
+
+                {/* 手动总结与向量化（保底机制）：圈选聊天区间走一次总结，不碰水位线 */}
+                <div style={{ marginTop: 16, background: '#f5f3ff', borderRadius: 16, padding: 16, border: '1px solid #ddd6fe' }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: '#5b21b6', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <Icon name="book" size={14} />
+                        <span>手动总结与向量化</span>
+                    </div>
+                    <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 12, lineHeight: 1.6 }}>
+                        像翻聊天记录一样圈出一段对话（自己点<b>起点</b>和<b>终点</b>，支持模糊搜索），单独走一次总结 + 向量化。
+                        这是给「连续总结失败、不确定向量化成没成」的<b>保底手段</b>——
+                        它<b>完全不碰水位线</b>，和全自动记忆互不干扰，重复总结同一段也不会刷出重复记忆（已开启去重）。
+                    </div>
+
+                    {rangeResult && (
+                        <div style={{ fontSize: 12, marginBottom: 8, color: rangeResult.startsWith('[ok]') ? '#16a34a' : rangeResult.startsWith('[warn]') ? '#d97706' : '#dc2626' }}>
+                            <StatusMessage msg={rangeResult} />
+                        </div>
+                    )}
+
+                    <button
+                        onClick={openRangeModal}
+                        disabled={!hasEmbeddingConfig}
+                        style={{
+                            width: '100%', padding: '10px 0', borderRadius: 12,
+                            border: 'none', fontWeight: 700, fontSize: 13,
+                            color: 'white',
+                            background: !hasEmbeddingConfig ? '#cbd5e1' : '#7c3aed',
+                            cursor: !hasEmbeddingConfig ? 'not-allowed' : 'pointer',
+                        }}
+                    >
+                        {!hasEmbeddingConfig ? '请先配置 Embedding API' : '选择聊天区间总结'}
+                    </button>
+                </div>
+
+                {/* 手动总结：区间选择弹窗（浏览聊天记录 → 点选起点/终点 → 总结） */}
+                {rangeModalOpen && char && (() => {
+                    const bothSet = rangeStartId != null && rangeEndId != null;
+                    const lo = bothSet ? Math.min(rangeStartId!, rangeEndId!) : rangeStartId;
+                    const hi = bothSet ? Math.max(rangeStartId!, rangeEndId!) : null;
+                    const selectedCount = (lo != null && hi != null)
+                        ? rangeMessages.filter(m => m.id >= lo && m.id <= hi).length
+                        : (rangeStartId != null ? 1 : 0);
+
+                    const q = rangeQuery.trim().toLowerCase();
+                    const filtered = q
+                        ? rangeMessages.filter(m => (m.content || '').toLowerCase().includes(q) || fmtRangeTs(m.timestamp).includes(q))
+                        : rangeMessages;
+                    // 翻页：每页 RANGE_PAGE_SIZE 条，避免一次渲染几百条 DOM
+                    const totalPages = Math.max(1, Math.ceil(filtered.length / RANGE_PAGE_SIZE));
+                    const page = Math.min(Math.max(0, rangePage), totalPages - 1);
+                    const pageStart = page * RANGE_PAGE_SIZE;
+                    const shown = filtered.slice(pageStart, pageStart + RANGE_PAGE_SIZE);
+
+                    return (
+                        <div
+                            style={{
+                                position: 'fixed', inset: 0, zIndex: 210,
+                                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                padding: 16,
+                                background: 'rgba(31,17,71,0.45)',
+                                backdropFilter: 'blur(8px)', WebkitBackdropFilter: 'blur(8px)',
+                                animation: 'fade-in 0.2s ease-out',
+                            }}
+                            onClick={() => { if (!rangeRunning) setRangeModalOpen(false); }}
+                        >
+                            <div
+                                onClick={e => e.stopPropagation()}
+                                style={{
+                                    width: '100%', maxWidth: 420, height: '82vh',
+                                    display: 'flex', flexDirection: 'column',
+                                    borderRadius: 24, overflow: 'hidden',
+                                    background: '#ffffff',
+                                    boxShadow: '0 25px 60px -15px rgba(124,58,237,0.4), 0 10px 30px rgba(0,0,0,0.15)',
+                                    border: '1px solid rgba(167,139,250,0.25)',
+                                }}
+                            >
+                                {/* 头部 */}
+                                <div style={{ padding: '16px 18px 12px', borderBottom: '1px solid #f1f5f9' }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+                                        <div style={{ fontSize: 15, fontWeight: 800, color: '#1f1147' }}>手动总结与向量化</div>
+                                        <button
+                                            onClick={() => { if (!rangeRunning) setRangeModalOpen(false); }}
+                                            style={{ border: 'none', background: 'transparent', cursor: rangeRunning ? 'not-allowed' : 'pointer', color: '#94a3b8', padding: 4 }}
+                                        >
+                                            <Icon name="x" size={18} />
+                                        </button>
+                                    </div>
+                                    <div style={{ fontSize: 11, color: '#7c3aed' }}>{char.name} · 点一条消息，再选「设为起点 / 终点」</div>
+
+                                    {/* 模糊搜索 */}
+                                    <div style={{ marginTop: 10, position: 'relative' }}>
+                                        <span style={{ position: 'absolute', left: 10, top: '50%', transform: 'translateY(-50%)', color: '#94a3b8' }}>
+                                            <Icon name="search" size={14} />
+                                        </span>
+                                        <input
+                                            value={rangeQuery}
+                                            onChange={e => { setRangeQuery(e.target.value); setRangePage(0); }}
+                                            placeholder="模糊搜索内容或日期（如 生日 / 2026-03）"
+                                            style={{
+                                                width: '100%', padding: '8px 10px 8px 30px', borderRadius: 10,
+                                                border: '1px solid #e2e8f0', fontSize: 12, outline: 'none', boxSizing: 'border-box',
+                                            }}
+                                        />
+                                    </div>
+                                </div>
+
+                                {/* 消息列表 */}
+                                <div style={{ flex: 1, overflowY: 'auto', padding: '8px 10px' }}>
+                                    {rangeLoading && (
+                                        <div style={{ textAlign: 'center', color: '#94a3b8', fontSize: 12, padding: 24 }}>加载聊天记录中...</div>
+                                    )}
+                                    {!rangeLoading && shown.length === 0 && (
+                                        <div style={{ textAlign: 'center', color: '#94a3b8', fontSize: 12, padding: 24 }}>
+                                            {rangeMessages.length === 0 ? '这个角色还没有聊天记录' : '没有匹配的消息'}
+                                        </div>
+                                    )}
+                                    {!rangeLoading && filtered.length > RANGE_PAGE_SIZE && (
+                                        <div style={{
+                                            display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                                            gap: 8, padding: '6px 8px', marginBottom: 6,
+                                            background: '#faf5ff', borderRadius: 8,
+                                        }}>
+                                            <button
+                                                onClick={() => setRangePage(p => Math.max(0, p - 1))}
+                                                disabled={page <= 0}
+                                                style={{ fontSize: 11, fontWeight: 700, padding: '4px 10px', borderRadius: 7, border: '1px solid #ddd6fe', background: page <= 0 ? '#f1f5f9' : '#fff', color: page <= 0 ? '#cbd5e1' : '#7c3aed', cursor: page <= 0 ? 'not-allowed' : 'pointer' }}
+                                            >
+                                                ‹ 更早
+                                            </button>
+                                            <span style={{ fontSize: 10, color: '#7c3aed', fontWeight: 600 }}>
+                                                第 {page + 1} / {totalPages} 页 · 共 {filtered.length} 条
+                                            </span>
+                                            <button
+                                                onClick={() => setRangePage(p => Math.min(totalPages - 1, p + 1))}
+                                                disabled={page >= totalPages - 1}
+                                                style={{ fontSize: 11, fontWeight: 700, padding: '4px 10px', borderRadius: 7, border: '1px solid #ddd6fe', background: page >= totalPages - 1 ? '#f1f5f9' : '#fff', color: page >= totalPages - 1 ? '#cbd5e1' : '#7c3aed', cursor: page >= totalPages - 1 ? 'not-allowed' : 'pointer' }}
+                                            >
+                                                更新 ›
+                                            </button>
+                                        </div>
+                                    )}
+                                    {!rangeLoading && shown.map(m => {
+                                        const isStart = m.id === rangeStartId;
+                                        const isEnd = m.id === rangeEndId;
+                                        const isPending = m.id === rangePendingId;
+                                        const inRange = lo != null && hi != null && m.id >= lo && m.id <= hi;
+                                        const isEndpoint = (lo != null && m.id === lo) || (hi != null && m.id === hi) || (rangeStartId != null && rangeEndId == null && isStart);
+                                        const who = m.role === 'user' ? '我' : m.role === 'system' ? '系统' : char.name;
+                                        const isDate = (m.metadata as any)?.source === 'date';
+                                        const preview = (m.content || '').replace(/\s+/g, ' ').trim().slice(0, 48);
+                                        return (
+                                            <div
+                                                key={m.id}
+                                                onClick={() => { if (!rangeRunning) onTapRangeMessage(m.id); }}
+                                                style={{
+                                                    padding: '8px 10px', marginBottom: 4, borderRadius: 10, cursor: rangeRunning ? 'default' : 'pointer',
+                                                    background: isEndpoint ? '#ede9fe' : isPending ? '#faf5ff' : inRange ? '#f5f3ff' : '#fff',
+                                                    border: isPending ? '1.5px solid #c4b5fd' : isEndpoint ? '1.5px solid #7c3aed' : inRange ? '1px solid #ddd6fe' : '1px solid #f1f5f9',
+                                                }}
+                                            >
+                                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+                                                    <span style={{ fontSize: 10, color: '#64748b', fontWeight: 600, display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                                                        {isDate && (
+                                                            <span style={{ fontSize: 9, fontWeight: 700, color: '#db2777', background: '#fce7f3', borderRadius: 5, padding: '0 5px' }}>约会</span>
+                                                        )}
+                                                        {who} · {fmtRangeTs(m.timestamp)}
+                                                    </span>
+                                                    {(isStart || isEnd) && (
+                                                        <span style={{ fontSize: 9, fontWeight: 800, color: '#fff', background: '#7c3aed', borderRadius: 6, padding: '1px 6px' }}>
+                                                            {bothSet ? (m.id === lo ? '起点' : '终点') : '起点'}
+                                                        </span>
+                                                    )}
+                                                </div>
+                                                <div style={{ fontSize: 12, color: '#334155', marginTop: 2, lineHeight: 1.4 }}>
+                                                    {preview || '（无文本内容）'}
+                                                </div>
+
+                                                {/* 待确认菜单：点了这条才出现，避免误触直接改动起止 */}
+                                                {isPending && (
+                                                    <div style={{ display: 'flex', gap: 6, marginTop: 8 }} onClick={e => e.stopPropagation()}>
+                                                        <button
+                                                            onClick={() => confirmRangeEndpoint(m.id, 'start')}
+                                                            style={{ flex: 1, padding: '6px 0', borderRadius: 8, border: '1px solid #7c3aed', background: '#7c3aed', color: '#fff', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}
+                                                        >
+                                                            设为起点
+                                                        </button>
+                                                        <button
+                                                            onClick={() => confirmRangeEndpoint(m.id, 'end')}
+                                                            style={{ flex: 1, padding: '6px 0', borderRadius: 8, border: '1px solid #7c3aed', background: '#fff', color: '#7c3aed', fontSize: 11, fontWeight: 700, cursor: 'pointer' }}
+                                                        >
+                                                            设为终点
+                                                        </button>
+                                                        <button
+                                                            onClick={() => setRangePendingId(null)}
+                                                            style={{ padding: '6px 10px', borderRadius: 8, border: '1px solid #e2e8f0', background: '#fff', color: '#94a3b8', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}
+                                                        >
+                                                            取消
+                                                        </button>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+
+                                {/* 底部操作 */}
+                                <div style={{ borderTop: '1px solid #f1f5f9', padding: '10px 14px 14px' }}>
+                                    {rangeRunning && rangeProgress && (
+                                        <div style={{ fontSize: 11, color: '#7c3aed', marginBottom: 8, textAlign: 'center' }}>{rangeProgress}</div>
+                                    )}
+                                    {!rangeRunning && rangeResult && (
+                                        <div style={{ fontSize: 12, marginBottom: 8, color: rangeResult.startsWith('[ok]') ? '#16a34a' : rangeResult.startsWith('[warn]') ? '#d97706' : '#dc2626' }}>
+                                            <StatusMessage msg={rangeResult} />
+                                        </div>
+                                    )}
+                                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                                        <span style={{ fontSize: 11, color: '#64748b' }}>
+                                            {bothSet ? `已选 ${selectedCount} 条` : rangeStartId != null ? '已选起点，请再点终点' : '未选择'}
+                                        </span>
+                                        <button
+                                            onClick={() => { setRangeStartId(null); setRangeEndId(null); }}
+                                            disabled={rangeRunning || rangeStartId == null}
+                                            style={{
+                                                fontSize: 11, fontWeight: 600, color: (rangeRunning || rangeStartId == null) ? '#cbd5e1' : '#dc2626',
+                                                background: 'transparent', border: 'none',
+                                                cursor: (rangeRunning || rangeStartId == null) ? 'not-allowed' : 'pointer',
+                                            }}
+                                        >
+                                            清除选择
+                                        </button>
+                                    </div>
+                                    <button
+                                        onClick={runRangeSummary}
+                                        disabled={rangeRunning || !bothSet}
+                                        style={{
+                                            width: '100%', padding: '11px 0', borderRadius: 12,
+                                            border: 'none', fontWeight: 700, fontSize: 13, color: 'white',
+                                            background: (rangeRunning || !bothSet) ? '#cbd5e1' : '#7c3aed',
+                                            cursor: (rangeRunning || !bothSet) ? 'not-allowed' : 'pointer',
+                                        }}
+                                    >
+                                        {rangeRunning ? '总结中…请保持应用打开' : '开始总结 + 向量化'}
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    );
+                })()}
+
+                {/* 手动总结：完成结果弹窗（逐条列出新增记忆，和水位线总结一致） */}
+                {rangeResultData && (
+                    <div
+                        style={{
+                            position: 'fixed', inset: 0, zIndex: 220,
+                            display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16,
+                            background: 'rgba(15,23,42,0.55)',
+                            backdropFilter: 'blur(8px)', WebkitBackdropFilter: 'blur(8px)',
+                            animation: 'fade-in 0.2s ease-out',
+                        }}
+                        onClick={() => setRangeResultData(null)}
+                    >
+                        <div
+                            onClick={e => e.stopPropagation()}
+                            style={{
+                                width: '100%', maxWidth: 380, maxHeight: '82vh',
+                                display: 'flex', flexDirection: 'column', overflow: 'hidden',
+                                background: 'linear-gradient(160deg, #ffffff 0%, #f8fafc 100%)',
+                                borderRadius: 28, border: '1px solid rgba(148,163,184,0.18)',
+                                boxShadow: '0 20px 50px -20px rgba(15,23,42,0.35)',
+                            }}
+                        >
+                            <div style={{ padding: '26px 24px 14px', textAlign: 'center' }}>
+                                <div style={{
+                                    width: 54, height: 54, margin: '0 auto 12px', borderRadius: 18,
+                                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                    background: 'linear-gradient(135deg, rgba(124,58,237,0.14), rgba(167,139,250,0.06))',
+                                    border: '1px solid rgba(124,58,237,0.15)', fontSize: 26,
+                                }}>🗂️</div>
+                                <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '0.25em', textTransform: 'uppercase', color: '#7c3aed' }}>Manual Summary</div>
+                                <div style={{ fontSize: 17, fontWeight: 800, color: '#0f172a', marginTop: 4 }}>手动总结完成</div>
+                                <div style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>
+                                    新增 {rangeResultData.stored} 条 · 去重跳过 {rangeResultData.skipped} 条
+                                    {rangeResultData.batches.length > 1 && ` · ${rangeResultData.batches.length} 批`}
+                                    {' · '}处理 {rangeResultData.processedMessages} 条消息
+                                </div>
+                                <div style={{ fontSize: 10, color: '#16a34a', marginTop: 2 }}>未改动水位线，与全自动记忆互不干扰</div>
+                                {rangeResultData.batches.some(b => !b.ok) && (
+                                    <div style={{ fontSize: 10, color: '#ef4444', marginTop: 2 }}>
+                                        {rangeResultData.batches.filter(b => !b.ok).map(b => `batch ${b.index} 失败`).join(', ')}
+                                    </div>
+                                )}
+                            </div>
+
+                            <div style={{ flex: 1, overflowY: 'auto', padding: '0 18px 8px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                                {rangeResultData.memories.map((m, i) => {
+                                    const roomMeta: Record<string, { label: string; color: string }> = {
+                                        living_room: { label: '客厅', color: '#f59e0b' },
+                                        bedroom: { label: '卧室', color: '#8b5cf6' },
+                                        study: { label: '书房', color: '#0ea5e9' },
+                                        user_room: { label: '用户房间', color: '#ec4899' },
+                                        self_room: { label: '自我房间', color: '#10b981' },
+                                        attic: { label: '阁楼', color: '#6366f1' },
+                                        windowsill: { label: '窗台', color: '#14b8a6' },
+                                    };
+                                    const meta = roomMeta[m.room] || { label: m.room, color: '#64748b' };
+                                    const roomLabel = getRoomLabel(m.room as any, userProfile?.name) || meta.label;
+                                    return (
+                                        <div key={i} style={{
+                                            padding: 12, borderRadius: 16,
+                                            background: 'rgba(255,255,255,0.75)', border: `1px solid ${meta.color}22`,
+                                            boxShadow: `0 2px 8px ${meta.color}14`,
+                                        }}>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                                                <span style={{ fontSize: 10, fontWeight: 600, padding: '1px 8px', borderRadius: 999, background: `${meta.color}18`, color: meta.color }}>{roomLabel}</span>
+                                                <span style={{ fontSize: 10, color: '#94a3b8' }}>{m.mood}</span>
+                                                <span style={{ fontSize: 10, fontWeight: 700, marginLeft: 'auto', color: '#f59e0b' }}>{'★'.repeat(Math.min(m.importance, 5))}</span>
+                                            </div>
+                                            <div style={{ fontSize: 12, color: '#334155', lineHeight: 1.6 }}>{m.content}</div>
+                                            {m.tags.length > 0 && (
+                                                <div style={{ display: 'flex', gap: 4, marginTop: 8, flexWrap: 'wrap' }}>
+                                                    {m.tags.map((t, j) => (
+                                                        <span key={j} style={{ fontSize: 9, padding: '1px 6px', borderRadius: 999, background: 'rgba(148,163,184,0.15)', color: '#64748b' }}>{t}</span>
+                                                    ))}
+                                                </div>
+                                            )}
+                                        </div>
+                                    );
+                                })}
+                                {rangeResultData.memories.length === 0 && (
+                                    <div style={{ textAlign: 'center', fontSize: 12, color: '#94a3b8', padding: 16 }}>
+                                        本次没提取到新记忆{rangeResultData.skipped > 0 ? '（这段对话的记忆此前已存在）' : ''}
+                                    </div>
+                                )}
+                            </div>
+
+                            <div style={{ padding: '8px 24px 22px' }}>
+                                <button
+                                    onClick={() => setRangeResultData(null)}
+                                    style={{
+                                        width: '100%', padding: '12px 0', borderRadius: 14, border: 'none',
+                                        color: '#fff', fontSize: 13, fontWeight: 700, cursor: 'pointer',
+                                        background: 'linear-gradient(135deg, #7c3aed, #6d28d9)',
+                                        boxShadow: '0 6px 18px -6px rgba(124,58,237,0.5)',
+                                    }}
+                                >
+                                    确认
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                )}
 
                 {/* 聊天记录向量化 */}
                 {/* 迁移旧记忆 */}
@@ -3098,6 +3823,7 @@ create table if not exists memory_vectors (
                     <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 12, lineHeight: 1.6 }}>
                         角色会安静地回想最近的事情：阁楼里的困惑有没有想开？窗台上的期盼实现了吗？
                         反复学到的东西是否已经内化成性格的一部分？聊天每 50 轮自动触发一次，也可以随时手动触发。
+                        整合出的概括（用户认知 / 知识内化 / 自我领悟）会沉淀到房间门牌，不再新增记忆条目。
                     </div>
 
                     {digestResult && (
@@ -3119,6 +3845,202 @@ create table if not exists memory_vectors (
                     >
                         {digesting ? `${char.name}正在静静地回想…` : '手动触发消化'}
                     </button>
+
+                    {/* 门牌历史回填：老用户的积压不该白攒——分批扫全部历史立牌 */}
+                    {bootstrapStatus && (
+                        <div style={{ fontSize: 12, marginTop: 8, color: bootstrapStatus.startsWith('[ok]') ? '#7c3aed' : bootstrapStatus.startsWith('[err]') ? '#dc2626' : '#6b7280' }}>
+                            <StatusMessage msg={bootstrapStatus} />
+                        </div>
+                    )}
+                    <button
+                        onClick={handleBootstrapPlates}
+                        disabled={bootstrapping}
+                        style={{
+                            width: '100%', marginTop: 8, padding: '8px 0',
+                            borderRadius: 10, border: '1px solid #ddd6fe',
+                            fontSize: 12, fontWeight: 600,
+                            color: '#7c3aed', background: 'white',
+                            cursor: bootstrapping ? 'not-allowed' : 'pointer',
+                            opacity: bootstrapping ? 0.6 : 1,
+                        }}
+                    >
+                        {bootstrapping ? '正在整理…' : '整理历史记忆到门牌（每次一小段，可分多次）'}
+                    </button>
+
+                    {/* 消化日志：每次消化到底审视了什么、改了什么、往门牌提交了什么 */}
+                    <button
+                        onClick={async () => {
+                            if (!char || digestReports !== null) { setDigestReports(null); return; }
+                            try {
+                                setDigestReports(await DigestReportDB.getByCharId(char.id));
+                            } catch { setDigestReports([]); }
+                        }}
+                        style={{
+                            width: '100%', marginTop: 8, padding: '8px 0',
+                            borderRadius: 10, border: '1px solid #bbf7d0',
+                            fontSize: 12, fontWeight: 600,
+                            color: '#166534', background: 'white', cursor: 'pointer',
+                        }}
+                    >
+                        {digestReports === null ? '查看消化日志' : '收起消化日志'}
+                    </button>
+
+                    {digestReports !== null && (
+                        <div style={{ marginTop: 10 }}>
+                            {digestReports.length === 0 && (
+                                <div style={{ fontSize: 11, color: '#9ca3af', textAlign: 'center', padding: '12px 0' }}>
+                                    还没有消化记录——触发一次消化后这里会记下它做了什么
+                                </div>
+                            )}
+                            {digestReports.map(report => {
+                                const expanded = expandedReportId === report.id;
+                                const outcomeCount = report.outcomes.reduce((s, sec) => s + sec.items.length, 0);
+                                const submitCount = report.plateSubmissions.reduce((s, sec) => s + sec.items.length, 0);
+                                const examinedCount = report.examined.reduce((s, sec) => s + sec.items.length, 0);
+                                const renderSection = (sec: { label: string; items: string[] }, color: string) => (
+                                    <div key={sec.label} style={{ marginTop: 6 }}>
+                                        <div style={{ fontSize: 10, fontWeight: 700, color }}>{sec.label}</div>
+                                        {sec.items.map((it, i) => (
+                                            <div key={i} style={{ fontSize: 11, color: '#475569', lineHeight: 1.5, padding: '2px 0 2px 8px', borderLeft: `2px solid ${color}22` }}>{it}</div>
+                                        ))}
+                                    </div>
+                                );
+                                return (
+                                    <div
+                                        key={report.id}
+                                        style={{ background: 'white', borderRadius: 10, border: '1px solid #e5e7eb', padding: '8px 10px', marginBottom: 6, cursor: 'pointer' }}
+                                        onClick={() => setExpandedReportId(expanded ? null : report.id)}
+                                    >
+                                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
+                                            <span style={{ fontSize: 11, fontWeight: 700, color: '#334155' }}>
+                                                {fmtRangeTs(report.createdAt)}
+                                                <span style={{ fontWeight: 400, color: '#94a3b8', marginLeft: 6 }}>{report.trigger === 'auto' ? '自动' : '手动'}</span>
+                                            </span>
+                                            <span style={{ fontSize: 10, color: '#94a3b8' }}>
+                                                审视 {examinedCount} · 变化 {outcomeCount} · 提交门牌 {submitCount}
+                                            </span>
+                                        </div>
+                                        {expanded && (
+                                            <div style={{ marginTop: 4 }} onClick={e => e.stopPropagation()}>
+                                                {examinedCount === 0 && outcomeCount === 0 && submitCount === 0 && (
+                                                    <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 4 }}>这次没有待消化的内容{report.plateUpdated.length > 0 ? '，但整理了门牌' : ''}</div>
+                                                )}
+                                                {report.examined.map(sec => renderSection(sec, '#0ea5e9'))}
+                                                {report.outcomes.map(sec => renderSection(sec, '#16a34a'))}
+                                                {report.plateSubmissions.map(sec => renderSection(sec, '#8b5cf6'))}
+                                                {report.plateUpdated.length > 0 && (
+                                                    <div style={{ fontSize: 10, color: '#8b5cf6', marginTop: 6 }}>
+                                                        门牌已更新：{report.plateUpdated.map(r => (PLATE_TITLES as Record<string, string>)[r] || r).join('、')}
+                                                    </div>
+                                                )}
+                                                {submitCount > 0 && report.plateUpdated.length === 0 && (
+                                                    <div style={{ fontSize: 10, color: '#f59e0b', marginTop: 6 }}>
+                                                        ⚠️ 本次提交的候选未合并进门牌（整理未跑成或未被采纳）
+                                                    </div>
+                                                )}
+                                            </div>
+                                        )}
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
+                </div>
+
+                {/* 导出 / 导入记忆：接入外置记忆库、跨设备迁移 */}
+                <div style={{ marginTop: 16, background: '#eff6ff', borderRadius: 16, padding: 16, border: '1px solid #bfdbfe' }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: '#1e40af', marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <Icon name="download" size={14} />
+                        <span>导出 / 导入记忆</span>
+                    </div>
+                    <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 12, lineHeight: 1.6 }}>
+                        把 <b>{char.name}</b> 记忆宫殿里的全部记忆导出成 JSON：含每条记忆的正文、房间、重要性、情绪、标签、时间，
+                        以及事件盒（整合回忆）、窗台期盼和房间门牌（常驻认知）。
+                    </div>
+
+                    {/* 是否带向量：长期用同一 embedding 模型就勾上，向量可直接复用免重新向量化 */}
+                    <label style={{
+                        display: 'flex', alignItems: 'flex-start', gap: 8, cursor: 'pointer',
+                        marginBottom: 12, fontSize: 11, color: '#334155', lineHeight: 1.6,
+                    }}>
+                        <input
+                            type="checkbox"
+                            checked={exportWithVectors}
+                            onChange={e => setExportWithVectors(e.target.checked)}
+                            style={{ marginTop: 2, flexShrink: 0, cursor: 'pointer' }}
+                        />
+                        <span>
+                            <b>同时导出向量</b>（推荐）<br/>
+                            <span style={{ color: '#64748b' }}>
+                                继续用<b>同一个 embedding 模型</b>时向量可直接复用，免重新向量化、检索结果一致；
+                                换模型则无效。取消勾选只导文本结构，文件更小。
+                            </span>
+                        </span>
+                    </label>
+
+                    {exportResult && (
+                        <div style={{ fontSize: 12, marginBottom: 8, color: exportResult.startsWith('[err]') ? '#dc2626' : exportResult.startsWith('[warn]') ? '#d97706' : '#16a34a' }}>
+                            <StatusMessage msg={exportResult} />
+                        </div>
+                    )}
+
+                    <button
+                        onClick={handleExportMemories}
+                        disabled={exporting}
+                        style={{
+                            width: '100%', padding: '10px 0', borderRadius: 12,
+                            border: 'none', fontWeight: 700, fontSize: 13,
+                            color: 'white',
+                            background: exporting ? '#d4d4d4' : '#2563eb',
+                            cursor: exporting ? 'not-allowed' : 'pointer',
+                        }}
+                    >
+                        {exporting ? '导出中…' : (
+                            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                                <Icon name="download" size={13} />
+                                <span>导出为 JSON</span>
+                            </span>
+                        )}
+                    </button>
+
+                    {/* 导入：把导出的 JSON 合并回当前角色（跨设备迁移 / 恢复） */}
+                    <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid #dbeafe' }}>
+                        <div style={{ fontSize: 11, color: '#6b7280', marginBottom: 10, lineHeight: 1.6 }}>
+                            把之前导出的 JSON 合并进 <b>{char.name}</b> 的记忆宫殿（追加，不覆盖现有记忆）。
+                            用于跨设备迁移或恢复。
+                        </div>
+
+                        {importResult && (
+                            <div style={{ fontSize: 12, marginBottom: 8, color: importResult.startsWith('[err]') ? '#dc2626' : importResult.startsWith('[warn]') ? '#d97706' : '#16a34a' }}>
+                                <StatusMessage msg={importResult} />
+                            </div>
+                        )}
+
+                        <input
+                            ref={importInputRef}
+                            type="file"
+                            accept="application/json,.json"
+                            onChange={handleImportFile}
+                            style={{ display: 'none' }}
+                        />
+                        <button
+                            onClick={() => importInputRef.current?.click()}
+                            disabled={importing}
+                            style={{
+                                width: '100%', padding: '10px 0', borderRadius: 12,
+                                border: '1px solid #bfdbfe', fontWeight: 700, fontSize: 13,
+                                color: '#1d4ed8', background: 'white',
+                                cursor: importing ? 'not-allowed' : 'pointer',
+                            }}
+                        >
+                            {importing ? '导入中…' : (
+                                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+                                    <Icon name="document" size={13} />
+                                    <span>从 JSON 导入</span>
+                                </span>
+                            )}
+                        </button>
+                    </div>
                 </div>
                 </>)}
 
@@ -3669,6 +4591,19 @@ create table if not exists memory_vectors (
                                             <span>{box.name || '未命名'}</span>
                                             {box.sealed && <span style={{ fontSize: 10, marginLeft: 4, padding: '1px 6px', borderRadius: 4, background: '#fef3c7', color: '#92400e' }}>已封盒</span>}
                                         </div>
+                                        <button
+                                            onClick={(e) => { e.stopPropagation(); editingBoxId === box.id ? cancelEditBoxMeta() : startEditBoxMeta(box); }}
+                                            title="编辑盒名和标签"
+                                            style={{
+                                                display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                                                width: 24, height: 24, borderRadius: 6, flexShrink: 0,
+                                                border: '1px solid #c7d2fe',
+                                                background: editingBoxId === box.id ? '#e0e7ff' : '#fff',
+                                                color: '#6366f1', cursor: 'pointer', padding: 0,
+                                            }}
+                                        >
+                                            <Icon name="pencil" size={12} />
+                                        </button>
                                         <div style={{ fontSize: 11, color: '#6366f1' }}>{expanded ? '▲' : '▼'}</div>
                                     </div>
                                     {box.tags.length > 0 && (
@@ -3688,6 +4623,66 @@ create table if not exists memory_vectors (
                                         <span>更新 {new Date(box.updatedAt).toLocaleDateString('zh-CN')}</span>
                                     </div>
                                 </div>
+
+                                {editingBoxId === box.id && (
+                                    <div style={{ padding: '0 12px 12px', borderTop: '1px solid #e0e7ff' }}>
+                                        <div style={{ fontSize: 10, color: '#6b7280', margin: '10px 0 8px', lineHeight: 1.5 }}>
+                                            盒名和标签仅用于召回时的展示抬头，不参与检索打分（改它不影响召回哪些记忆）。
+                                            注意：盒子之后再次压缩时，副 API 可能重新生成盒名/标签覆盖你的修改，不满意再改一次即可。
+                                        </div>
+                                        <label style={{ fontSize: 11, fontWeight: 600, color: '#4338ca' }}>盒名</label>
+                                        <input
+                                            value={boxNameDraft}
+                                            onChange={e => setBoxNameDraft(e.target.value)}
+                                            placeholder="未命名事件"
+                                            maxLength={40}
+                                            style={{
+                                                width: '100%', boxSizing: 'border-box', marginTop: 4, marginBottom: 10,
+                                                padding: '6px 8px', borderRadius: 6, border: '1px solid #c7d2fe',
+                                                fontSize: 13, outline: 'none',
+                                            }}
+                                        />
+                                        <label style={{ fontSize: 11, fontWeight: 600, color: '#4338ca' }}>标签（逗号分隔，最多 20 个）</label>
+                                        <input
+                                            value={boxTagsDraft}
+                                            onChange={e => setBoxTagsDraft(e.target.value)}
+                                            placeholder="如：买衣服, 退货, 流行款"
+                                            style={{
+                                                width: '100%', boxSizing: 'border-box', marginTop: 4, marginBottom: 10,
+                                                padding: '6px 8px', borderRadius: 6, border: '1px solid #c7d2fe',
+                                                fontSize: 13, outline: 'none',
+                                            }}
+                                        />
+                                        <div style={{ display: 'flex', gap: 8 }}>
+                                            <button
+                                                onClick={() => handleSaveBoxMeta(box)}
+                                                disabled={savingBox}
+                                                style={{
+                                                    display: 'inline-flex', alignItems: 'center', gap: 4,
+                                                    fontSize: 12, padding: '5px 12px', borderRadius: 6, border: 'none',
+                                                    background: '#6366f1', color: '#fff',
+                                                    cursor: savingBox ? 'default' : 'pointer', opacity: savingBox ? 0.6 : 1,
+                                                }}
+                                            >
+                                                <Icon name="check" size={12} />
+                                                <span>{savingBox ? '保存中…' : '保存'}</span>
+                                            </button>
+                                            <button
+                                                onClick={cancelEditBoxMeta}
+                                                disabled={savingBox}
+                                                style={{
+                                                    display: 'inline-flex', alignItems: 'center', gap: 4,
+                                                    fontSize: 12, padding: '5px 12px', borderRadius: 6,
+                                                    border: '1px solid #d1d5db', background: '#fff', color: '#6b7280',
+                                                    cursor: savingBox ? 'default' : 'pointer',
+                                                }}
+                                            >
+                                                <Icon name="x" size={12} />
+                                                <span>取消</span>
+                                            </button>
+                                        </div>
+                                    </div>
+                                )}
 
                                 {expanded && members && (
                                     <div style={{ padding: '0 12px 12px', borderTop: '1px solid #e0e7ff' }}>
@@ -3783,7 +4778,7 @@ create table if not exists memory_vectors (
                                                         </div>
                                                         <button
                                                             onClick={(e) => { e.stopPropagation(); handleReviveArchived(box, n); }}
-                                                            title="复活：把这条记忆从 summary 里拉回活节点，独立参与召回"
+                                                            title="复活：把这条记忆单独拎出来，让它重新生效。"
                                                             style={{
                                                                 position: 'absolute', top: 6, right: 6,
                                                                 fontSize: 10, padding: '3px 8px', borderRadius: 6,

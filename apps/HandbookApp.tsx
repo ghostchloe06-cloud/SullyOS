@@ -263,7 +263,7 @@ const HandbookApp: React.FC = () => {
                 characters, userProfile, apiConfig,
             });
             if (!result.newPage) {
-                addToast('重新生成失败 (角色 pass 了 / API 错误)', 'error');
+                addToast('这次没写出来，再试一次吧。', 'error');
                 return;
             }
 
@@ -318,8 +318,8 @@ const HandbookApp: React.FC = () => {
         // tracker / list 视图保留原 header 风格(现在不挤,不需要折叠)
         return (
             <div
-                className="flex items-center justify-between px-4 pt-12 pb-2 shrink-0"
-                style={{ background: 'transparent' }}
+                className="flex items-center justify-between px-4 pb-2 shrink-0"
+                style={{ background: 'transparent', paddingTop: 'max(3rem, var(--safe-top))' }}
             >
                 <button
                     onClick={handleBack}
@@ -368,7 +368,7 @@ const HandbookApp: React.FC = () => {
         return (
             <div
                 className="absolute z-30 left-0 right-0 px-3 pointer-events-none"
-                style={{ top: 'max(env(safe-area-inset-top, 12px), 12px)' }}
+                style={{ top: 'max(var(--safe-top), 12px)' }}
             >
                 <div className="flex items-center justify-between gap-2 pointer-events-auto">
                     <button

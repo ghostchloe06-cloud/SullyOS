@@ -1,10 +1,33 @@
 import React, { useState, useEffect, useRef, forwardRef, useImperativeHandle } from 'react';
-import { CharacterProfile, Message, DateState, DialogueItem, UserProfile } from '../../types';
+import { CharacterProfile, Message, DateState, DialogueItem, UserProfile, DateObservation } from '../../types';
 import Modal from '../../components/os/Modal';
 import { useOS } from '../../context/OSContext';
 import { DB } from '../../utils/db';
 import DateSettings from './DateSettings';
-import { synthesizeSpeech, cleanTextForTts } from '../../utils/minimaxTts';
+import ObserveHUD from './ObserveHUD';
+import { extractObservation, hasObservation } from '../../utils/datePrompts';
+import { pickDateFallbackSprite } from '../../utils/dateSprites';
+import { isBlobRef } from '../../utils/blobRef';
+import { clearDateResumeAttempt } from '../../utils/dateSessionRecovery';
+import { cleanTextForTts, VALID_EMOTIONS } from '../../utils/minimaxTts';
+import { synthesizeSpeech, characterHasVoice } from '../../utils/ttsRouter';
+import { resolveTtsProvider } from '../../utils/ttsProvider';
+import { cleanTextForTtsFish } from '../../utils/fishAudioTts';
+
+// 语音情绪标记 [v:xxx]：跟立绘情绪 [emotion] 分开的独立通道。立绘的 happy 是
+// 夸张的表情、语音的 happy 是音色情绪，两者强度/语义差异大，不能一概而论。
+// 所以语音情绪由 LLM 用 [v:xxx] 单独标，没标就不传（让 MiniMax 自然朗读）。
+// 从一行里抽出 [v:xxx]，返回 { voiceEmotion, rest（已剥掉该标记的文本）}。
+const VOICE_EMOTION_TAG_RE = /\[v:\s*([a-zA-Z]+)\s*\]/i;
+const extractVoiceEmotionTag = (line: string): { voiceEmotion?: string; rest: string } => {
+    let voiceEmotion: string | undefined;
+    const rest = line.replace(VOICE_EMOTION_TAG_RE, (_m, e: string) => {
+        const k = (e || '').toLowerCase();
+        if (VALID_EMOTIONS.has(k)) voiceEmotion = k;
+        return '';
+    });
+    return { voiceEmotion, rest };
+};
 
 // Helper: Parse dialogue with simple state machine
 const isContextNoise = (line: string) => {
@@ -48,11 +71,15 @@ const parseDialogue = (fullText: string, initialEmotion: string = 'normal'): Dia
     const results: DialogueItem[] = [];
     let currentEmotion = initialEmotion;
 
-    for (const line of lines) {
-        if (isContextNoise(line)) continue;
+    for (const rawLine of lines) {
+        if (isContextNoise(rawLine)) continue;
+        // 先把独立的语音情绪标记 [v:xxx] 抽出来（跟立绘情绪互不影响），再解析立绘标签
+        const { voiceEmotion, rest } = extractVoiceEmotionTag(rawLine);
+        const line = rest.trim();
+        if (!line) continue;
         const tagMatch = line.match(/^\[([a-zA-Z0-9_\-]+)\]\s*(.*)/);
         let content = line;
-        
+
         if (tagMatch) {
             currentEmotion = tagMatch[1].toLowerCase();
             content = tagMatch[2];
@@ -60,11 +87,11 @@ const parseDialogue = (fullText: string, initialEmotion: string = 'normal'): Dia
             const standaloneTag = line.match(/^\[([a-zA-Z0-9_\-]+)\]$/);
             if (standaloneTag) {
                 currentEmotion = standaloneTag[1].toLowerCase();
-                continue; 
+                continue;
             }
         }
         if (content) {
-            results.push({ text: content, emotion: currentEmotion });
+            results.push({ text: content, emotion: currentEmotion, voiceEmotion });
         }
     }
     return results;
@@ -113,6 +140,10 @@ const DateSession: React.FC<DateSessionProps> = ({
     const [currentText, setCurrentText] = useState('');
     const [displayedText, setDisplayedText] = useState('');
     const [isTextAnimating, setIsTextAnimating] = useState(false);
+
+    // 观测协议 OBSERVE：当前批次解析出的结构化观测，驱动全息 HUD
+    const observeEnabled = !!char.dateObserve?.enabled;
+    const [observation, setObservation] = useState<DateObservation | null>(initialState?.observation ?? null);
     
     // Interaction State
     const [input, setInput] = useState('');
@@ -123,6 +154,9 @@ const DateSession: React.FC<DateSessionProps> = ({
     
     // Settings Overlay State (Internal)
     const [showSettings, setShowSettings] = useState(false);
+
+    // 顶栏折叠菜单：常驻只留「输入」+「菜单」两钮，低频操作全收进来
+    const [showMenu, setShowMenu] = useState(false);
 
     // Edit Msg Logic
     const [modalType, setModalType] = useState<'none' | 'options'>('none');
@@ -143,14 +177,19 @@ const DateSession: React.FC<DateSessionProps> = ({
     const dateAudioRef = useRef<HTMLAudioElement | null>(null);
     const voiceEnabled = !!char.dateVoiceEnabled;
     const voiceLang = char.dateVoiceLang || '';
+    // Bridges the current line's VOICE emotion ([v:xxx], 跟立绘情绪分开) to the GAL
+    // voice effect (which keys off currentText only). undefined = 不传情绪，自然朗读。
+    // A ref so it doesn't churn the effect's deps.
+    const currentLineEmotionRef = useRef<string | undefined>(undefined);
 
     const VOICE_LANG_LABELS: Record<string, string> = { en: 'English', ja: '日本語', ko: '한국어', fr: 'Français', es: 'Español' };
     const VOICE_LANG_OPTIONS = [{v:'',l:'默认'},{v:'en',l:'EN'},{v:'ja',l:'JP'},{v:'ko',l:'KR'},{v:'fr',l:'FR'},{v:'es',l:'ES'}];
 
-    const translateAndSpeak = async (text: string): Promise<string | null> => {
-        if (!char.voiceProfile?.voiceId && (!char.voiceProfile?.timberWeights?.length)) return null;
+    const translateAndSpeak = async (text: string, emotion?: string): Promise<string | null> => {
+        if (!characterHasVoice(char, apiConfig)) return null;
         try {
-            let ttsText = cleanTextForTts(text);
+            // 鱼声保留 inline cue，用 Fish 专属清洗；MiniMax 走原来的清洗。
+            let ttsText = resolveTtsProvider(apiConfig) === 'fishaudio' ? cleanTextForTtsFish(text) : cleanTextForTts(text);
             if (!ttsText || ttsText.length < 2) return null;
             if (voiceLang) {
                 const langLabel = VOICE_LANG_LABELS[voiceLang] || voiceLang;
@@ -172,6 +211,7 @@ const DateSession: React.FC<DateSessionProps> = ({
             return await synthesizeSpeech(ttsText, char, apiConfig, {
                 languageBoost: voiceLang || undefined,
                 groupId: apiConfig.minimaxGroupId || undefined,
+                emotion,
             });
         } catch (err: any) {
             console.warn('Date TTS failed:', err?.message);
@@ -201,7 +241,7 @@ const DateSession: React.FC<DateSessionProps> = ({
             let url = voiceCacheRef.current[cacheKey];
             if (!url) {
                 setGalVoiceLoading(true);
-                url = await translateAndSpeak(dialogueText) || '';
+                url = await translateAndSpeak(dialogueText, currentLineEmotionRef.current) || '';
                 if (cancelled) return;
                 setGalVoiceLoading(false);
                 if (!url) return;
@@ -232,9 +272,9 @@ const DateSession: React.FC<DateSessionProps> = ({
         let url = voiceCacheRef.current[cacheKey];
         if (!url) {
             setGalVoiceLoading(true);
-            url = await translateAndSpeak(dialogueText) || '';
+            url = await translateAndSpeak(dialogueText, currentLineEmotionRef.current) || '';
             setGalVoiceLoading(false);
-            if (!url) return;
+            if (!url) { addToast('语音合成失败，请稍后重试', 'error'); return; }
             voiceCacheRef.current[cacheKey] = url;
         }
         if (!dateAudioRef.current) dateAudioRef.current = new Audio();
@@ -245,7 +285,10 @@ const DateSession: React.FC<DateSessionProps> = ({
     };
 
     // Novel/Reading mode: play a specific dialogue line (shares voiceCacheRef with GAL mode)
-    const handleNovelLinePlay = async (lineKey: string, dialogueText: string) => {
+    // voiceEmotion（[v:xxx]）跟立绘模式保持一致地传给 TTS：这样两种模式合成的音频完全相同，
+    // 且命中同一条持久缓存（ttsCache/IndexedDB）——退出见面再进来点旧台词也能从本地缓存秒取，
+    // 不必按不同的 key 重新联网合成。
+    const handleNovelLinePlay = async (lineKey: string, dialogueText: string, voiceEmotion?: string) => {
         const cachedUrl = voiceCacheRef.current[dialogueText];
         if (cachedUrl) {
             // Already have URL (from GAL or previous novel play), just play/pause
@@ -262,9 +305,9 @@ const DateSession: React.FC<DateSessionProps> = ({
             return;
         }
         setNovelVoiceLoading(prev => new Set(prev).add(lineKey));
-        const url = await translateAndSpeak(dialogueText);
+        const url = await translateAndSpeak(dialogueText, voiceEmotion);
         setNovelVoiceLoading(prev => { const n = new Set(prev); n.delete(lineKey); return n; });
-        if (!url) return;
+        if (!url) { addToast('语音合成失败，请稍后重试', 'error'); return; }
         voiceCacheRef.current[dialogueText] = url;
         if (!dateAudioRef.current) dateAudioRef.current = new Audio();
         dateAudioRef.current.src = url;
@@ -280,6 +323,11 @@ const DateSession: React.FC<DateSessionProps> = ({
                 setShowSettings(false);
                 return true;
             }
+            if (showMenu) {
+                setShowMenu(false);
+                setShowVoiceLangPicker(false);
+                return true;
+            }
             if (showExitModal) {
                 setShowExitModal(false);
                 return true;
@@ -288,7 +336,7 @@ const DateSession: React.FC<DateSessionProps> = ({
             return true;
         });
         return unregister;
-    }, [showSettings, showExitModal, registerBackHandler]);
+    }, [showSettings, showMenu, showExitModal, registerBackHandler]);
 
     // Filter messages for Novel Mode: Show only current session
     // Logic: Find the LAST message with `isOpening: true`. Show all messages from there onwards.
@@ -304,14 +352,17 @@ const DateSession: React.FC<DateSessionProps> = ({
     // Initialization
     useEffect(() => {
         if (initialState) {
-            // Resume
-            setBgImage(initialState.bgImage);
-            setCurrentSprite(initialState.currentSprite);
-            setCurrentText(initialState.currentText);
-            setDisplayedText(initialState.currentText);
-            setDialogueQueue(initialState.dialogueQueue);
-            setDialogueBatch(initialState.dialogueBatch);
-            setIsNovelMode(initialState.isNovelMode);
+            // Resume — 防御性回填：老快照 / 落库竞态可能缺字段，缺数组兜底成 []，
+            // 否则后续 dialogueQueue.length 等取值会抛异常连累整个会话渲染。
+            setBgImage(initialState.bgImage || '');
+            // 老快照可能存了 blobref 令牌当立绘（chibi 误兜底期间落库的），不能直接喂 <img>，洗成头像
+            const resumedSprite = initialState.currentSprite || '';
+            setCurrentSprite(isBlobRef(resumedSprite) ? (char.avatar || '') : resumedSprite);
+            setCurrentText(initialState.currentText || '');
+            setDisplayedText(initialState.currentText || '');
+            setDialogueQueue(Array.isArray(initialState.dialogueQueue) ? initialState.dialogueQueue : []);
+            setDialogueBatch(Array.isArray(initialState.dialogueBatch) ? initialState.dialogueBatch : []);
+            setIsNovelMode(!!initialState.isNovelMode);
         } else {
             // New Session - pick initial sprite from active skin set or default sprites
             const s = (() => {
@@ -321,17 +372,13 @@ const DateSession: React.FC<DateSessionProps> = ({
                 }
                 return char.sprites;
             })();
-            let initSprite = s?.['normal'] || s?.['default'];
-            if (!initSprite && s) {
-                const fallbackKey = dateEmotionKeys.find(k => s[k]);
-                initSprite = fallbackKey ? s[fallbackKey] : Object.values(s).find(v => v) || char.avatar;
-            }
-            if (!initSprite) initSprite = char.avatar;
-            setCurrentSprite(initSprite);
+            setCurrentSprite(pickDateFallbackSprite(s, dateEmotionKeys, char.avatar) || '');
             
-            // Parse Peek Status as opening
+            // Parse Peek Status as opening — 先剥出观测块（开了 OBSERVE 才有）
             const startText = peekStatus || "Waiting for connection...";
-            const items = parseDialogue(startText, 'normal');
+            const { observation: peekObs, rest: peekRest } = extractObservation(startText, { lenient: observeEnabled, custom: char.dateObserve?.custom });
+            if (hasObservation(peekObs)) setObservation(peekObs);
+            const items = parseDialogue(peekRest, 'normal');
             setDialogueBatch(items);
             setDialogueQueue(items);
             
@@ -339,7 +386,8 @@ const DateSession: React.FC<DateSessionProps> = ({
                 // Manually trigger first item processing
                 const first = items[0];
                 setCurrentText(first.text);
-                // Note: Not setting sprite here because useEffect below will handle emotion->sprite mapping if needed, 
+                currentLineEmotionRef.current = first.voiceEmotion;
+                // Note: Not setting sprite here because useEffect below will handle emotion->sprite mapping if needed,
                 // or we rely on default.
                 setDialogueQueue(items.slice(1));
             }
@@ -396,6 +444,7 @@ const DateSession: React.FC<DateSessionProps> = ({
 
     const processNextDialogue = (item: DialogueItem, remaining: DialogueItem[]) => {
         setCurrentText(item.text);
+        currentLineEmotionRef.current = item.voiceEmotion;
         if (item.emotion && activeSprites) {
             const emotionKey = item.emotion.toLowerCase();
             if (dateEmotionKeys.includes(emotionKey)) {
@@ -411,8 +460,37 @@ const DateSession: React.FC<DateSessionProps> = ({
         setDialogueQueue(remaining);
     };
 
+    // 立绘引擎（dialogueQueue / currentText / dialogueBatch）默认只在进会话或收到新回复时解析一次。
+    // 若用户在阅读模式里编辑 / 重新生成了「最后一条 AI 回复」，messages 会更新、阅读模式即时反映，
+    // 但立绘引擎不会自动重解析 —— 于是立绘停在旧文字、旧语音，感觉「没同步」。这里监听最后一条
+    // assistant 消息的内容，变了就把当前批次重解析同步过来。首帧跳过（含 initialState 恢复的播放
+    // 位置），isTyping 时也跳过（新回复交给 handleSend / handleRerollClick 处理，避免重复解析）。
+    const lastAssistantContent = React.useMemo(() => {
+        for (let i = messages.length - 1; i >= 0; i--) {
+            if (messages[i]?.role === 'assistant') return messages[i].content || '';
+        }
+        return '';
+    }, [messages]);
+    const dialogueSyncMountRef = useRef(false);
+    useEffect(() => {
+        if (!dialogueSyncMountRef.current) { dialogueSyncMountRef.current = true; return; }
+        if (isTyping || !lastAssistantContent) return;
+        const { rest } = extractObservation(lastAssistantContent, { lenient: observeEnabled, custom: char.dateObserve?.custom });
+        const items = parseDialogue(rest, 'normal');
+        if (items.length === 0) return;
+        setDialogueBatch(items);
+        processNextDialogue(items[0], items.slice(1));
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [lastAssistantContent]);
+
     const handleScreenClick = (e: React.MouseEvent) => {
         if ((e.target as HTMLElement).closest('button, input, textarea, .control-panel')) return;
+        // 菜单展开时，点击场景任意处先收起菜单，不推进对话
+        if (showMenu) {
+            setShowMenu(false);
+            setShowVoiceLangPicker(false);
+            return;
+        }
         if (isNovelMode) return;
 
         // Skip animation
@@ -455,15 +533,18 @@ const DateSession: React.FC<DateSessionProps> = ({
 
         try {
             const aiContent = await onSendMessage(text);
-            // Parse new content
-            const items = parseDialogue(aiContent, 'normal');
+            // 先剥出观测块更新 HUD，再解析剩余正文
+            const { observation: obs, rest } = extractObservation(aiContent, { lenient: observeEnabled, custom: char.dateObserve?.custom });
+            if (hasObservation(obs)) setObservation(obs);
+            const items = parseDialogue(rest, 'normal');
             setDialogueBatch(items);
             setDialogueQueue(items);
             if (items.length > 0) {
                 processNextDialogue(items[0], items.slice(1));
             }
         } catch (e: any) {
-            setCurrentText("(连接中断)");
+            // onSendMessage 内部含 API 调用 + 回复后处理, 抛错不一定是网络。用中性文案, 不误导成"连接中断"。
+            setCurrentText(`(出错了: ${e?.message || '未知错误'})`);
             setShowInputBox(true);
         } finally {
             setIsTyping(false);
@@ -475,7 +556,9 @@ const DateSession: React.FC<DateSessionProps> = ({
         setIsTyping(true);
         try {
             const aiContent = await onReroll();
-            const items = parseDialogue(aiContent, 'normal');
+            const { observation: obs, rest } = extractObservation(aiContent, { lenient: observeEnabled, custom: char.dateObserve?.custom });
+            if (hasObservation(obs)) setObservation(obs);
+            const items = parseDialogue(rest, 'normal');
             setDialogueBatch(items);
             setDialogueQueue(items);
             if (items.length > 0) processNextDialogue(items[0], items.slice(1));
@@ -494,7 +577,8 @@ const DateSession: React.FC<DateSessionProps> = ({
         currentSprite,
         isNovelMode,
         timestamp: Date.now(),
-        peekStatus
+        peekStatus,
+        observation: observation || undefined,
     });
 
     const handleExitClick = () => {
@@ -504,8 +588,6 @@ const DateSession: React.FC<DateSessionProps> = ({
     // Auto-save: persist date state so refresh/close doesn't lose progress
     const stateRef = useRef<() => DateState>(buildCurrentState);
     stateRef.current = buildCurrentState;
-    const onExitRef = useRef(onExit);
-    onExitRef.current = onExit;
     const charRef = useRef(char);
     charRef.current = char;
 
@@ -528,12 +610,25 @@ const DateSession: React.FC<DateSessionProps> = ({
         // Periodic auto-save every 30s
         const interval = setInterval(saveStateToDB, 30000);
 
+        // 见面「继续上次」崩溃自愈：只要会话稳定挂载并渲染了一小段时间没崩，
+        // 就撤销 DateApp 在恢复前武装的哨兵——证明这份快照能安全加载。若 iOS WebKit
+        // 在此之前把内容进程撑崩（进程级崩溃，不会跑下面的卸载 cleanup），哨兵留存，
+        // 下次进见面即被检出并丢弃这份有毒快照。新会话（无 initialState）无哨兵，clear 为空操作。
+        const settleTimer = setTimeout(() => clearDateResumeAttempt(), 2500);
+
         return () => {
             window.removeEventListener('beforeunload', handleBeforeUnload);
             document.removeEventListener('visibilitychange', handleVisibilityChange);
             clearInterval(interval);
-            // Also save on React unmount (in-app navigation)
-            onExitRef.current(stateRef.current());
+            clearTimeout(settleTimer);
+            // 干净卸载（SPA 内导航离开会话）= 非崩溃，撤销哨兵。
+            clearDateResumeAttempt();
+            // 卸载时只把进度直接落库，绝不调用 onExit。onExit 会执行「用户主动退出」的
+            // 导航（setMode('select') + 弹「进度已保存」），而卸载在很多非用户意图的场景
+            // 都会发生 —— 尤其 React.StrictMode (dev) 的「挂载→卸载→重挂载」探测：
+            // 一进正式见面就被自己的卸载副作用导航回选择页，并弹两次「进度已保存」。
+            // 直接 DB 持久化与其它自动保存路径（beforeunload / visibilitychange / 定时）一致。
+            saveStateToDB();
         };
     }, []);
 
@@ -613,106 +708,147 @@ const DateSession: React.FC<DateSessionProps> = ({
                 style={{ backgroundImage: bgImage ? `url(${bgImage})` : 'none' }}
             ></div>
 
-            {/* Menu Layer */}
-            <div className="absolute top-0 right-0 p-4 pt-12 z-[100] flex justify-end gap-3 pointer-events-auto">
-                {!isTyping && canReroll && (
-                    <button onClick={(e) => { e.stopPropagation(); handleRerollClick(); }} className={`w-10 h-10 rounded-full flex items-center justify-center border transition-all shadow-lg active:scale-95 ${isNovelMode ? 'bg-white/10 backdrop-blur-md border-slate-300/30 text-slate-400 hover:bg-white/20' : 'bg-black/30 backdrop-blur-md border-white/20 text-white hover:bg-white/20'}`}>
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" /></svg>
+            {/* Menu Layer — 常驻只留「输入」+「菜单」两钮，其余操作收进带文字标签的下拉菜单 */}
+            <div className="absolute top-0 right-0 p-4 pt-12 z-[100] flex flex-col items-end gap-2 pointer-events-auto">
+                <div className="flex gap-3">
+                    <button onClick={(e) => { e.stopPropagation(); setShowInputBox(!showInputBox); setShowMenu(false); setShowVoiceLangPicker(false); }} className={`w-10 h-10 rounded-full flex items-center justify-center border transition-all shadow-lg active:scale-95 ${showInputBox ? 'bg-primary border-primary text-white' : 'bg-black/30 backdrop-blur-md border-white/20 text-white hover:bg-white/20'}`}>
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M7.5 8.25h9m-9 3H12m-9.75 1.51c0 1.6 1.123 2.994 2.707 3.227 1.129.166 2.27.293 3.423.379.35.026.67.21.865.501L12 21l2.755-4.133a1.14 1.14 0 0 1 .865-.501 48.172 48.172 0 0 0 3.423-.379c1.584-.233 2.707-1.626 2.707-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0 0 12 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018Z" /></svg>
                     </button>
-                )}
-                
-                {/* Voice Toggle — tap opens the language picker (where the off switch lives);
-                    double-click / long-press are kept as shortcuts to disable voice directly. */}
-                <div className="relative">
-                    <button onClick={(e) => {
-                            e.stopPropagation();
-                            if (voiceEnabled) {
-                                setShowVoiceLangPicker(prev => !prev);
-                            } else {
-                                updateCharacter(char.id, { dateVoiceEnabled: true });
-                                addToast('语音已开启', 'info');
-                                setShowVoiceLangPicker(true);
-                            }
-                        }}
-                        onDoubleClick={(e) => { e.stopPropagation(); if (voiceEnabled) { updateCharacter(char.id, { dateVoiceEnabled: false }); setShowVoiceLangPicker(false); addToast('语音已关闭', 'info'); } }}
-                        className={`w-10 h-10 rounded-full flex items-center justify-center border transition-all shadow-lg active:scale-95 ${voiceEnabled ? 'bg-white/20 backdrop-blur-md border-white/30 text-white/80' : 'bg-black/30 backdrop-blur-md border-white/20 text-white/50 hover:bg-white/20'}`}
-                        title={voiceEnabled ? '点击展开：选语种 / 关闭语音' : '开启语音'}
-                    >
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
-                            {voiceEnabled
-                                ? <path strokeLinecap="round" strokeLinejoin="round" d="M19.114 5.636a9 9 0 0 1 0 12.728M16.463 8.288a5.25 5.25 0 0 1 0 7.424M6.75 8.25l4.72-4.72a.75.75 0 0 1 1.28.53v15.88a.75.75 0 0 1-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.009 9.009 0 0 1 2.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75Z" />
-                                : <path strokeLinecap="round" strokeLinejoin="round" d="M17.25 9.75 19.5 12m0 0 2.25 2.25M19.5 12l2.25-2.25M19.5 12l-2.25 2.25m-10.5-6 4.72-4.72a.75.75 0 0 1 1.28.53v15.88a.75.75 0 0 1-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.009 9.009 0 0 1 2.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75Z" />}
-                        </svg>
-                        {voiceEnabled && voiceLang && <span className="absolute -bottom-1 -right-1 text-[8px] font-bold bg-white/30 text-white rounded-full px-1 leading-tight">{VOICE_LANG_OPTIONS.find(o => o.v === voiceLang)?.l || ''}</span>}
+                    <button onClick={(e) => { e.stopPropagation(); setShowMenu(prev => !prev); setShowVoiceLangPicker(false); }} className={`w-10 h-10 rounded-full flex items-center justify-center border transition-all shadow-lg active:scale-95 ${showMenu ? 'bg-white text-black border-white' : 'bg-black/30 backdrop-blur-md border-white/20 text-white hover:bg-white/20'}`}>
+                        {showMenu ? (
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18 18 6M6 6l12 12" /></svg>
+                        ) : (
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M6.75 12a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0ZM12.75 12a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0ZM18.75 12a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Z" /></svg>
+                        )}
                     </button>
-                    {/* Collapsible Language Picker — includes an always-visible off switch
-                        so users aren't stuck guessing that the button needs a double-click. */}
-                    {voiceEnabled && showVoiceLangPicker && (
-                        <div className="absolute top-12 right-0 flex flex-col gap-1 animate-fade-in">
-                            {VOICE_LANG_OPTIONS.map(opt => (
-                                <button key={opt.v} onClick={(e) => { e.stopPropagation(); updateCharacter(char.id, { dateVoiceLang: opt.v }); setShowVoiceLangPicker(false); }}
-                                    className={`h-7 px-2.5 rounded-full text-[10px] font-bold transition-all active:scale-95 whitespace-nowrap ${voiceLang === opt.v ? 'bg-white/30 text-white shadow-md' : 'bg-black/30 backdrop-blur-md text-white/60 border border-white/10'}`}>
-                                    {opt.l}
-                                </button>
-                            ))}
-                            <button onClick={(e) => { e.stopPropagation(); updateCharacter(char.id, { dateVoiceEnabled: false }); setShowVoiceLangPicker(false); addToast('语音已关闭', 'info'); }}
-                                className="h-7 px-2.5 rounded-full text-[10px] font-bold transition-all active:scale-95 whitespace-nowrap bg-red-500/50 text-white border border-red-300/40 shadow-md flex items-center gap-1 justify-center">
-                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="w-2.5 h-2.5"><path fillRule="evenodd" d="M10 18a8 8 0 1 0 0-16 8 8 0 0 0 0 16ZM8.28 7.22a.75.75 0 0 0-1.06 1.06L8.94 10l-1.72 1.72a.75.75 0 1 0 1.06 1.06L10 11.06l1.72 1.72a.75.75 0 1 0 1.06-1.06L11.06 10l1.72-1.72a.75.75 0 0 0-1.06-1.06L10 8.94 8.28 7.22Z" clipRule="evenodd" /></svg>
-                                关闭
-                            </button>
-                        </div>
-                    )}
                 </div>
 
-                {/* Novel Mode Toggle */}
-                <button onClick={(e) => { e.stopPropagation(); setIsNovelMode(!isNovelMode); exitBatchMode(); }} className={`w-10 h-10 rounded-full flex items-center justify-center border transition-all shadow-lg active:scale-95 ${isNovelMode ? 'bg-white text-black border-white' : 'bg-black/30 backdrop-blur-md border-white/20 text-white hover:bg-white/20'}`}>
-                    {isNovelMode ? (
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909m-18 3.75h16.5a1.5 1.5 0 0 0 1.5-1.5V6a1.5 1.5 0 0 0-1.5-1.5H3.75A1.5 1.5 0 0 0 2.25 6v12a1.5 1.5 0 0 0 1.5 1.5Zm10.5-11.25h.008v.008h-.008V8.25Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z" /></svg>
-                    ) : (
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M12 6.042A8.967 8.967 0 0 0 6 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 0 1 6 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 0 1 6-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0 0 18 18a8.967 8.967 0 0 0-6 2.292m0-14.25v14.25" /></svg>
-                    )}
-                </button>
+                {showMenu && (
+                    <div className="flex flex-col items-end gap-1.5 animate-fade-in" onClick={(e) => e.stopPropagation()}>
+                        {!isTyping && canReroll && (
+                            <button onClick={() => { setShowMenu(false); setShowVoiceLangPicker(false); handleRerollClick(); }} className="h-9 px-3.5 rounded-full flex items-center gap-2 text-xs font-bold border shadow-lg active:scale-95 transition-all bg-black/40 backdrop-blur-md border-white/15 text-white hover:bg-white/20">
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0 3.181 3.183a8.25 8.25 0 0 0 13.803-3.7M4.031 9.865a8.25 8.25 0 0 1 13.803-3.7l3.181 3.182m0-4.991v4.99" /></svg>
+                                重新生成
+                            </button>
+                        )}
 
-                <button onClick={(e) => { e.stopPropagation(); setShowInputBox(!showInputBox); }} className={`w-10 h-10 rounded-full flex items-center justify-center border transition-all shadow-lg active:scale-95 ${showInputBox ? 'bg-primary border-primary text-white' : 'bg-black/30 backdrop-blur-md border-white/20 text-white hover:bg-white/20'}`}>
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M7.5 8.25h9m-9 3H12m-9.75 1.51c0 1.6 1.123 2.994 2.707 3.227 1.129.166 2.27.293 3.423.379.35.026.67.21.865.501L12 21l2.755-4.133a1.14 1.14 0 0 1 .865-.501 48.172 48.172 0 0 0 3.423-.379c1.584-.233 2.707-1.626 2.707-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0 0 12 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018Z" /></svg>
-                </button>
-                <button onClick={(e) => { e.stopPropagation(); setShowSettings(true); }} className="bg-black/30 backdrop-blur-md text-white w-10 h-10 rounded-full flex items-center justify-center border border-white/20 hover:bg-white/20 transition-all shadow-lg active:scale-95">
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 0 1 0 2.555c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 0 1-.22.128c-.331.183-.581.495-.644.869l-.212 1.281c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 0 1 0-2.555c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281Z" /><path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" /></svg>
-                </button>
-                {isNovelMode && char.dateLightReading && (
-                    <button
-                        onClick={(e) => { e.stopPropagation(); isBatchSelectMode ? exitBatchMode() : setIsBatchSelectMode(true); }}
-                        className={`px-3 h-10 rounded-full text-xs font-bold border shadow-lg ${isBatchSelectMode ? 'bg-primary text-white border-primary' : 'bg-black/30 backdrop-blur-md border-white/20 text-white'}`}
-                    >
-                        {isBatchSelectMode ? '完成' : '多选'}
-                    </button>
+                        {/* 语音：未开启时点击直接开启并展开语种；开启时点击展开/收起语种选择（含关闭项） */}
+                        <button onClick={() => {
+                                if (voiceEnabled) {
+                                    setShowVoiceLangPicker(prev => !prev);
+                                } else {
+                                    updateCharacter(char.id, { dateVoiceEnabled: true });
+                                    addToast('语音已开启', 'info');
+                                    setShowVoiceLangPicker(true);
+                                }
+                            }}
+                            className={`h-9 px-3.5 rounded-full flex items-center gap-2 text-xs font-bold border shadow-lg active:scale-95 transition-all backdrop-blur-md ${voiceEnabled ? 'bg-white/20 border-white/30 text-white' : 'bg-black/40 border-white/15 text-white/60 hover:bg-white/20'}`}>
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4">
+                                {voiceEnabled
+                                    ? <path strokeLinecap="round" strokeLinejoin="round" d="M19.114 5.636a9 9 0 0 1 0 12.728M16.463 8.288a5.25 5.25 0 0 1 0 7.424M6.75 8.25l4.72-4.72a.75.75 0 0 1 1.28.53v15.88a.75.75 0 0 1-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.009 9.009 0 0 1 2.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75Z" />
+                                    : <path strokeLinecap="round" strokeLinejoin="round" d="M17.25 9.75 19.5 12m0 0 2.25 2.25M19.5 12l2.25-2.25M19.5 12l-2.25 2.25m-10.5-6 4.72-4.72a.75.75 0 0 1 1.28.53v15.88a.75.75 0 0 1-1.28.53l-4.72-4.72H4.51c-.88 0-1.704-.507-1.938-1.354A9.009 9.009 0 0 1 2.25 12c0-.83.112-1.633.322-2.396C2.806 8.756 3.63 8.25 4.51 8.25H6.75Z" />}
+                            </svg>
+                            语音{voiceEnabled ? ((voiceLang && (VOICE_LANG_OPTIONS.find(o => o.v === voiceLang)?.l)) ? ` · ${VOICE_LANG_OPTIONS.find(o => o.v === voiceLang)?.l}` : ' · 开') : ' · 关'}
+                        </button>
+                        {voiceEnabled && showVoiceLangPicker && (
+                            <div className="flex flex-wrap justify-end gap-1 max-w-[200px] animate-fade-in">
+                                {VOICE_LANG_OPTIONS.map(opt => (
+                                    <button key={opt.v} onClick={() => { updateCharacter(char.id, { dateVoiceLang: opt.v }); setShowVoiceLangPicker(false); }}
+                                        className={`h-7 px-2.5 rounded-full text-[10px] font-bold transition-all active:scale-95 whitespace-nowrap ${voiceLang === opt.v ? 'bg-white/30 text-white shadow-md' : 'bg-black/30 backdrop-blur-md text-white/60 border border-white/10'}`}>
+                                        {opt.l}
+                                    </button>
+                                ))}
+                                <button onClick={() => { updateCharacter(char.id, { dateVoiceEnabled: false }); setShowVoiceLangPicker(false); addToast('语音已关闭', 'info'); }}
+                                    className="h-7 px-2.5 rounded-full text-[10px] font-bold transition-all active:scale-95 whitespace-nowrap bg-red-500/50 text-white border border-red-300/40 shadow-md">
+                                    关闭语音
+                                </button>
+                            </div>
+                        )}
+
+                        <button onClick={() => { setIsNovelMode(!isNovelMode); exitBatchMode(); setShowMenu(false); setShowVoiceLangPicker(false); }} className="h-9 px-3.5 rounded-full flex items-center gap-2 text-xs font-bold border shadow-lg active:scale-95 transition-all bg-black/40 backdrop-blur-md border-white/15 text-white hover:bg-white/20">
+                            {isNovelMode ? (
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" d="m2.25 15.75 5.159-5.159a2.25 2.25 0 0 1 3.182 0l5.159 5.159m-1.5-1.5 1.409-1.409a2.25 2.25 0 0 1 3.182 0l2.909 2.909m-18 3.75h16.5a1.5 1.5 0 0 0 1.5-1.5V6a1.5 1.5 0 0 0-1.5-1.5H3.75A1.5 1.5 0 0 0 2.25 6v12a1.5 1.5 0 0 0 1.5 1.5Zm10.5-11.25h.008v.008h-.008V8.25Zm.375 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Z" /></svg>
+                            ) : (
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" d="M12 6.042A8.967 8.967 0 0 0 6 3.75c-1.052 0-2.062.18-3 .512v14.25A8.987 8.987 0 0 1 6 18c2.305 0 4.408.867 6 2.292m0-14.25a8.966 8.966 0 0 1 6-2.292c1.052 0 2.062.18 3 .512v14.25A8.987 8.987 0 0 0 18 18a8.967 8.967 0 0 0-6 2.292m0-14.25v14.25" /></svg>
+                            )}
+                            {isNovelMode ? '立绘模式' : '阅读模式'}
+                        </button>
+
+                        {isNovelMode && char.dateLightReading && !isBatchSelectMode && (
+                            <button onClick={() => { setIsBatchSelectMode(true); setShowMenu(false); setShowVoiceLangPicker(false); }} className="h-9 px-3.5 rounded-full flex items-center gap-2 text-xs font-bold border shadow-lg active:scale-95 transition-all bg-black/40 backdrop-blur-md border-white/15 text-white hover:bg-white/20">
+                                <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" /></svg>
+                                多选删除
+                            </button>
+                        )}
+
+                        {/* 观测协议 OBSERVE 开关：开启后回复带「时间/地点/状态/细节」全息 HUD */}
+                        <button onClick={() => {
+                                const next = !observeEnabled;
+                                updateCharacter(char.id, { dateObserve: { ...char.dateObserve, enabled: next } });
+                                addToast(next ? '观测已开启 · 下条回复生效' : '观测已关闭', 'info');
+                                setShowMenu(false); setShowVoiceLangPicker(false);
+                            }}
+                            className={`h-9 px-3.5 rounded-full flex items-center gap-2 text-xs font-bold border shadow-lg active:scale-95 transition-all backdrop-blur-md ${observeEnabled ? 'bg-cyan-400/20 border-cyan-300/40 text-cyan-50' : 'bg-black/40 border-white/15 text-white/60 hover:bg-white/20'}`}>
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" d="M2.036 12.322a1.012 1.012 0 0 1 0-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178Z" /><path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" /></svg>
+                            观测{observeEnabled ? ' · 开' : ' · 关'}
+                        </button>
+
+                        <button onClick={() => { setShowSettings(true); setShowMenu(false); setShowVoiceLangPicker(false); }} className="h-9 px-3.5 rounded-full flex items-center gap-2 text-xs font-bold border shadow-lg active:scale-95 transition-all bg-black/40 backdrop-blur-md border-white/15 text-white hover:bg-white/20">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" d="M9.594 3.94c.09-.542.56-.94 1.11-.94h2.593c.55 0 1.02.398 1.11.94l.213 1.281c.063.374.313.686.645.87.074.04.147.083.22.127.324.196.72.257 1.075.124l1.217-.456a1.125 1.125 0 0 1 1.37.49l1.296 2.247a1.125 1.125 0 0 1-.26 1.431l-1.003.827c-.293.24-.438.613-.431.992a6.759 6.759 0 0 1 0 2.555c-.007.378.138.75.43.99l1.005.828c.424.35.534.954.26 1.43l-1.298 2.247a1.125 1.125 0 0 1-1.369.491l-1.217-.456c-.355-.133-.75-.072-1.076.124a6.57 6.57 0 0 1-.22.128c-.331.183-.581.495-.644.869l-.212 1.281c-.09.543-.56.941-1.11.941h-2.594c-.55 0-1.02-.398-1.11-.94l-.213-1.281c-.062-.374-.312-.686-.644-.87a6.52 6.52 0 0 1-.22-.127c-.325-.196-.72-.257-1.076-.124l-1.217.456a1.125 1.125 0 0 1-1.369-.49l-1.297-2.247a1.125 1.125 0 0 1 .26-1.431l1.004-.827c.292-.24.437-.613.43-.992a6.932 6.932 0 0 1 0-2.555c.007-.378-.138-.75-.43-.99l-1.004-.828a1.125 1.125 0 0 1-.26-1.43l1.297-2.247a1.125 1.125 0 0 1 1.37-.491l1.216.456c.356.133.751.072 1.076-.124.072-.044.146-.087.22-.128.332-.183.582-.495.644-.869l.214-1.281Z" /><path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z" /></svg>
+                            布置场景
+                        </button>
+
+                        <button onClick={() => { setShowMenu(false); setShowVoiceLangPicker(false); setShowExitModal(true); }} className="h-9 px-3.5 rounded-full flex items-center gap-2 text-xs font-bold border shadow-lg active:scale-95 transition-all bg-red-500/70 backdrop-blur-md border-white/20 text-white hover:bg-red-600">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 9V5.25A2.25 2.25 0 0 0 13.5 3h-6a2.25 2.25 0 0 0-2.25 2.25v13.5A2.25 2.25 0 0 0 7.5 21h6a2.25 2.25 0 0 0 2.25-2.25V15M12 9l-3 3m0 0 3 3m-3-3h12.75" /></svg>
+                            离开
+                        </button>
+                    </div>
                 )}
-                <button onClick={() => setShowExitModal(true)} className="bg-red-500/80 backdrop-blur-md text-white px-4 h-10 rounded-full flex items-center justify-center gap-1 border border-white/20 hover:bg-red-600 transition-colors shadow-lg active:scale-95">
-                    <span className="text-xs font-bold mr-1">离开</span>
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-4 h-4"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 9V5.25A2.25 2.25 0 0 0 13.5 3h-6a2.25 2.25 0 0 0-2.25 2.25v13.5A2.25 2.25 0 0 0 7.5 21h6a2.25 2.25 0 0 0 2.25-2.25V15M12 9l-3 3m0 0 3 3m-3-3h12.75" /></svg>
-                </button>
             </div>
+
+            {/* 观测协议 OBSERVE — 立绘模式悬浮 HUD（左上角，独立查看可放大） */}
+            {observeEnabled && !isNovelMode && hasObservation(observation) && (
+                <div className="absolute top-0 left-0 p-4 pt-12 z-[90] pointer-events-none">
+                    <div className="pointer-events-auto">
+                        <ObserveHUD observation={observation!} variant="hud" charName={char.name} config={char.dateObserve} />
+                    </div>
+                </div>
+            )}
 
             {/* Novel Mode View */}
             {isNovelMode && (
-                <div ref={novelScrollRef} className={`absolute inset-0 z-20 overflow-y-auto no-scrollbar pt-24 pb-32 px-8 mask-image-gradient overscroll-contain ${char.dateLightReading ? 'bg-[#faf8f5]' : 'bg-black/90 backdrop-blur-sm'}`} onClick={(e) => { e.stopPropagation(); setShowInputBox(true); }}>
+                <div ref={novelScrollRef} className={`absolute inset-0 z-20 overflow-y-auto no-scrollbar pt-24 pb-32 px-8 mask-image-gradient overscroll-contain ${char.dateLightReading ? 'bg-[#faf8f5]' : 'bg-black/90 backdrop-blur-sm'}`} onClick={(e) => { e.stopPropagation(); if (showMenu) { setShowMenu(false); setShowVoiceLangPicker(false); return; } setShowInputBox(true); }}>
                     <div className="min-h-full flex flex-col justify-end">
                         <div className="max-w-2xl mx-auto animate-fade-in space-y-6">
                             {isBatchSelectMode && (
                                 <div className="sticky top-0 z-20 flex items-center justify-between bg-white/90 border border-stone-200 rounded-xl px-3 py-2 text-xs text-stone-700">
                                     <span>已选 {selectedMsgIds.size} 条</span>
-                                    <button
-                                        onClick={(e) => { e.stopPropagation(); handleBatchDelete(); }}
-                                        disabled={selectedMsgIds.size === 0}
-                                        className="px-3 py-1 rounded-full bg-red-500 text-white disabled:opacity-40"
-                                    >删除</button>
+                                    <div className="flex gap-2">
+                                        <button
+                                            onClick={(e) => { e.stopPropagation(); exitBatchMode(); }}
+                                            className="px-3 py-1 rounded-full bg-stone-200 text-stone-600"
+                                        >完成</button>
+                                        <button
+                                            onClick={(e) => { e.stopPropagation(); handleBatchDelete(); }}
+                                            disabled={selectedMsgIds.size === 0}
+                                            className="px-3 py-1 rounded-full bg-red-500 text-white disabled:opacity-40"
+                                        >删除</button>
+                                    </div>
                                 </div>
                             )}
-                            {sessionMessages.length === 0 && peekStatus && (
-                                <div className={`italic text-center text-sm mb-8 px-4 ${char.dateLightReading ? 'text-stone-400' : 'text-slate-200/50'}`}>
-                                    {cleanTextForDisplay(peekStatus).split('\n').map((line, idx) => line.trim() && <p key={idx} className="whitespace-pre-wrap leading-relaxed tracking-wide my-2">{line}</p>)}
-                                </div>
-                            )}
+                            {sessionMessages.length === 0 && peekStatus && (() => {
+                                const { observation: peekObs, rest: peekBody } = extractObservation(peekStatus, { lenient: observeEnabled, custom: char.dateObserve?.custom });
+                                return (
+                                    <>
+                                        {observeEnabled && hasObservation(peekObs) && (
+                                            <div className="max-w-md mx-auto mb-6"><ObserveHUD observation={peekObs} variant="card" charName={char.name} config={char.dateObserve} /></div>
+                                        )}
+                                        <div className={`italic text-center text-sm mb-8 px-4 ${char.dateLightReading ? 'text-stone-400' : 'text-slate-200/50'}`}>
+                                            {cleanTextForDisplay(peekBody).split('\n').map((line, idx) => line.trim() && <p key={idx} className="whitespace-pre-wrap leading-relaxed tracking-wide my-2">{line}</p>)}
+                                        </div>
+                                    </>
+                                );
+                            })()}
                             {sessionMessages.map((msg) => (
                                 <div
                                     key={msg.id}
@@ -738,9 +874,15 @@ const DateSession: React.FC<DateSessionProps> = ({
                                     )}
                                     {msg.role === 'user' ? (
                                         <p className={`whitespace-pre-wrap font-serif text-[16px] text-right leading-loose tracking-wide italic pr-4 ${char.dateLightReading ? 'text-stone-400 border-r-2 border-stone-300/50' : 'text-slate-400 border-r-2 border-slate-600/50'}`}>{cleanTextForDisplay(msg.content)} <span className="text-[10px] uppercase font-sans not-italic ml-2 opacity-50">{userProfile.name}</span></p>
-                                    ) : (
+                                    ) : (() => {
+                                        // 观测协议：从这条回复里剥出观测块，正文上方渲染独立卡片，正文本身不显示块文本
+                                        const { observation: msgObs, rest: msgBody } = extractObservation(msg.content || '', { lenient: observeEnabled, custom: char.dateObserve?.custom });
+                                        return (
                                         <div>
-                                            {(msg.content || '').split('\n').map((line, idx) => {
+                                            {observeEnabled && hasObservation(msgObs) && (
+                                                <ObserveHUD observation={msgObs} variant="card" charName={char.name} config={char.dateObserve} />
+                                            )}
+                                            {(msgBody || '').split('\n').map((line, idx) => {
                                                 const cleanLine = cleanTextForDisplay(line);
                                                 if (!cleanLine) return null;
                                                 const lineIsDialogue = isDialogueLine(line);
@@ -752,7 +894,7 @@ const DateSession: React.FC<DateSessionProps> = ({
                                                         {/* Voice button: only for dialogue lines, not opening */}
                                                         {voiceEnabled && lineIsDialogue && !isOpeningMsg && (
                                                             <button
-                                                                onClick={(e) => { e.stopPropagation(); handleNovelLinePlay(lineKey, extractDialogueText(line)); }}
+                                                                onClick={(e) => { e.stopPropagation(); const { voiceEmotion: lineVoiceEmotion, rest: lineRest } = extractVoiceEmotionTag(line); handleNovelLinePlay(lineKey, extractDialogueText(lineRest), lineVoiceEmotion); }}
                                                                 className={`shrink-0 mt-2 w-7 h-7 rounded-full flex items-center justify-center transition-all active:scale-90 select-none ${
                                                                     novelPlayingId === lineKey
                                                                         ? (char.dateLightReading ? 'bg-emerald-100 text-emerald-600' : 'bg-emerald-500/20 text-emerald-300')
@@ -772,7 +914,7 @@ const DateSession: React.FC<DateSessionProps> = ({
                                                 );
                                             })}
                                         </div>
-                                    )}
+                                        ); })()}
                                 </div>
                             ))}
                         </div>

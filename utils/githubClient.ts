@@ -21,8 +21,8 @@
 import { Capacitor, CapacitorHttp } from '@capacitor/core';
 
 import { CloudBackupConfig, CloudBackupFile } from '../types';
+import { getProxyWorkerUrl } from './proxyWorker';
 
-const WORKER_URL = 'https://sullymeow.ccwu.cc';
 const API_HOST = 'https://api.github.com';
 const UPLOAD_HOST = 'https://uploads.github.com';
 const DEFAULT_REPO = 'sully-backup';
@@ -70,7 +70,7 @@ const useProxy = (config: CloudBackupConfig): boolean =>
     config.githubUseProxy !== false;
 
 const proxify = (url: string): string =>
-    `${WORKER_URL}/github?url=${encodeURIComponent(url)}`;
+    `${getProxyWorkerUrl()}/github?url=${encodeURIComponent(url)}`;
 
 const authHeaders = (token: string, extra: Record<string, string> = {}): Record<string, string> => ({
     Authorization: `Bearer ${token}`,

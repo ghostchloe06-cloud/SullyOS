@@ -663,9 +663,11 @@ export const extractNotesFromMcpData = (data: any): any[] => {
 
 export const normalizeNote = (n: any): { noteId: string; title: string; desc: string; author: string; authorId: string; likes: number; xsecToken?: string; coverUrl?: string; type?: string } => {
     const card = n.noteCard || n.notecard;
-    const coverObj = card?.cover || n.cover;
+    // 封面：cover 对象 / 字符串，或笔记图片列表首图（feed detail 返回 image_list）。
+    const coverObj = card?.cover || n.cover || n.image_list?.[0] || card?.image_list?.[0];
     const rawCoverUrl = typeof coverObj === 'string' ? coverObj
-        : coverObj?.urlDefault || coverObj?.url_default || coverObj?.url || coverObj?.urlPre || undefined;
+        : coverObj?.urlDefault || coverObj?.url_default || coverObj?.url || coverObj?.urlPre
+        || coverObj?.info_list?.[0]?.url || undefined;
     const coverUrl = rawCoverUrl?.replace(/^http:\/\//, 'https://');
     // 点赞数：支持 interactInfo.likedCount (profile notes) 和 interact_info.liked_count (search results)
     const likesRaw = n.likes || n.liked_count

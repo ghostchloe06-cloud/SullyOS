@@ -159,7 +159,7 @@ const PixelCharEditor: React.FC<Props> = ({ initial, target = 'char', targetLabe
   const canvasH = ASSET_SIZE.h * PAINT_SCALE;
 
   return (
-    <div className="h-full overflow-y-auto px-4 py-4 space-y-3 no-scrollbar">
+    <div className="h-full overflow-y-auto px-4 pt-4 space-y-3 no-scrollbar" style={{ paddingBottom: 'calc(1rem + var(--safe-bottom, 0px))', boxSizing: 'border-box' }}>
       {targetLabel && (
         <div className="text-center text-[11px] text-slate-400">
           正在捏 <span className={target === 'user' ? 'text-emerald-300 font-bold' : 'text-violet-300 font-bold'}>{targetLabel}</span>

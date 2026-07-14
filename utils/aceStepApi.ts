@@ -15,10 +15,13 @@
 import { SongSheet, SongLine, APIConfig, CharacterProfile } from '../types';
 import { SONG_GENRES, SONG_MOODS } from './songPrompts';
 import { DB } from './db';
+import { getProxyWorkerUrl } from './proxyWorker';
 
 // ── Endpoint config ──
-// Same Cloudflare Worker domain that hosts /netease, /xhs, /webdav etc.
-const WORKER_BASE = 'https://sullymeow.ccwu.cc';
+// Same Cloudflare Worker that hosts /netease, /xhs, /webdav etc. — address comes
+// from the central config (utils/proxyWorker.ts); users can point it at their own
+// self-hosted worker via 「设置 → 网络代理 (Worker)」.
+const workerBase = (): string => getProxyWorkerUrl();
 // Replicate model slug. Using the model-prediction endpoint means we always
 // pick up the latest published version automatically — no manual pinning.
 const MODEL_OWNER = 'lucataco';
@@ -458,7 +461,7 @@ async function resolveModelVersion(authHeader: string, signal?: AbortSignal): Pr
     }
   } catch { /* ignore — refetch */ }
 
-  const res = await fetch(`${WORKER_BASE}/replicate/models/${MODEL_OWNER}/${MODEL_NAME}`, {
+  const res = await fetch(`${workerBase()}/replicate/models/${MODEL_OWNER}/${MODEL_NAME}`, {
     method: 'GET',
     headers: { 'Authorization': authHeader },
     signal,
@@ -538,7 +541,7 @@ export async function synthesizeSong(
     },
   };
 
-  const startRes = await fetch(`${WORKER_BASE}/replicate/predictions`, {
+  const startRes = await fetch(`${workerBase()}/replicate/predictions`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -574,7 +577,7 @@ export async function synthesizeSong(
     await sleep(interval, signal);
     interval = Math.min(interval + 500, POLL_INTERVAL_MAX_MS);
 
-    const pollRes = await fetch(`${WORKER_BASE}/replicate/predictions/${encodeURIComponent(predictionId)}`, {
+    const pollRes = await fetch(`${workerBase()}/replicate/predictions/${encodeURIComponent(predictionId)}`, {
       method: 'GET',
       headers: { 'Authorization': authHeader },
       signal,
@@ -608,7 +611,7 @@ export async function synthesizeSong(
   // ── 3. Download the produced audio through the worker ──
   onStatus?.('downloading');
   checkAbort(signal);
-  const fileRes = await fetch(`${WORKER_BASE}/replicate/file?url=${encodeURIComponent(outputUrl)}`, {
+  const fileRes = await fetch(`${workerBase()}/replicate/file?url=${encodeURIComponent(outputUrl)}`, {
     method: 'GET',
     signal,
   });

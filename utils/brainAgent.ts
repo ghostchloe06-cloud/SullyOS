@@ -205,7 +205,7 @@ export class BrainAgent {
 
 【示例】
 用户: "Noir你好呀"
-输出: {"needBrain":false,"reply":"嘿嘿，条条你好呀~今天想我了吗？💜"}
+输出: {"needBrain":false,"reply":"嘿嘿，你好呀~今天想我了吗？💜"}
 
 用户: "帮我看看D盘有什么"
 输出: {"needBrain":true,"reply":"好嘞，我去帮你看看D盘里藏着什么~","task":{"type":"file","action":"list","params":{"path":"D:/","recursive":false}}}

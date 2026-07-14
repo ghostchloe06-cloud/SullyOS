@@ -62,6 +62,19 @@ describe('sanitizeForNotification', () => {
       .toBe('abc');
   });
 
+  it('A5b 模仿历史渲染的引用头 [xx引用了xx「…」，并回复了 ↓] 也剥', () => {
+    expect(sanitizeForNotification('[我引用了你说的「昨晚那句话」，并回复了 ↓]\n好啦我错了'))
+      .toBe('好啦我错了');
+    expect(sanitizeForNotification('[用户引用了你之前说的「截断的摘要…」，并回复了 ↓] 嗯'))
+      .toBe('嗯');
+    // 非引用格式的普通方括号不误伤
+    expect(sanitizeForNotification('我看了[那本书]感觉一般'))
+      .toBe('我看了[那本书]感觉一般');
+    // 缺闭合 」 的畸形引用头不跨行吞掉后续正文段落
+    expect(sanitizeForNotification('[我引用了你说的「没有闭合\n第一行正文\n第二行正文'))
+      .toBe('[我引用了你说的「没有闭合\n第一行正文\n第二行正文');
+  });
+
   it('A6 backtick 三变体', () => {
     expect(sanitizeForNotification('a `[[X:1]]` b `` c ` d'))
       .toBe('a [[X:1]] b  c  d');
@@ -354,6 +367,13 @@ describe('sanitizeIntoSegments', () => {
     const segs = sanitizeIntoSegments('<语音>Hello world</语音>');
     expect(segs).toEqual([
       { raw: '<语音>Hello world</语音>', sanitized: 'Hello world' },
+    ]);
+  });
+
+  it('<语音 emotion="…"> 带情绪属性也整块保留 + banner 取内部文字', () => {
+    const segs = sanitizeIntoSegments('<语音 emotion="sad">Hello world</语音>');
+    expect(segs).toEqual([
+      { raw: '<语音 emotion="sad">Hello world</语音>', sanitized: 'Hello world' },
     ]);
   });
 

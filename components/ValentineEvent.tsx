@@ -27,12 +27,12 @@ import { injectMemoryPalace } from '../utils/memoryPalace/pipeline';
 // 情人节立绘 Sprite 映射 (占位 emoji，等图片整理好后替换为图床URL)
 // ============================================================
 const VALENTINE_SPRITES: Record<string, string> = {
-    happy:   'https://sharkpan.xyz/f/m3adhW/Vha.png',
-    sad:     'https://sharkpan.xyz/f/BZgDfa/Vsad.png',
-    normal:  'https://sharkpan.xyz/f/4rzdtj/VNormal.png',
-    angry:   'https://sharkpan.xyz/f/NdlVfv/VAn.png',
-    shy:     'https://sharkpan.xyz/f/VyontY/Vshy.png',
-    love:    'https://sharkpan.xyz/f/xl8muX/VBl.png',
+    happy:   'https://cdn.jsdelivr.net/gh/qegj567-cloud/SullyOS-assets@main/bgm/SULLY/Vha.png',
+    sad:     'https://cdn.jsdelivr.net/gh/qegj567-cloud/SullyOS-assets@main/bgm/SULLY/Vsad.png',
+    normal:  'https://cdn.jsdelivr.net/gh/qegj567-cloud/SullyOS-assets@main/bgm/SULLY/VNormal.png',
+    angry:   'https://cdn.jsdelivr.net/gh/qegj567-cloud/SullyOS-assets@main/bgm/SULLY/VAn.png',
+    shy:     'https://cdn.jsdelivr.net/gh/qegj567-cloud/SullyOS-assets@main/bgm/SULLY/Vshy.png',
+    love:    'https://cdn.jsdelivr.net/gh/qegj567-cloud/SullyOS-assets@main/bgm/SULLY/VBl.png',
 };
 
 // localStorage keys
@@ -703,7 +703,9 @@ export const ValentineSession: React.FC<ValentineSessionProps> = ({ charId, onCl
     if (phase === 'select') {
         return (
             <div className="fixed inset-0 z-[9997] bg-gradient-to-b from-pink-50 via-white to-rose-50 flex flex-col animate-fade-in">
-                <div className="h-16 flex items-center justify-between px-4 border-b border-pink-100 bg-white/80 backdrop-blur-sm shrink-0">
+                {/* 顶栏 in-flow 自吃 safe-top（不给外壳整体加 padding，避免渐变背景被挤出上下色块） */}
+                <div className="h-16 flex items-center justify-between px-4 border-b border-pink-100 bg-white/80 backdrop-blur-sm shrink-0"
+                    style={{ paddingTop: 'var(--safe-top)', boxSizing: 'content-box' }}>
                     <button onClick={onClose} className="p-2 -ml-2 rounded-full hover:bg-pink-50">
                         <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6 text-slate-600"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
                     </button>
@@ -711,7 +713,7 @@ export const ValentineSession: React.FC<ValentineSessionProps> = ({ charId, onCl
                     <div className="w-8" />
                 </div>
 
-                <div className="flex-1 overflow-y-auto p-6">
+                <div className="flex-1 overflow-y-auto p-6" style={{ paddingBottom: 'calc(1.5rem + var(--safe-bottom))' }}>
                     <div className="text-center mb-6">
                         <div className="text-4xl mb-2">💝</div>
                         <h2 className="text-lg font-bold text-slate-700">选择你想听谁说</h2>
@@ -856,7 +858,10 @@ export const ValentineSession: React.FC<ValentineSessionProps> = ({ charId, onCl
     const isFinished = isLastLine && !isAnimating;
 
     return (
-        <div className="fixed inset-0 z-[9997] bg-black overflow-hidden select-none" onClick={handleScreenClick}>
+        <div
+            className="fixed inset-0 z-[9997] bg-black overflow-hidden select-none"
+            onClick={handleScreenClick}
+        >
             {/* 背景 */}
             <div className="absolute inset-0 bg-gradient-to-b from-[#1a0a1e] via-[#0d0a1a] to-[#0a0510] opacity-90" />
 
@@ -1434,12 +1439,14 @@ export const SpecialMomentsApp: React.FC = () => {
     return (
         <div className="h-full w-full bg-gradient-to-b from-pink-50 via-white to-rose-50 flex flex-col font-light">
             {/* Header */}
-            <div className="h-16 flex items-center justify-between px-4 border-b border-pink-100 bg-white/80 backdrop-blur-sm shrink-0">
-                <button onClick={closeApp} className="p-2 -ml-2 rounded-full hover:bg-pink-50">
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6 text-slate-600"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
-                </button>
-                <span className="font-bold text-slate-700">特别时光</span>
-                <div className="w-8" />
+            <div className="border-b border-pink-100 bg-white/80 backdrop-blur-sm shrink-0" style={{ paddingTop: 'var(--safe-top)' }}>
+                <div className="h-16 flex items-center justify-between px-4">
+                    <button onClick={closeApp} className="p-2 -ml-2 rounded-full hover:bg-pink-50">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6 text-slate-600"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
+                    </button>
+                    <span className="font-bold text-slate-700">特别时光</span>
+                    <div className="w-8" />
+                </div>
             </div>
 
             {/* Content */}

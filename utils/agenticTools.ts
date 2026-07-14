@@ -46,10 +46,9 @@ export function resolveXhsConfig(char: CharacterProfile, realtimeConfig?: Realti
     const loggedInNickname = mcpConfig?.loggedInNickname;
     const userXsecToken = mcpConfig?.userXsecToken;
 
-    if (char.xhsEnabled !== undefined) {
-        return { enabled: !!char.xhsEnabled && mcpAvailable, mcpUrl, loggedInUserId, loggedInNickname, userXsecToken };
-    }
-    return { enabled: !!(realtimeConfig?.xhsEnabled) && mcpAvailable, mcpUrl, loggedInUserId, loggedInNickname, userXsecToken };
+    // 必须由角色自己的开关显式打开（UI 默认关闭）；不回退到全局 realtimeConfig.xhsEnabled，
+    // 与 chatPrompts.ts 的提示词注入门控保持一致。
+    return { enabled: !!char.xhsEnabled && mcpAvailable, mcpUrl, loggedInUserId, loggedInNickname, userXsecToken };
 }
 
 export interface AgenticToolCtx {

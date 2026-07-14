@@ -7,10 +7,11 @@ import ConfirmDialog from '../components/os/ConfirmDialog';
 import { processImage } from '../utils/file';
 import { NOVEL_THEMES, analyzeWriterPersonaSimple } from '../utils/novelUtils';
 import NovelWriter from '../components/novel/NovelWriter';
+import { CharacterGroupFilterBar, filterCharactersByGroup, GROUP_FILTER_ALL } from '../components/character/CharacterGroupFilter';
 import { Robot, MaskHappy, PenNib, Books, FolderOpen } from '@phosphor-icons/react';
 
 const NovelApp: React.FC = () => {
-    const { closeApp, novels, addNovel, updateNovel, deleteNovel, characters, updateCharacter, apiConfig, addToast, userProfile, worldbooks } = useOS();
+    const { closeApp, novels, addNovel, updateNovel, deleteNovel, characters, updateCharacter, apiConfig, addToast, userProfile, worldbooks, characterGroups } = useOS();
     
     // Navigation State
     const [view, setView] = useState<'shelf' | 'create' | 'write' | 'settings' | 'library'>('shelf');
@@ -23,6 +24,7 @@ const NovelApp: React.FC = () => {
     const [tempSummary, setTempSummary] = useState('');
     const [tempWorld, setTempWorld] = useState('');
     const [selectedCollaborators, setSelectedCollaborators] = useState<Set<string>>(new Set());
+    const [collabGroupId, setCollabGroupId] = useState(GROUP_FILTER_ALL); // 共创者选择的分组筛选
     const [tempProtagonists, setTempProtagonists] = useState<NovelProtagonist[]>([]);
     
     // Cover Image State
@@ -44,6 +46,7 @@ const NovelApp: React.FC = () => {
     // Persona View Modal State
     const [showPersonaModal, setShowPersonaModal] = useState(false);
     const [libraryPersonaChar, setLibraryPersonaChar] = useState<CharacterProfile | null>(null);
+    const [libraryGroupId, setLibraryGroupId] = useState(GROUP_FILTER_ALL); // 角色库的分组筛选
 
     // Dialog
     const [confirmDialog, setConfirmDialog] = useState<{ isOpen: boolean; title: string; message: string; variant: 'danger' | 'warning' | 'info'; confirmText?: string; onConfirm: () => void; } | null>(null);
@@ -196,7 +199,8 @@ const NovelApp: React.FC = () => {
     if (view === 'library') {
         return (
             <div className="h-full w-full bg-slate-50 flex flex-col font-sans">
-                <div className="h-20 bg-white/80 backdrop-blur-md flex items-end pb-3 px-6 border-b border-slate-200 shrink-0 sticky top-0 z-20">
+                <div className="bg-white/80 backdrop-blur-md border-b border-slate-200 shrink-0 sticky top-0 z-20" style={{ paddingTop: 'var(--safe-top)' }}>
+                    <div className="flex items-center px-6 py-3">
                     <div className="flex justify-between items-center w-full">
                         <button onClick={() => setView('shelf')} className="p-2 -ml-2 rounded-full hover:bg-slate-100 active:scale-90 transition-transform">
                             <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6 text-slate-600"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg>
@@ -204,13 +208,16 @@ const NovelApp: React.FC = () => {
                         <span className="font-bold text-slate-800 text-lg tracking-wide">角色库</span>
                         <div className="w-8"></div>
                     </div>
+                    </div>
                 </div>
 
                 <div className="flex-1 overflow-y-auto p-6 space-y-8 no-scrollbar">
                     <section>
                         <h3 className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-4 flex items-center gap-2"><Robot size={14} /> 系统角色 (AI Collaborators)</h3>
+                        {/* 分组筛选（没建分组时不渲染） */}
+                        <CharacterGroupFilterBar characters={characters} groups={characterGroups} value={libraryGroupId} onChange={setLibraryGroupId} className="mb-4" />
                         <div className="grid grid-cols-2 gap-4">
-                            {characters.map(c => (
+                            {filterCharactersByGroup(characters, characterGroups, libraryGroupId).map(c => (
                                 <div key={c.id} onClick={() => { setLibraryPersonaChar(c); setShowPersonaModal(true); }} className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 flex flex-col items-center gap-3 cursor-pointer hover:shadow-md transition-all active:scale-95">
                                     <img src={c.avatar} className="w-16 h-16 rounded-full object-cover border-2 border-slate-50" />
                                     <div className="text-center"><div className="font-bold text-slate-700 text-sm">{c.name}</div><div className="text-[10px] text-slate-400 mt-1 px-2 py-0.5 bg-slate-50 rounded-full">共创者</div></div>
@@ -238,12 +245,14 @@ const NovelApp: React.FC = () => {
         return (
             <div className="h-full w-full bg-slate-50 flex flex-col font-sans relative">
                 <ConfirmDialog isOpen={!!confirmDialog} title={confirmDialog?.title || ''} message={confirmDialog?.message || ''} variant={confirmDialog?.variant} confirmText={confirmDialog?.confirmText || (confirmDialog?.onConfirm ? '确认' : 'OK')} onConfirm={confirmDialog?.onConfirm || (() => setConfirmDialog(null))} onCancel={() => setConfirmDialog(null)} />
-                <div className="h-24 flex items-end justify-between px-6 pb-6 bg-white/80 backdrop-blur-md z-20 shrink-0 border-b border-slate-100">
+                <div className="bg-white/80 backdrop-blur-md z-20 shrink-0 border-b border-slate-100" style={{ paddingTop: 'var(--safe-top)' }}>
+                    <div className="flex items-center justify-between px-6 py-3">
                     <button onClick={closeApp} className="p-3 -ml-3 rounded-full hover:bg-slate-100 active:scale-95 transition-all"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6 text-slate-600"><path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" /></svg></button>
                     <span className="font-black text-2xl text-slate-800 tracking-tight">我的手稿</span>
                     <div className="flex gap-2">
                         <button onClick={() => setView('library')} className="w-10 h-10 bg-white text-slate-600 border border-slate-200 rounded-full flex items-center justify-center shadow-sm active:scale-95 transition-transform hover:bg-slate-50"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M15 19.128a9.38 9.38 0 0 0 2.625.372 9.337 9.337 0 0 0 4.121-.952 4.125 4.125 0 0 0-7.533-2.493M15 19.128v-.003c0-1.113-.285-2.16-.786-3.07M15 19.128v.106A12.318 12.318 0 0 1 8.624 21c-2.331 0-4.512-.645-6.374-1.766l-.001-.109a6.375 6.375 0 0 1 11.964-3.07M12 6.375a3.375 3.375 0 1 1-6.75 0 3.375 3.375 0 0 1 6.75 0Zm8.25 2.25a2.625 2.625 0 1 1-5.25 0 2.625 2.625 0 0 1 5.25 0Z" /></svg></button>
                         <button onClick={() => { setView('create'); resetTempState(); }} className="w-10 h-10 bg-slate-900 text-white rounded-full flex items-center justify-center shadow-lg active:scale-95 transition-transform hover:bg-black"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-5 h-5"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg></button>
+                    </div>
                     </div>
                 </div>
                 <div className="p-6 grid grid-cols-2 gap-5 overflow-y-auto pb-24">
@@ -276,10 +285,12 @@ const NovelApp: React.FC = () => {
         return (
             <div className="h-full w-full bg-slate-50 flex flex-col font-sans relative">
                 <ConfirmDialog isOpen={!!confirmDialog} title={confirmDialog?.title || ''} message={confirmDialog?.message || ''} variant={confirmDialog?.variant} confirmText={confirmDialog?.confirmText || (confirmDialog?.onConfirm ? '确认' : 'OK')} onConfirm={confirmDialog?.onConfirm || (() => setConfirmDialog(null))} onCancel={() => setConfirmDialog(null)} />
-                <div className="h-16 flex items-center justify-between px-4 bg-white border-b border-slate-200 shrink-0 sticky top-0 z-20">
+                <div className="bg-white border-b border-slate-200 shrink-0 sticky top-0 z-20" style={{ paddingTop: 'var(--safe-top)' }}>
+                    <div className="h-16 flex items-center justify-between px-4">
                     <button onClick={() => setView(view === 'create' ? 'shelf' : 'write')} className="text-slate-500 text-sm">取消</button>
                     <span className="font-bold text-slate-800">{view === 'create' ? '新建书稿' : '小说设定'}</span>
                     <button onClick={view === 'create' ? handleCreateBook : handleSaveSettings} className="bg-slate-800 text-white px-4 py-1.5 rounded-full text-xs font-bold shadow-md active:scale-95 transition-transform">保存</button>
+                    </div>
                 </div>
                 <div className="flex-1 overflow-y-auto p-6 space-y-8 pb-20">
                     <section className="space-y-4">
@@ -304,7 +315,9 @@ const NovelApp: React.FC = () => {
                     </section>
                     <section className="space-y-4">
                         <label className="text-xs font-bold text-slate-400 uppercase block">共创者</label>
-                        <div className="flex gap-3 overflow-x-auto pb-2 no-scrollbar">{characters.map(c => (<div key={c.id} onClick={() => { const s = new Set(selectedCollaborators); if(s.has(c.id)) s.delete(c.id); else s.add(c.id); setSelectedCollaborators(s); }} className={`flex flex-col items-center gap-2 cursor-pointer transition-opacity ${selectedCollaborators.has(c.id) ? 'opacity-100' : 'opacity-50 grayscale'}`}><img src={c.avatar} className="w-12 h-12 rounded-full object-cover shadow-sm" /><span className="text-[10px] font-bold text-slate-600">{c.name}</span></div>))}</div>
+                        {/* 分组筛选（没建分组时不渲染）：只影响可选项的显示，不影响已勾选共创者 */}
+                        <CharacterGroupFilterBar characters={characters} groups={characterGroups} value={collabGroupId} onChange={setCollabGroupId} />
+                        <div className="flex gap-3 overflow-x-auto pb-2 no-scrollbar">{filterCharactersByGroup(characters, characterGroups, collabGroupId).map(c => (<div key={c.id} onClick={() => { const s = new Set(selectedCollaborators); if(s.has(c.id)) s.delete(c.id); else s.add(c.id); setSelectedCollaborators(s); }} className={`flex flex-col items-center gap-2 cursor-pointer transition-opacity ${selectedCollaborators.has(c.id) ? 'opacity-100' : 'opacity-50 grayscale'}`}><img src={c.avatar} className="w-12 h-12 rounded-full object-cover shadow-sm" /><span className="text-[10px] font-bold text-slate-600">{c.name}</span></div>))}</div>
                     </section>
                     <section className="space-y-4">
                         <div className="flex justify-between items-center"><label className="text-xs font-bold text-slate-400 uppercase">剧中人</label><div className="flex gap-2"><button onClick={() => setIsProtoImportOpen(true)} className="text-[10px] bg-indigo-50 text-indigo-600 px-2 py-1 rounded font-bold hover:bg-indigo-100 border border-indigo-100 flex items-center gap-1"><FolderOpen size={12} /> 导入</button><button onClick={() => openProtagonistEdit()} className="text-[10px] bg-slate-100 px-2 py-1 rounded text-slate-600 hover:bg-slate-200 transition-colors">+ 添加</button></div></div>

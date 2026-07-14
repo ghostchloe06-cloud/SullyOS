@@ -227,27 +227,29 @@ const XhsStockApp: React.FC = () => {
             />
 
             {/* Header */}
-            <div className="h-14 bg-white/80 backdrop-blur-xl flex items-center px-4 border-b border-slate-100/60 shrink-0 z-10">
-                <button onClick={view === 'add' ? () => setView('list') : closeApp} className="p-2 -ml-2 rounded-full hover:bg-black/5 active:scale-90 transition-transform">
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6 text-slate-600">
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" />
-                    </svg>
-                </button>
-                <h1 className="text-lg font-semibold text-slate-800 ml-2 tracking-tight">
-                    {view === 'add' ? '添加图片' : '小红书图库'}
-                </h1>
-                <span className="text-xs text-slate-400 ml-2 font-mono">{images.length}</span>
-                <div className="flex-1" />
-                {view === 'list' && (
-                    <button
-                        onClick={() => setView('add')}
-                        className="w-9 h-9 rounded-full bg-red-500 text-white flex items-center justify-center shadow-md active:scale-90 transition-transform"
-                    >
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-5 h-5">
-                            <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+            <div className="bg-white/80 backdrop-blur-xl border-b border-slate-100/60 shrink-0 z-10" style={{ paddingTop: 'var(--safe-top)' }}>
+                <div className="h-14 flex items-center px-4">
+                    <button onClick={view === 'add' ? () => setView('list') : closeApp} className="p-2 -ml-2 rounded-full hover:bg-black/5 active:scale-90 transition-transform">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-6 h-6 text-slate-600">
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 19.5 8.25 12l7.5-7.5" />
                         </svg>
                     </button>
-                )}
+                    <h1 className="text-lg font-semibold text-slate-800 ml-2 tracking-tight">
+                        {view === 'add' ? '添加图片' : '小红书图库'}
+                    </h1>
+                    <span className="text-xs text-slate-400 ml-2 font-mono">{images.length}</span>
+                    <div className="flex-1" />
+                    {view === 'list' && (
+                        <button
+                            onClick={() => setView('add')}
+                            className="w-9 h-9 rounded-full bg-red-500 text-white flex items-center justify-center shadow-md active:scale-90 transition-transform"
+                        >
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2.5} stroke="currentColor" className="w-5 h-5">
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+                            </svg>
+                        </button>
+                    )}
+                </div>
             </div>
 
             {view === 'add' ? renderAddForm() : renderList()}
