@@ -751,7 +751,13 @@ export const useChatAI = ({
                     ? char.emotionConfig!.api!
                     : { baseUrl: apiConfig.baseUrl, apiKey: apiConfig.apiKey, model: apiConfig.model })
                 : null;
-            if (emotionEvalEnabled && !instantOn && emotionApi) {
+            // 本地路径的情绪评估不再在这里立刻发射，改为「主回复响应到达后」再发（见下方
+            // API call 之后的 fireLocalEmotionEval 调用点）。原因（2026-07 实测日志）：
+            // 便宜中转普遍按 key 串行/低并发，评估这个同样几万 token 的大请求若先入队，
+            // 主回复会被压后整整一个评估时长（headers 从 ~10s 恶化到 34s，评估恰好跑了 30s）。
+            // 评估结果本来就只作用于下一轮，晚发不损失任何质量，只是 buff 徽标晚亮几十秒。
+            // instant 模式不受影响：worker 端本来就是主回复跑完才跑评估（天然串行）。
+            const fireLocalEmotionEval = (emotionEvalEnabled && !instantOn && emotionApi) ? () => {
                 setEmotionStatus('evaluating');
                 evaluateEmotionBackground(charForGen, userProfile, systemPrompt, cleanedApiMessages, emotionApi)
                     .then((innerState) => {
@@ -760,7 +766,7 @@ export const useChatAI = ({
                     .finally(() => {
                         setEmotionStatus('');
                     });
-            }
+            } : null;
             const instantEmotionEval = (emotionEvalEnabled && instantOn && emotionApi)
                 ? {
                     // includeContext=false: 不嵌 system prompt + 对话历史 (worker 复用本次请求的 messages 作前文),
@@ -967,6 +973,10 @@ export const useChatAI = ({
             }
             console.log(`⏱ [API call] ${Math.round(performance.now() - apiT0)}ms`);
             updateTokenUsage(data, historyMsgCount, 'initial');
+
+            // 主回复已到手 → 现在才发情绪评估，不和主回复抢中转的并发位（见上方定义处注释）。
+            // 评估输入不含本轮新回复（与旧行为一致），只是发射时机后移。
+            fireLocalEmotionEval?.();
 
             // MCP 多阶段展示：工具前的角色文字先落库，最终工具结果回复仍走统一后处理。
             const displayedMcpLeadIns = new Set<string>();
