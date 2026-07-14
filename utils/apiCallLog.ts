@@ -97,6 +97,19 @@ function hostOf(url: string): string {
     }
 }
 
+/**
+ * 模型名的"核心名"：剥掉渠道标签（[方括号]、(半角圆括号)、（全角圆括号））、
+ * 去空白、统一小写。用于判断「请求名 vs 后端自报名」是不是同一个模型——
+ * `(按次)gemini-3.1-pro-preview` 和 `gemini-3.1-pro-preview` 是同一个（只是渠道标签），
+ * `gemini-3.1-pro-preview` 和 `gemini-3.1-pro-preview-c` 才是真的换了后端。
+ */
+export function coreModelName(m: string): string {
+    return (m || '')
+        .replace(/\[[^\]]*\]|\([^)]*\)|（[^）]*）/g, '')
+        .replace(/\s+/g, '')
+        .toLowerCase();
+}
+
 /** 从请求体里抠出 model 字段（body 可能是 JSON 字符串或对象）。 */
 function extractModel(body: unknown): string {
     if (!body) return '';

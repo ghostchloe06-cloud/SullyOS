@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { scanSseForLog } from './apiCallLog';
+import { scanSseForLog, coreModelName } from './apiCallLog';
 
 // 锁住 API 调用记录的 SSE 兜底解析：流式响应 JSON.parse 必然失败，
 // 后端自报 model（首个非空）与 usage（末个非空）从 data: 行里扫出来。
@@ -27,5 +27,22 @@ describe('scanSseForLog', () => {
 
     it('非 SSE 文本返回空结果', () => {
         expect(scanSseForLog('{"model":"x"}')).toEqual({ model: undefined, usage: undefined });
+    });
+});
+
+describe('coreModelName 核心名归一化（实际后端琥珀判定用）', () => {
+    it('剥方括号/半角圆括号/全角圆括号渠道标签', () => {
+        expect(coreModelName('[千岛-自营]gemini-3.1-pro-preview')).toBe('gemini-3.1-pro-preview');
+        expect(coreModelName('(按次)gemini-3.1-pro-preview')).toBe('gemini-3.1-pro-preview');
+        expect(coreModelName('（官转）gemini-3.1-pro-preview')).toBe('gemini-3.1-pro-preview');
+    });
+
+    it('渠道标签不同但核心名相同 → 判定一致（不误报琥珀）', () => {
+        expect(coreModelName('(按次)gemini-3.1-pro-preview')).toBe(coreModelName('gemini-3.1-pro-preview'));
+        expect(coreModelName('[co假流]Gemini-3.1-Pro-Preview')).toBe(coreModelName('gemini-3.1-pro-preview'));
+    });
+
+    it('核心名真的不同（如 -c 后缀）→ 判定不一致（该报琥珀）', () => {
+        expect(coreModelName('[逆-V]gemini-3.1-pro-preview-c')).not.toBe(coreModelName('[千岛-自营]gemini-3.1-pro-preview'));
     });
 });

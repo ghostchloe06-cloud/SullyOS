@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import Modal from '../os/Modal';
 import { DB } from '../../utils/db';
+import { coreModelName } from '../../utils/apiCallLog';
 import type { ApiCallLogEntry } from '../../utils/apiCallLog';
 
 interface ApiCallLogModalProps {
@@ -104,7 +105,7 @@ const ApiCallLogModal: React.FC<ApiCallLogModalProps> = ({ isOpen, onClose }) =>
                         <span className="font-semibold">有可能</span>被换了便宜模型，但也可能只是站子标签没写整齐——别只凭这一行去定罪。
                     </p>
                     <p>
-                        <span className="font-semibold">⚪ 灰色</span>：名字基本一致，只是格式不同（比如少了 [渠道] 前缀）。正常。
+                        <span className="font-semibold">⚪ 灰色</span>：名字基本一致，只是格式不同（比如少了 [渠道]、(按次) 这类标签）。正常。
                     </p>
                     <p>
                         <span className="font-semibold">🫥 没有这一行</span>：最常见的情况。要么对面把你请求的名字<span className="font-semibold">原样抄了回来</span>（等于什么都没说），要么干脆没报。
@@ -178,21 +179,20 @@ const ApiCallLogModal: React.FC<ApiCallLogModalProps> = ({ isOpen, onClose }) =>
                                     <Field label="角色" value={e.charName} />
                                     <Field label="用途" value={e.purpose} />
                                     <div className="col-span-2">
-                                        <Field label="模型" value={e.model} mono />
+                                        {/* 模型/实际后端两行不截断（break-all 换行）：截断会把「为什么黄了」的
+                                            关键差异（后缀 -c、渠道标签）藏进省略号里，用户看着两行一样却标黄一头雾水 */}
+                                        <Field label="模型" value={e.model} mono wrap />
                                     </div>
-                                    {/* 后端自报身份（response.model）：字符串不同就展示；但只有剥掉「[渠道]」
-                                        前缀后核心模型名也对不上时才琥珀高亮——请求「[千岛-自营]X」自报「X」是
-                                        中转正常剥前缀（灰色），自报「[逆-V]X-c」才是真被换了后端（琥珀）。 */}
+                                    {/* 后端自报身份（response.model）：字符串不同就展示；但只有剥掉渠道标签
+                                        （[方括号]/（圆括号），见 coreModelName）后核心名也对不上时才琥珀高亮——
+                                        请求「(按次)X」自报「X」是中转正常剥标签（灰色），自报「[逆-V]X-c」
+                                        才是真被换了后端（琥珀）。 */}
                                     {e.backendModel && e.backendModel !== e.model && (() => {
-                                        const core = (m: string) => m.replace(/\[[^\]]*\]/g, '').trim();
-                                        const swapped = core(e.backendModel) !== core(e.model);
+                                        const swapped = coreModelName(e.backendModel) !== coreModelName(e.model);
                                         return (
                                             <div className="col-span-2 flex items-baseline gap-1.5 min-w-0">
                                                 <span className={`text-[10px] shrink-0 ${swapped ? 'text-amber-500' : 'text-slate-400'}`}>实际后端</span>
-                                                <span
-                                                    className={`truncate font-mono ${swapped ? 'font-semibold text-amber-600' : 'text-slate-500'}`}
-                                                    title={e.backendModel}
-                                                >
+                                                <span className={`break-all font-mono ${swapped ? 'font-semibold text-amber-600' : 'text-slate-500'}`}>
                                                     {e.backendModel}{swapped ? ' ⚠️' : ''}
                                                 </span>
                                             </div>
@@ -222,16 +222,17 @@ const ApiCallLogModal: React.FC<ApiCallLogModalProps> = ({ isOpen, onClose }) =>
     );
 };
 
-const Field: React.FC<{ label: string; value?: string; accent?: boolean; mono?: boolean }> = ({
+const Field: React.FC<{ label: string; value?: string; accent?: boolean; mono?: boolean; wrap?: boolean }> = ({
     label,
     value,
     accent,
     mono,
+    wrap,
 }) => (
     <div className="flex items-baseline gap-1.5 min-w-0">
         <span className="text-[10px] text-slate-400 shrink-0">{label}</span>
         <span
-            className={`truncate ${mono ? 'font-mono' : ''} ${
+            className={`${wrap ? 'break-all' : 'truncate'} ${mono ? 'font-mono' : ''} ${
                 accent ? 'font-semibold text-primary' : 'text-slate-600'
             }`}
             title={value || ''}
