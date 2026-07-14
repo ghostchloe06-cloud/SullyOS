@@ -196,7 +196,7 @@ const Chat: React.FC = () => {
     const luckinChatRef = useRef<import('../utils/luckinToolBridge').LuckinChatState | undefined>(undefined);
 
     // --- Initialize Hook ---
-    const { isTyping, recallStatus, searchStatus, diaryStatus, emotionStatus, memoryPalaceStatus, memoryPalaceResult, setMemoryPalaceResult, lastDigestResult, setLastDigestResult, lastTokenUsage, tokenBreakdown, setLastTokenUsage, triggerAI, startProactiveChat, stopProactiveChat, isProactiveActive } = useChatAI({
+    const { isTyping, streamingBubbles, recallStatus, searchStatus, diaryStatus, emotionStatus, memoryPalaceStatus, memoryPalaceResult, setMemoryPalaceResult, lastDigestResult, setLastDigestResult, lastTokenUsage, tokenBreakdown, setLastTokenUsage, triggerAI, startProactiveChat, stopProactiveChat, isProactiveActive } = useChatAI({
         char,
         userProfile,
         apiConfig,
@@ -814,7 +814,7 @@ const Chat: React.FC = () => {
                 scrollRef.current.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' });
             }
         }
-    }, [messages, isTyping, recallStatus, searchStatus, diaryStatus, selectionMode, windowedFocusMsgId]);
+    }, [messages, isTyping, streamingBubbles, recallStatus, searchStatus, diaryStatus, selectionMode, windowedFocusMsgId]);
 
     // 白框提示音：当 char 新发的消息成为会话最后一条时播放一次（用户自己/历史/翻旧消息都不响）。
     // 声音配置编码在白框 CSS 注释里（角色 chromeCustomCss 覆盖全局 chatChromeCustomCss），随白框分享一起走。
@@ -3097,6 +3097,19 @@ const Chat: React.FC = () => {
                     </div>
                 )}
 
+                {/* 流式预览气泡：stream 开启时已完成的回复行先上屏（临时展示，落库后由真实消息替换） */}
+                {streamingBubbles.length > 0 && !selectionMode && (
+                    <div className="flex items-end gap-3 px-3 mb-2 animate-fade-in">
+                        <img src={char.avatar} className={chatPendingAvatarClass} />
+                        <div className="flex flex-col items-start gap-1.5 max-w-[75%]">
+                            {streamingBubbles.map((bubble, i) => (
+                                <div key={i} className="px-4 py-2.5 rounded-2xl text-sm leading-relaxed whitespace-pre-wrap break-all bg-white text-slate-700 rounded-bl-sm shadow-sm border border-slate-100 animate-fade-in">
+                                    {bubble}
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                )}
                 {(isTyping || recallStatus || searchStatus || diaryStatus || isProactiveComposing) && !selectionMode && (
                     <div className="flex items-end gap-3 px-3 mb-6 animate-fade-in">
                         <img src={char.avatar} className={chatPendingAvatarClass} />

@@ -33,6 +33,7 @@ import {
     type InstantPushPayload,
 } from '../utils/instantPushClient';
 import { applyAssistantPostProcessing, type XhsCaches } from '../utils/applyAssistantPostProcessing';
+import { computeStreamPreviewBubbles } from '../utils/streamPreview';
 import { ActiveMsgStore } from '../utils/activeMsgStore';
 import { applyEmotionEvalRaw, extractAssistantText } from '../utils/emotionApply';
 import { shouldRequestAmbient, buildAmbientEvalSection } from '../utils/roomAmbient';
@@ -391,6 +392,9 @@ export const useChatAI = ({
     const music = useMusic();
 
     const [isTyping, setIsTyping] = useState(false);
+    // 流式预览气泡：stream 开启时，已完成的回复行先以临时气泡上屏（体感秒回）。
+    // 流结束后由 applyAssistantPostProcessing 正常落库渲染，预览随即清空 —— 只影响体感，不改持久化。
+    const [streamingBubbles, setStreamingBubbles] = useState<string[]>([]);
     const [recallStatus, setRecallStatus] = useState<string>('');
     const [searchStatus, setSearchStatus] = useState<string>('');
     const [diaryStatus, setDiaryStatus] = useState<string>('');
@@ -926,12 +930,27 @@ export const useChatAI = ({
                 return;
             }
 
+            // 流式预览：仅在用户开了 stream、且非工具/双语模式时启用。
+            // 工具模式的首轮响应可能是 tool_calls（无正文可预览）；双语模式正文包在
+            // 跨行 <翻译> 标签里，预览过滤后什么都不剩 —— 这两类直接不挂钩子，行为同旧版。
+            // 每次 onDelta 基于累计全文全量重算（safeFetchJson 重试会重开流，天然重置）；
+            // 只有气泡数组真变了才 setState，部分行内增量不会触发重渲染。
+            const streamPreviewEligible = !!userStream && !toolModeActive && !bilingualActive;
+            const streamHooks = streamPreviewEligible ? {
+                onDelta: (_delta: string, fullText: string) => {
+                    const bubbles = computeStreamPreviewBubbles(fullText);
+                    setStreamingBubbles(prev =>
+                        (prev.length === bubbles.length && prev.every((b, i) => b === bubbles[i])) ? prev : bubbles
+                    );
+                },
+            } : undefined;
+
             let data: any;
             try {
                 data = await safeFetchJson(`${baseUrl}/chat/completions`, {
                     method: 'POST', headers,
                     body: JSON.stringify(baseReqBody)
-                }, 2, 0, { appName: '消息', charId: char.id, charName: char.name, purpose: '聊天回复' });
+                }, 2, 0, { appName: '消息', charId: char.id, charName: char.name, purpose: '聊天回复' }, streamHooks);
             } catch (e) {
                 // 仅通用 MCP、且没有和其他工具模式混用时降级。部分 OpenAI 兼容中转
                 // 会对携带 tools 的请求直接回 4xx，而不是忽略参数；去掉 tools 后让
@@ -1335,6 +1354,9 @@ export const useChatAI = ({
             // 详见 utils/applyAssistantPostProcessing.ts。Phase 0 行为字节级不变;
             // Phase 1 会让 instant push 路径也调它 (skipSecondPassLLM=true);
             // Phase 2 会让 worker 端把识别的副作用打包成 directives 传过来重放。
+            // 预览气泡在真实消息开始落库前清掉，避免同一句话短暂双份显示。
+            // （后处理第一步就会 saveMessage+setMessages，空档只有几十毫秒。）
+            setStreamingBubbles([]);
             const rawAiContent = data.choices?.[0]?.message?.content || '';
             const xhsCaches: XhsCaches = {
                 xsecTokenCache: xsecTokenCacheRef.current,
@@ -1394,6 +1416,7 @@ export const useChatAI = ({
         } finally {
             KeepAlive.stop();
             setIsTyping(false);
+            setStreamingBubbles([]);  // 错误/中断路径兜底清预览
             setRecallStatus('');
             setSearchStatus('');
             setDiaryStatus('');
@@ -1523,6 +1546,7 @@ export const useChatAI = ({
 
     return {
         isTyping,
+        streamingBubbles,
         recallStatus,
         searchStatus,
         diaryStatus,
